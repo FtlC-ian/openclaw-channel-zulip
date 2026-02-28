@@ -35,7 +35,6 @@
       "id": "zulip",
       "label": "Zulip",
       "selectionLabel": "Zulip (plugin)",
-      "docsPath": "/channels/zulip",
       "docsLabel": "zulip",
       "blurb": "Zulip streams/topics with reaction-based reply indicators (plugin, installed separately).",
       "order": 70

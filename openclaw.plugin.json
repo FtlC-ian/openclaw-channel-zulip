@@ -5,5 +5,39 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {}
+  },
+  "uiHints": {
+    "url": {
+      "label": "Zulip Server URL",
+      "placeholder": "https://your-org.zulipchat.com"
+    },
+    "email": {
+      "label": "Bot Email",
+      "placeholder": "bot@your-org.zulipchat.com"
+    },
+    "apiKey": {
+      "label": "API Key",
+      "sensitive": true
+    },
+    "streams": {
+      "label": "Streams to Monitor",
+      "placeholder": "[\"general\", \"random\"]"
+    },
+    "defaultTopic": {
+      "label": "Default Topic",
+      "placeholder": "general chat"
+    },
+    "dmPolicy": {
+      "label": "DM Policy"
+    },
+    "groupPolicy": {
+      "label": "Group Policy"
+    },
+    "requireMention": {
+      "label": "Require @mention in Streams"
+    },
+    "reactions.enabled": {
+      "label": "Reaction Indicators"
+    }
   }
 }

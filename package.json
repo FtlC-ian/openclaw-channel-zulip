@@ -1,0 +1,48 @@
+{
+  "name": "openclaw-channel-zulip",
+  "version": "2026.2.4",
+  "description": "Zulip channel plugin for OpenClaw — concurrent message processing, reaction indicators, file uploads, and full actions API",
+  "type": "module",
+  "author": "FtlC-ian",
+  "license": "MIT",
+  "keywords": [
+    "openclaw",
+    "openclaw-plugin",
+    "openclaw-channel",
+    "zulip",
+    "chatbot",
+    "bot"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/FtlC-ian/openclaw-channel-zulip.git"
+  },
+  "homepage": "https://github.com/FtlC-ian/openclaw-channel-zulip#readme",
+  "bugs": {
+    "url": "https://github.com/FtlC-ian/openclaw-channel-zulip/issues"
+  },
+  "dependencies": {
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "openclaw": "*"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "channel": {
+      "id": "zulip",
+      "label": "Zulip",
+      "selectionLabel": "Zulip (plugin)",
+      "docsPath": "/channels/zulip",
+      "docsLabel": "zulip",
+      "blurb": "Zulip streams/topics with reaction-based reply indicators (plugin, installed separately).",
+      "order": 70
+    },
+    "install": {
+      "npmSpec": "openclaw-channel-zulip",
+      "defaultChoice": "npm"
+    }
+  }
+}

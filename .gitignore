@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# TypeScript compiled output
+*.js
+*.d.ts
+*.d.ts.map
+*.js.map
+
+# Except config files that should be .js
+!.eslintrc.js
+
+# Misc
+.DS_Store
+*.log

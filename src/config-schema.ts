@@ -59,6 +59,7 @@ const ZulipAccountSchema = ZulipAccountSchemaBase.superRefine((value, ctx) => {
 
 export const ZulipConfigSchema = ZulipAccountSchemaBase.extend({
   accounts: z.record(z.string(), ZulipAccountSchema.optional()).optional(),
+  defaultAccount: z.string().optional(),
 }).superRefine((value, ctx) => {
   requireOpenAllowFrom({
     policy: value.dmPolicy,

@@ -8,6 +8,7 @@ import {
   normalizeAccountId,
   setAccountEnabledInConfigSection,
   type ChannelAccountSnapshot,
+  type ChannelOutboundAdapter,
   type ChannelPlugin,
 } from "openclaw/plugin-sdk";
 import { zulipMessageActions } from "./actions.js";
@@ -161,37 +162,60 @@ export const zulipPlugin: ChannelPlugin<ResolvedZulipAccount> = {
       hint: "<stream:NAME[:topic]|user:email|#stream[:topic]|@email>",
     },
   },
-  outbound: {
-    deliveryMode: "direct",
-    chunker: (text, limit) => getZulipRuntime().channel.text.chunkMarkdownText(text, limit),
-    chunkerMode: "markdown",
-    textChunkLimit: 4000,
-    resolveTarget: ({ to }) => {
-      const trimmed = to?.trim();
-      if (!trimmed) {
-        return {
-          ok: false,
-          error: new Error(
-            "Delivering to Zulip requires --to <stream:NAME[:topic]|user:email|#stream[:topic]|@email>",
-          ),
-        };
-      }
-      return { ok: true, to: trimmed };
-    },
-    sendText: async ({ to, text, accountId }) => {
-      const result = await sendMessageZulip(to, text, {
-        accountId: accountId ?? undefined,
-      });
-      return { channel: "zulip", ...result };
-    },
-    sendMedia: async ({ to, text, mediaUrl, accountId }) => {
-      const result = await sendMessageZulip(to, text, {
-        accountId: accountId ?? undefined,
-        mediaUrl,
-      });
-      return { channel: "zulip", ...result };
-    },
-  },
+  outbound: (() => {
+    const outbound: ChannelOutboundAdapter = {
+      deliveryMode: "direct",
+      chunker: (text, limit) => getZulipRuntime().channel.text.chunkMarkdownText(text, limit),
+      chunkerMode: "markdown",
+      textChunkLimit: 4000,
+      resolveTarget: ({ to }) => {
+        const trimmed = to?.trim();
+        if (!trimmed) {
+          return {
+            ok: false,
+            error: new Error(
+              "Delivering to Zulip requires --to <stream:NAME[:topic]|user:email|#stream[:topic]|@email>",
+            ),
+          };
+        }
+        return { ok: true, to: trimmed };
+      },
+      sendText: async ({ to, text, accountId }) => {
+        const result = await sendMessageZulip(to, text, {
+          accountId: accountId ?? undefined,
+        });
+        return { channel: "zulip", ...result };
+      },
+      sendMedia: async ({ to, text, mediaUrl, accountId }) => {
+        const result = await sendMessageZulip(to, text, {
+          accountId: accountId ?? undefined,
+          mediaUrl,
+        });
+        return { channel: "zulip", ...result };
+      },
+      sendPayload: async (ctx) => {
+        const text = ctx.payload.text ?? "";
+        const mediaUrls = ctx.payload.mediaUrls?.length
+          ? ctx.payload.mediaUrls
+          : ctx.payload.mediaUrl
+            ? [ctx.payload.mediaUrl]
+            : [];
+        if (mediaUrls.length > 0) {
+          let lastResult;
+          for (let i = 0; i < mediaUrls.length; i++) {
+            lastResult = await outbound.sendMedia!({
+              ...ctx,
+              text: i === 0 ? text : "",
+              mediaUrl: mediaUrls[i],
+            });
+          }
+          return lastResult!;
+        }
+        return outbound.sendText!({ ...ctx, text });
+      },
+    };
+    return outbound;
+  })(),
   status: {
     defaultRuntime: {
       accountId: DEFAULT_ACCOUNT_ID,

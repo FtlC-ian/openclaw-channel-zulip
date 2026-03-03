@@ -52,6 +52,15 @@ export function listZulipAccountIds(cfg: OpenClawConfig): string[] {
 }
 
 export function resolveDefaultZulipAccountId(cfg: OpenClawConfig): string {
+  const zulipSection = resolveZulipSection(cfg);
+  const configuredDefault = zulipSection?.defaultAccount?.trim();
+  if (configuredDefault) {
+    const normalized = normalizeAccountId(configuredDefault);
+    const ids = listZulipAccountIds(cfg);
+    if (ids.includes(normalized)) {
+      return normalized;
+    }
+  }
   const ids = listZulipAccountIds(cfg);
   if (ids.includes(DEFAULT_ACCOUNT_ID)) {
     return DEFAULT_ACCOUNT_ID;

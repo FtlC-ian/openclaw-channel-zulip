@@ -441,7 +441,7 @@ export const zulipMessageActions: ChannelMessageActionAdapter = {
     const accountId = typeof args.accountId === "string" ? args.accountId.trim() : undefined;
     return { to, accountId };
   },
-  handleAction: async ({ action, params, cfg, accountId }) => {
+  handleAction: async ({ action, params, cfg, accountId, toolContext }) => {
     const { client, account } = resolveZulipClient(cfg, accountId ?? undefined);
 
     if (action === "send") {
@@ -697,7 +697,18 @@ export const zulipMessageActions: ChannelMessageActionAdapter = {
     }
 
     if (action === "react") {
-      const messageId = readMessageId(params);
+      let messageId: string;
+      try {
+        messageId = readMessageId(params);
+      } catch {
+        if (toolContext?.currentMessageId != null) {
+          messageId = String(toolContext.currentMessageId);
+        } else {
+          throw new Error(
+            "messageId required. Provide messageId explicitly or react to the current inbound message.",
+          );
+        }
+      }
       const emojiName =
         readStringParam(params, "emoji") ??
         readStringParam(params, "emojiName") ??

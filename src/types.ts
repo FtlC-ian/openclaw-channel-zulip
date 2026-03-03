@@ -71,4 +71,6 @@ export type ZulipAccountConfig = {
 export type ZulipConfig = {
   /** Optional per-account Zulip configuration (multi-account). */
   accounts?: Record<string, ZulipAccountConfig>;
+  /** Optional default account id when multiple accounts are configured. */
+  defaultAccount?: string;
 } & ZulipAccountConfig;

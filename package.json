@@ -1,6 +1,6 @@
 {
   "name": "openclaw-channel-zulip",
-  "version": "2026.2.4",
+  "version": "2026.3.1",
   "description": "Zulip channel plugin for OpenClaw — concurrent message processing, reaction indicators, file uploads, and full actions API",
   "type": "module",
   "author": "FtlC-ian",
@@ -25,7 +25,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "openclaw": "*"
+    "openclaw": "^2026.3.2"
   },
   "openclaw": {
     "extensions": [

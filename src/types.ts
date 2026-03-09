@@ -38,6 +38,11 @@ export type ZulipAccountConfig = {
   oncharPrefixes?: string[];
   /** Require @mention to respond in channels. Default: true. */
   requireMention?: boolean;
+  /** Per-stream config overrides keyed by stream name or stream ID. */
+  streamOverrides?: Record<string, {
+    /** Override requireMention for this stream. */
+    requireMention?: boolean;
+  }>;
   /** Direct message policy (pairing/allowlist/open/disabled). */
   dmPolicy?: DmPolicy;
   /** Allowlist for direct messages (user ids or @usernames). */

@@ -488,7 +488,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         cfg,
         channel: "zulip",
         accountId: account.accountId,
-        groupId: channelId,
+        groupId: streamName || channelId,
         requireMentionOverride: account.config.requireMention,
       });
     const shouldBypassMention =

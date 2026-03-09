@@ -1,5 +1,7 @@
+import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { promisify } from "node:util";
 import type {
   ChannelAccountSnapshot,
   OpenClawConfig,
@@ -187,6 +189,9 @@ async function saveZulipMediaBuffer(params: {
   maxBytes: number;
 }): Promise<{ path: string; contentType: string } | null> {
   const { core, buffer, contentType, filename, maxBytes } = params;
+  let savedPath: string;
+  let savedContentType: string;
+
   if (core.channel.media?.saveMediaBuffer) {
     const saved = await core.channel.media.saveMediaBuffer(
       buffer,
@@ -195,15 +200,39 @@ async function saveZulipMediaBuffer(params: {
       maxBytes,
       filename,
     );
-    return {
-      path: saved.path,
-      contentType: saved.contentType ?? contentType,
-    };
+    savedPath = saved.path;
+    savedContentType = saved.contentType ?? contentType;
+  } else {
+    const dir = await fs.mkdtemp(path.join(resolvePreferredOpenClawTmpDir(), "zulip-upload-"));
+    const filePath = path.join(dir, filename);
+    await fs.writeFile(filePath, buffer);
+    savedPath = filePath;
+    savedContentType = contentType;
   }
-  const dir = await fs.mkdtemp(path.join(resolvePreferredOpenClawTmpDir(), "zulip-upload-"));
-  const filePath = path.join(dir, filename);
-  await fs.writeFile(filePath, buffer);
-  return { path: filePath, contentType };
+
+  // Auto-convert HEIC/HEIF to JPEG for vision pipeline compatibility
+  const ext = path.extname(savedPath).toLowerCase();
+  if (ext === ".heic" || ext === ".heif") {
+    const jpgPath = savedPath.replace(/\.heic$/i, ".jpg").replace(/\.heif$/i, ".jpg");
+    try {
+      const execFileAsync = promisify(execFile);
+      await execFileAsync("heif-convert", ["-q", "90", savedPath, jpgPath], { timeout: 30000 });
+      // Remove original HEIC file
+      try {
+        await fs.unlink(savedPath);
+      } catch {
+        /* ignore cleanup failure */
+      }
+      return { path: jpgPath, contentType: "image/jpeg" };
+    } catch {
+      // heif-convert not available or conversion failed — use original file
+      params.core.logging.getChildLogger({ module: "zulip" }).warn?.(
+        `HEIC conversion failed for ${path.basename(savedPath)} — using original`,
+      );
+    }
+  }
+
+  return { path: savedPath, contentType: savedContentType };
 }
 
 function delay(ms: number): Promise<void> {

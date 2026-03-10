@@ -46,6 +46,7 @@ import {
   formatInboundFromLabel,
   resolveThreadSessionKeys,
 } from "./monitor-helpers.js";
+import { startInboundMediaSweep, stopInboundMediaSweep, markMediaTimestamp } from "./media-sweep.js";
 import { sendMessageZulip } from "./send.js";
 import { downloadZulipUpload, extractZulipUploadUrls, normalizeZulipEmojiName } from "./uploads.js";
 
@@ -204,6 +205,7 @@ async function saveZulipMediaBuffer(params: {
     savedContentType = saved.contentType ?? contentType;
   } else {
     const dir = await fs.mkdtemp(path.join(resolvePreferredOpenClawTmpDir(), "zulip-upload-"));
+    await markMediaTimestamp(dir);
     const filePath = path.join(dir, filename);
     await fs.writeFile(filePath, buffer);
     savedPath = filePath;
@@ -269,6 +271,8 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
   const botUsername = botUser.full_name ?? "";
 
   runtime.log?.(`zulip connected as ${botUsername ? botUsername : botUserId} (${botEmail})`);
+
+  startInboundMediaSweep(runtime.log ?? console.log);
 
   const logger = core.logging.getChildLogger({ module: "zulip" });
   const logVerboseMessage = core.logging.shouldLogVerbose()
@@ -933,6 +937,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
   }
 
   // Cleanup
+  stopInboundMediaSweep();
   await deleteZulipQueue(client, queueId);
   runtime.log?.("zulip monitor stopped");
 }

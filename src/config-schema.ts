@@ -24,14 +24,6 @@ const ZulipAccountSchemaBase = z
     chatmode: z.enum(["oncall", "onmessage", "onchar"]).optional(),
     oncharPrefixes: z.array(z.string()).optional(),
     requireMention: z.boolean().optional(),
-    streamOverrides: z
-      .record(
-        z.string(),
-        z.object({
-          requireMention: z.boolean().optional(),
-        }),
-      )
-      .optional(),
     dmPolicy: DmPolicySchema.optional(),
     allowFrom: z.array(z.union([z.string(), z.number()])).optional(),
     groupAllowFrom: z.array(z.union([z.string(), z.number()])).optional(),

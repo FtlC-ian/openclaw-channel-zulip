@@ -311,6 +311,7 @@ export async function getZulipEvents(
     lastEventId: number;
     timeoutMs?: number;
     signal?: AbortSignal;
+    dontBlock?: boolean;
   },
 ): Promise<
   ZulipApiResponse & { events?: Array<{ id: number; type: string; message?: ZulipMessage }> }
@@ -318,7 +319,7 @@ export async function getZulipEvents(
   const qs = new URLSearchParams({
     queue_id: params.queueId,
     last_event_id: String(params.lastEventId),
-    dont_block: "false",
+    dont_block: params.dontBlock ? "true" : "false",
   });
   const controller = new AbortController();
   const externalSignal = params.signal;
@@ -349,6 +350,7 @@ export async function getZulipEventsWithRetry(
     timeoutMs?: number;
     retryBaseDelayMs?: number;
     signal?: AbortSignal;
+    dontBlock?: boolean;
   },
 ): Promise<
   ZulipApiResponse & { events?: Array<{ id: number; type: string; message?: ZulipMessage }> }
@@ -356,7 +358,7 @@ export async function getZulipEventsWithRetry(
   const qs = new URLSearchParams({
     queue_id: params.queueId,
     last_event_id: String(params.lastEventId),
-    dont_block: "false",
+    dont_block: params.dontBlock ? "true" : "false",
   });
   const controller = new AbortController();
   const externalSignal = params.signal;

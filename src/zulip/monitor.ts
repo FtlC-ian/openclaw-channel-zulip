@@ -1,7 +1,5 @@
-import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
 import type {
   ChannelAccountSnapshot,
   OpenClawConfig,
@@ -46,7 +44,6 @@ import {
   formatInboundFromLabel,
   resolveThreadSessionKeys,
 } from "./monitor-helpers.js";
-import { startInboundMediaSweep, stopInboundMediaSweep, markMediaTimestamp } from "./media-sweep.js";
 import { sendMessageZulip } from "./send.js";
 import { downloadZulipUpload, extractZulipUploadUrls, normalizeZulipEmojiName } from "./uploads.js";
 
@@ -190,9 +187,6 @@ async function saveZulipMediaBuffer(params: {
   maxBytes: number;
 }): Promise<{ path: string; contentType: string } | null> {
   const { core, buffer, contentType, filename, maxBytes } = params;
-  let savedPath: string;
-  let savedContentType: string;
-
   if (core.channel.media?.saveMediaBuffer) {
     const saved = await core.channel.media.saveMediaBuffer(
       buffer,
@@ -201,47 +195,15 @@ async function saveZulipMediaBuffer(params: {
       maxBytes,
       filename,
     );
-    savedPath = saved.path;
-    savedContentType = saved.contentType ?? contentType;
-  } else {
-    const dir = await fs.mkdtemp(path.join(resolvePreferredOpenClawTmpDir(), "zulip-upload-"));
-    await markMediaTimestamp(dir);
-    const filePath = path.join(dir, filename);
-    await fs.writeFile(filePath, buffer);
-    savedPath = filePath;
-    savedContentType = contentType;
+    return {
+      path: saved.path,
+      contentType: saved.contentType ?? contentType,
+    };
   }
-
-  // Auto-convert HEIC/HEIF to JPEG for vision pipeline compatibility
-  const ext = path.extname(savedPath).toLowerCase();
-  if (ext === ".heic" || ext === ".heif") {
-    const jpgPath = savedPath.replace(/\.heic$/i, ".jpg").replace(/\.heif$/i, ".jpg");
-    try {
-      const execFileAsync = promisify(execFile);
-      await execFileAsync("heif-convert", ["-q", "90", savedPath, jpgPath], { timeout: 30000 });
-      
-      // Verify conversion produced a valid file
-      const stats = await fs.stat(jpgPath);
-      if (stats.size > 0) {
-        // Conversion succeeded — remove original HEIC file
-        await fs.unlink(savedPath).catch(() => {
-          /* ignore cleanup failure */
-        });
-        return { path: jpgPath, contentType: "image/jpeg" };
-      }
-      // Conversion produced empty file — fall back to original
-      params.core.logging.getChildLogger({ module: "zulip" }).warn?.(
-        `HEIC conversion produced empty file for ${path.basename(savedPath)} — using original`,
-      );
-    } catch {
-      // heif-convert not available or conversion failed — use original file
-      params.core.logging.getChildLogger({ module: "zulip" }).warn?.(
-        `HEIC conversion failed for ${path.basename(savedPath)} — using original`,
-      );
-    }
-  }
-
-  return { path: savedPath, contentType: savedContentType };
+  const dir = await fs.mkdtemp(path.join(resolvePreferredOpenClawTmpDir(), "zulip-upload-"));
+  const filePath = path.join(dir, filename);
+  await fs.writeFile(filePath, buffer);
+  return { path: filePath, contentType };
 }
 
 function delay(ms: number): Promise<void> {
@@ -278,8 +240,6 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
   const botUsername = botUser.full_name ?? "";
 
   runtime.log?.(`zulip connected as ${botUsername ? botUsername : botUserId} (${botEmail})`);
-
-  startInboundMediaSweep(runtime.log ?? console.log);
 
   const logger = core.logging.getChildLogger({ module: "zulip" });
   const logVerboseMessage = core.logging.shouldLogVerbose()
@@ -528,8 +488,8 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         cfg,
         channel: "zulip",
         accountId: account.accountId,
-        groupId: streamName || channelId,
-        requireMentionOverride: account.config.requireMention,
+        groupId: channelId,
+        requireMentionOverride: account.requireMention,
       });
     const shouldBypassMention =
       isControlCommand && shouldRequireMention && !wasMentioned && commandAuthorized;
@@ -847,7 +807,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     }
   };
 
-  // Long-polling loop
+  // Long-poll at 90s — nginx proxy_read_timeout is now 120s
   while (!opts.abortSignal?.aborted) {
     try {
       const response = await getZulipEventsWithRetry(client, {
@@ -856,6 +816,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         timeoutMs: 90000,
         retryBaseDelayMs: 1000,
         signal: opts.abortSignal,
+        dontBlock: false,
       });
 
       if (response.result === "error") {
@@ -878,6 +839,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       }
 
       const events = response.events ?? [];
+      runtime.log?.(`zulip: poll ok, ${events.length} events, lastEventId=${lastEventId}`);
       if (events.length > 0) {
         opts.statusSink?.({
           connected: true,
@@ -886,7 +848,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       }
 
       if (events.length === 0) {
-        await delay(1000);
+        await delay(200);
       }
 
       resetPollBackoff();
@@ -894,7 +856,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       // Process messages with staggered start times for more natural feel
       for (const event of events) {
         const nextEventId = Number((event as { id?: unknown })?.id);
-        if (!Number.isNaN(nextEventId) && nextEventId > 0) {
+        if (!Number.isNaN(nextEventId) && nextEventId >= 0) {
           lastEventId = nextEventId;
         }
 
@@ -944,7 +906,6 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
   }
 
   // Cleanup
-  stopInboundMediaSweep();
   await deleteZulipQueue(client, queueId);
   runtime.log?.("zulip monitor stopped");
 }

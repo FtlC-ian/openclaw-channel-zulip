@@ -86,7 +86,12 @@ function parseZulipTarget(raw: string): ZulipTarget {
     if (!rest) {
       throw new Error("Stream name is required for Zulip sends");
     }
-    const [stream, topic] = rest.split(/[:#/]/);
+    const colonIdx = rest.indexOf(":");
+    const slashIdx = rest.indexOf("/");
+    const hashIdx = rest.indexOf("#");
+    const sepIdx = [colonIdx, slashIdx, hashIdx].filter(i => i >= 0).reduce((a, b) => Math.min(a, b), Infinity);
+    const stream = sepIdx === Infinity ? rest : rest.slice(0, sepIdx);
+    const topic = sepIdx === Infinity ? undefined : rest.slice(sepIdx + 1);
     return { kind: "stream", stream: stream.trim(), topic: topic?.trim() };
   }
   if (lower.startsWith("user:") || lower.startsWith("dm:")) {
@@ -112,11 +117,13 @@ function parseZulipTarget(raw: string): ZulipTarget {
   }
   if (trimmed.startsWith("#")) {
     const rest = trimmed.slice(1).trim();
-    const [stream, topic] = rest.split(/[:#/]/);
-    if (!stream) {
+    const sepIdx2 = [rest.indexOf(":"), rest.indexOf("/")].filter(i => i >= 0).reduce((a, b) => Math.min(a, b), Infinity);
+    const stream2 = sepIdx2 === Infinity ? rest : rest.slice(0, sepIdx2);
+    const topic2 = sepIdx2 === Infinity ? undefined : rest.slice(sepIdx2 + 1);
+    if (!stream2) {
       throw new Error("Stream name is required for Zulip sends");
     }
-    return { kind: "stream", stream: stream.trim(), topic: topic?.trim() };
+    return { kind: "stream", stream: stream2.trim(), topic: topic2?.trim() };
   }
   if (trimmed.includes("@")) {
     return { kind: "user", email: trimmed };

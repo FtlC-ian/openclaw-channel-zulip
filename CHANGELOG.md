@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026.4.14
+
+### Features
+- **SDK-aligned plugin entrypoints**: Migrate to `defineChannelPluginEntry(...)` and `defineSetupPluginEntry(...)`, keeping the package aligned with current OpenClaw plugin loading and setup patterns.
+- **Native session conversation binding**: Route stream-topic conversations through the SDK session-conversation hook, with bundled fallback support via `session-key-api.ts`.
+- **Approval capability wiring**: Advertise Zulip approval support through `approvalCapability`, so current OpenClaw approval surfaces can discover and use the plugin correctly.
+- **Widget send and target normalization improvements**: Tighten Zulip target normalization and outbound widget send behavior for current OpenClaw messaging flows.
+
+### Bug Fixes
+- **Duplicate session noise**: Stop enqueueing an extra synthetic system event for ordinary inbound Zulip messages, which was polluting session history and wasting tokens.
+- **Regression coverage**: Add targeted monitor tests for ordinary inbound handling, duplicate message dedupe, and BAD_EVENT_QUEUE_ID queue re-registration.
+- **Release metadata refresh**: Bump package metadata to match OpenClaw `2026.4.14` and publish the current main-branch fixes as a coherent npm release.
+
 ## 2026.4.9
 
 ### Bug Fixes

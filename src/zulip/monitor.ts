@@ -288,18 +288,21 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       return;
     }
 
-    const senderId = message.sender_email || String(message.sender_id ?? "");
-    if (!senderId) {
+    const senderEmail = message.sender_email?.trim() || "";
+    const senderUserId = String(message.sender_id ?? "");
+    const senderIdentity = senderEmail || senderUserId;
+    if (!senderIdentity) {
       return;
     }
-    if (senderId === botEmail || String(message.sender_id) === botUserId) {
+    if (senderEmail === botEmail || senderUserId === String(botUserId)) {
       return;
     }
 
-    const senderName = message.sender_full_name?.trim() || senderId;
+    const senderName = message.sender_full_name?.trim() || senderIdentity;
     const isDM = message.type === "private";
     const kind = isDM ? "dm" : "channel";
     const chatType = isDM ? "direct" : "channel";
+    const dmTargetIdentity = senderEmail || senderUserId;
 
     let streamName = "";
     let streamId = "";
@@ -307,7 +310,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     let channelId = "";
 
     if (isDM) {
-      channelId = senderId;
+      channelId = dmTargetIdentity;
     } else {
       streamId = String(message.stream_id ?? "");
       channelId = streamId;
@@ -380,7 +383,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       storeAllowFrom,
       isSenderAllowed: (allowFrom) =>
         isSenderAllowed({
-          senderId,
+          senderId: senderIdentity,
           senderName,
           allowFrom,
         }),
@@ -396,12 +399,12 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     const isControlCommand = allowTextCommands && hasControlCommand;
     const useAccessGroups = cfg.commands?.useAccessGroups !== false;
     const senderAllowedForCommands = isSenderAllowed({
-      senderId,
+      senderId: senderIdentity,
       senderName,
       allowFrom: effectiveAllowFrom,
     });
     const groupAllowedForCommands = isSenderAllowed({
-      senderId,
+      senderId: senderIdentity,
       senderName,
       allowFrom: effectiveGroupAllowFrom,
     });
@@ -424,34 +427,34 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
 
     if (kind === "dm") {
       if (dmPolicy === "disabled") {
-        logVerboseMessage(`zulip: drop dm (dmPolicy=disabled sender=${senderId})`);
+        logVerboseMessage(`zulip: drop dm (dmPolicy=disabled sender=${senderIdentity})`);
         return;
       }
       if (dmPolicy !== "open" && !senderAllowedForCommands) {
         if (dmPolicy === "pairing") {
           const { code, created } = await pairing.upsertPairingRequest({
-            id: senderId,
+            id: senderIdentity,
             meta: { name: senderName },
           });
-          logVerboseMessage(`zulip: pairing request sender=${senderId} created=${created}`);
+          logVerboseMessage(`zulip: pairing request sender=${senderIdentity} created=${created}`);
           if (created) {
             try {
               await sendMessageZulip(
-                `user:${senderId}`,
+                `user:${senderIdentity}`,
                 core.channel.pairing.buildPairingReply({
                   channel: "zulip",
-                  idLine: `Your Zulip email: ${senderId}`,
+                  idLine: `Your Zulip email: ${senderIdentity}`,
                   code,
                 }),
                 { accountId: account.accountId },
               );
               opts.statusSink?.({ lastOutboundAt: Date.now() });
             } catch (err) {
-              logVerboseMessage(`zulip: pairing reply failed for ${senderId}: ${String(err)}`);
+              logVerboseMessage(`zulip: pairing reply failed for ${senderIdentity}: ${String(err)}`);
             }
           }
         } else {
-          logVerboseMessage(`zulip: drop dm sender=${senderId} (dmPolicy=${dmPolicy})`);
+          logVerboseMessage(`zulip: drop dm sender=${senderIdentity} (dmPolicy=${dmPolicy})`);
         }
         return;
       }
@@ -466,7 +469,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
           return;
         }
         if (!groupAllowedForCommands) {
-          logVerboseMessage(`zulip: drop group sender=${senderId} (not in groupAllowFrom)`);
+          logVerboseMessage(`zulip: drop group sender=${senderIdentity} (not in groupAllowFrom)`);
           return;
         }
       }
@@ -477,7 +480,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         log: logVerboseMessage,
         channel: "zulip",
         reason: "control command (unauthorized)",
-        target: senderId,
+        target: senderIdentity,
       });
       return;
     }
@@ -525,7 +528,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       groupId: channelId,
       groupFallback: "Stream",
       directLabel: senderName,
-      directId: senderId,
+      directId: senderIdentity,
     });
 
     const streamConversation =
@@ -543,7 +546,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       teamId: undefined,
       peer: {
         kind: chatType,
-        id: isDM ? senderId : (streamConversation?.conversationId ?? channelId),
+        id: isDM ? dmTargetIdentity : (streamConversation?.conversationId ?? channelId),
       },
       parentPeer:
         !isDM && streamConversation?.threadId
@@ -579,15 +582,16 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       timestamp,
       body: textWithId,
       chatType,
-      sender: { name: senderName, id: senderId },
+      sender: { name: senderName, id: senderIdentity },
     });
 
-    const to = kind === "dm" ? `user:${senderId}` : `stream:${streamName || streamId}:${topic}`;
+    const to =
+      kind === "dm" ? `user:${dmTargetIdentity}` : `stream:${streamName || streamId}:${topic}`;
     const ctxPayload = core.channel.reply.finalizeInboundContext({
       Body: body,
       RawBody: bodyText,
       CommandBody: bodyText,
-      From: kind === "dm" ? `zulip:${senderId}` : `zulip:channel:${channelId}`,
+      From: kind === "dm" ? `zulip:${senderIdentity}` : `zulip:channel:${channelId}`,
       To: to,
       SessionKey: sessionKey,
       ParentSessionKey: parentSessionKey,
@@ -597,7 +601,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       GroupSubject: kind !== "dm" ? roomLabel : undefined,
       GroupChannel: streamName ? `#${streamName}` : undefined,
       SenderName: senderName,
-      SenderId: senderId,
+      SenderId: senderIdentity,
       Provider: "zulip" as const,
       Surface: "zulip" as const,
       MessageSid: messageId,
@@ -616,21 +620,19 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       MediaTypes: mediaTypes.length > 0 ? mediaTypes : undefined,
     });
 
-    if (kind === "dm") {
-      const sessionCfg = cfg.session;
-      const storePath = core.channel.session.resolveStorePath(sessionCfg?.store, {
-        agentId: route.agentId,
-      });
-      await core.channel.session.updateLastRoute({
-        storePath,
-        sessionKey: route.mainSessionKey,
-        deliveryContext: {
-          channel: "zulip",
-          to,
-          accountId: route.accountId,
-        },
-      });
-    }
+    const sessionCfg = cfg.session;
+    const storePath = core.channel.session.resolveStorePath(sessionCfg?.store, {
+      agentId: route.agentId,
+    });
+    await core.channel.session.updateLastRoute({
+      storePath,
+      sessionKey: route.mainSessionKey,
+      deliveryContext: {
+        channel: "zulip",
+        to,
+        accountId: route.accountId,
+      },
+    });
 
     const previewLine = bodyText.slice(0, 200).replace(/\n/g, "\\n");
     logVerboseMessage(
@@ -699,7 +701,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         logTypingFailure({
           log: logVerboseMessage,
           channel: "zulip",
-          target: isDM ? senderId : `stream:${streamId}:${topic}`,
+          target: isDM ? senderIdentity : `stream:${streamId}:${topic}`,
           error: err,
         });
       },
@@ -707,7 +709,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         logTypingFailure({
           log: logVerboseMessage,
           channel: "zulip",
-          target: isDM ? senderId : `stream:${streamId}:${topic}`,
+          target: isDM ? senderIdentity : `stream:${streamId}:${topic}`,
           error: err,
         });
       },

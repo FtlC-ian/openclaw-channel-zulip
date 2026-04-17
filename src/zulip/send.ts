@@ -190,6 +190,10 @@ function normalizeLegacyZulipTarget(raw: string): { normalized: string; converte
 
 export { normalizeLegacyZulipTarget };
 
+function isCanonicalDmEmail(value: string): boolean {
+  return /^[^\s@:]+@[^\s@:]+$/.test(value);
+}
+
 function parseZulipTarget(raw: string): ZulipTarget {
   const { normalized } = normalizeLegacyZulipTarget(raw);
   const trimmed = normalized.trim();
@@ -215,6 +219,9 @@ function parseZulipTarget(raw: string): ZulipTarget {
     if (!email) {
       throw new Error("Email is required for Zulip direct messages");
     }
+    if (!isCanonicalDmEmail(email)) {
+      throw new Error("Invalid Zulip direct-message target; expected an email address");
+    }
     return { kind: "user", email };
   }
   if (lower.startsWith("zulip:")) {
@@ -222,12 +229,18 @@ function parseZulipTarget(raw: string): ZulipTarget {
     if (!email) {
       throw new Error("Email is required for Zulip direct messages");
     }
+    if (!isCanonicalDmEmail(email)) {
+      throw new Error("Invalid Zulip direct-message target; expected an email address");
+    }
     return { kind: "user", email };
   }
   if (trimmed.startsWith("@")) {
     const email = trimmed.slice(1).trim();
     if (!email) {
       throw new Error("Email is required for Zulip direct messages");
+    }
+    if (!isCanonicalDmEmail(email)) {
+      throw new Error("Invalid Zulip direct-message target; expected an email address");
     }
     return { kind: "user", email };
   }
@@ -241,7 +254,7 @@ function parseZulipTarget(raw: string): ZulipTarget {
     }
     return { kind: "stream", stream: stream2.trim(), topic: topic2?.trim() };
   }
-  if (trimmed.includes("@")) {
+  if (isCanonicalDmEmail(trimmed)) {
     return { kind: "user", email: trimmed };
   }
   return { kind: "stream", stream: trimmed };

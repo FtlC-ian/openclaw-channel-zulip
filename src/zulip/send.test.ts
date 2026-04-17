@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   interactiveToZulipWidgetContent,
   normalizeLegacyZulipTarget,
   resolveZulipWidgetContent,
+  sendMessageZulip,
 } from "./send.js";
 
 describe("interactiveToZulipWidgetContent", () => {
@@ -61,6 +62,72 @@ describe("normalizeLegacyZulipTarget", () => {
       normalized: "stream:general:polymarket",
       convertedFromLegacy: false,
     });
+  });
+
+  it("does not auto-convert malformed dm-like targets", () => {
+    expect(normalizeLegacyZulipTarget("user:user:user8@zlp.pubnerd.app")).toEqual({
+      normalized: "user:user:user8@zlp.pubnerd.app",
+      convertedFromLegacy: false,
+    });
+  });
+});
+
+const sendState = vi.hoisted(() => {
+  const sendZulipPrivateMessage = vi.fn(async () => ({ id: 9001 }));
+  const sendZulipStreamMessage = vi.fn(async () => ({ id: 9002 }));
+  return {
+    runtime: {
+      config: { loadConfig: vi.fn(() => ({ channels: { zulip: {} } })) },
+      logging: {
+        getChildLogger: () => ({ debug: vi.fn(), warn: vi.fn() }),
+      },
+      channel: {
+        media: {
+          fetchRemoteMedia: vi.fn(),
+          saveMediaBuffer: vi.fn(),
+        },
+        text: {
+          resolveMarkdownTableMode: vi.fn(() => "preserve"),
+          convertMarkdownTables: vi.fn((text: string) => text),
+        },
+        activity: {
+          record: vi.fn(),
+        },
+      },
+    },
+    account: {
+      accountId: "default",
+      apiKey: "test-key",
+      email: "debbie-bot@zlp.pubnerd.app",
+      baseUrl: "https://zlp.pubnerd.app",
+      config: {},
+    },
+    sendZulipPrivateMessage,
+    sendZulipStreamMessage,
+  };
+});
+
+vi.mock("../runtime.js", () => ({
+  getZulipRuntime: () => sendState.runtime,
+}));
+
+vi.mock("./accounts.js", () => ({
+  resolveZulipAccount: vi.fn(() => sendState.account),
+}));
+
+vi.mock("./client.js", () => ({
+  createZulipClient: vi.fn(() => ({ authHeader: "Basic fake" })),
+  normalizeZulipBaseUrl: vi.fn((url?: string) => url ?? ""),
+  sendZulipPrivateMessage: sendState.sendZulipPrivateMessage,
+  sendZulipStreamMessage: sendState.sendZulipStreamMessage,
+  uploadZulipFile: vi.fn(),
+}));
+
+describe("sendMessageZulip target parsing hardening", () => {
+  it("rejects malformed dm-like targets instead of silently auto-correcting", async () => {
+    await expect(
+      sendMessageZulip("user:user:user8@zlp.pubnerd.app", "hello", { accountId: "default" }),
+    ).rejects.toThrow("Invalid Zulip direct-message target; expected an email address");
   });
 });
 

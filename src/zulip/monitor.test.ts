@@ -186,6 +186,26 @@ function makeChannelMessage(id: number) {
   };
 }
 
+function makePrivateMessage(id: number, senderEmail = "user8@zlp.pubnerd.app") {
+  return {
+    id,
+    sender_id: 123,
+    sender_email: senderEmail,
+    sender_full_name: "Ian F",
+    type: "private",
+    display_recipient: [
+      { id: 123, email: senderEmail, full_name: "Ian F" },
+      {
+        id: 999,
+        email: "debbie-bot@zlp.pubnerd.app",
+        full_name: "Debbie",
+      },
+    ],
+    content: "ping dm",
+    timestamp: 1_750_000_000,
+  };
+}
+
 async function runMonitorOnce() {
   const { monitorZulipProvider } = await import("./monitor.js");
   state.abortController = new AbortController();
@@ -234,6 +254,90 @@ describe("monitorZulipProvider", () => {
     expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledTimes(1);
     expect(state.core.channel.reply.dispatchReplyFromConfig).toHaveBeenCalledTimes(1);
     expect(state.core.system.enqueueSystemEvent).not.toHaveBeenCalled();
+  });
+
+  it("stores last-route delivery context for stream-topic messages", async () => {
+    state.pollResponses = [
+      {
+        result: "success",
+        events: [{ id: 1, type: "message", message: makeChannelMessage(1002) }],
+      },
+    ];
+
+    await runMonitorOnce();
+
+    expect(state.core.channel.session.updateLastRoute).toHaveBeenCalledWith({
+      storePath: "/tmp/openclaw-session-store.json",
+      sessionKey: "agent:debbie:main",
+      deliveryContext: {
+        channel: "zulip",
+        to: "stream:debbie:zulip-plugin-pr",
+        accountId: "default",
+      },
+    });
+  });
+
+  it("for private messages, stores user:<sender_email> in context and last-route when sender_email exists", async () => {
+    state.pollResponses = [
+      {
+        result: "success",
+        events: [{ id: 1, type: "message", message: makePrivateMessage(1100) }],
+      },
+    ];
+
+    await runMonitorOnce();
+
+    expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        To: "user:user8@zlp.pubnerd.app",
+        OriginatingTo: "user:user8@zlp.pubnerd.app",
+      }),
+    );
+    expect(state.core.channel.session.updateLastRoute).toHaveBeenCalledWith({
+      storePath: "/tmp/openclaw-session-store.json",
+      sessionKey: "agent:debbie:main",
+      deliveryContext: {
+        channel: "zulip",
+        to: "user:user8@zlp.pubnerd.app",
+        accountId: "default",
+      },
+    });
+  });
+
+  it("for private messages, falls back to sender_id when sender_email is missing", async () => {
+    state.pollResponses = [
+      {
+        result: "success",
+        events: [
+          {
+            id: 1,
+            type: "message",
+            message: {
+              ...makePrivateMessage(1101, ""),
+              sender_email: null,
+            },
+          },
+        ],
+      },
+    ];
+
+    await runMonitorOnce();
+
+    expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        To: "user:123",
+        OriginatingTo: "user:123",
+      }),
+    );
+    expect(state.core.channel.session.updateLastRoute).toHaveBeenCalledWith({
+      storePath: "/tmp/openclaw-session-store.json",
+      sessionKey: "agent:debbie:main",
+      deliveryContext: {
+        channel: "zulip",
+        to: "user:123",
+        accountId: "default",
+      },
+    });
   });
 
   it("ignores duplicate inbound message ids on repeat processing", async () => {

@@ -39,16 +39,14 @@ describe("zulipPlugin", () => {
       expect(zulipPlugin.meta.preferSessionLookupForAnnounceTarget).toBe(true);
     });
 
-    it("provides a best-effort session target hook for stream topics", () => {
+    it("avoids reconstructing stream targets from numeric session ids", () => {
       const resolveTarget = zulipPlugin.messaging?.resolveSessionTarget;
       if (!resolveTarget) {
         throw new Error("resolveSessionTarget missing");
       }
 
-      expect(resolveTarget({ kind: "channel", id: "3", threadId: "polymarket" })).toBe(
-        "stream:3:polymarket",
-      );
-      expect(resolveTarget({ kind: "channel", id: "3" })).toBe("stream:3");
+      expect(resolveTarget({ kind: "channel", id: "3", threadId: "polymarket" })).toBeUndefined();
+      expect(resolveTarget({ kind: "channel", id: "3" })).toBeUndefined();
       expect(resolveTarget({ kind: "group", id: "ian@example.com" })).toBe("user:ian@example.com");
     });
   });

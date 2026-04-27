@@ -185,8 +185,7 @@ export const zulipPlugin = {
         if (kind === "group") {
           return `user:${trimmedId}`;
         }
-        const trimmedThreadId = threadId?.trim();
-        return trimmedThreadId ? `stream:${trimmedId}:${trimmedThreadId}` : `stream:${trimmedId}`;
+        return undefined;
       },
     } as Record<string, unknown>),
     targetResolver: {

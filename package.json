@@ -58,7 +58,8 @@
     },
     "install": {
       "npmSpec": "openclaw-channel-zulip",
-      "defaultChoice": "npm"
+      "defaultChoice": "npm",
+      "minHostVersion": ">=2026.4.14"
     }
   }
 }

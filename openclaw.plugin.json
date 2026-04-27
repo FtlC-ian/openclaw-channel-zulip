@@ -1,10 +1,172 @@
 {
   "id": "zulip",
   "channels": ["zulip"],
+  "channelEnvVars": {
+    "zulip": ["ZULIP_API_KEY", "ZULIP_EMAIL", "ZULIP_URL", "ZULIP_SITE", "ZULIP_REALM"]
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
     "properties": {}
+  },
+  "channelConfigs": {
+    "zulip": {
+      "schema": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "name": { "type": "string" },
+          "capabilities": { "type": "array", "items": { "type": "string" } },
+          "markdown": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "tables": { "type": "string", "enum": ["native", "codeblock", "disabled"] }
+            }
+          },
+          "enabled": { "type": "boolean" },
+          "configWrites": { "type": "boolean" },
+          "enableAdminActions": { "type": "boolean" },
+          "url": { "type": "string" },
+          "site": { "type": "string" },
+          "realm": { "type": "string" },
+          "email": { "type": "string" },
+          "apiKey": { "type": "string" },
+          "streams": { "type": "array", "items": { "type": "string" } },
+          "defaultTopic": { "type": "string" },
+          "chatmode": { "type": "string", "enum": ["oncall", "onmessage", "onchar"] },
+          "oncharPrefixes": { "type": "array", "items": { "type": "string" } },
+          "requireMention": { "type": "boolean" },
+          "dmPolicy": { "type": "string", "enum": ["pairing", "allowlist", "open", "disabled"] },
+          "allowFrom": { "type": "array", "items": { "anyOf": [{ "type": "string" }, { "type": "number" }] } },
+          "groupAllowFrom": { "type": "array", "items": { "anyOf": [{ "type": "string" }, { "type": "number" }] } },
+          "groupPolicy": { "type": "string", "enum": ["open", "disabled", "allowlist"] },
+          "mediaMaxMb": { "type": "integer", "minimum": 1 },
+          "reactions": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "enabled": { "type": "boolean" },
+              "clearOnFinish": { "type": "boolean" },
+              "onStart": { "type": "string" },
+              "onSuccess": { "type": "string" },
+              "onError": { "type": "string" }
+            }
+          },
+          "textChunkLimit": { "type": "integer", "minimum": 1 },
+          "chunkMode": { "type": "string", "enum": ["length", "newline"] },
+          "blockStreaming": { "type": "boolean" },
+          "blockStreamingCoalesce": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "minChars": { "type": "integer", "minimum": 1 },
+              "maxChars": { "type": "integer", "minimum": 1 },
+              "idleMs": { "type": "integer", "minimum": 0 }
+            }
+          },
+          "responsePrefix": { "type": "string" },
+          "accounts": {
+            "type": "object",
+            "additionalProperties": { "$ref": "#/$defs/zulipAccount" }
+          },
+          "defaultAccount": { "type": "string" }
+        },
+        "$defs": {
+          "zulipAccount": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "name": { "type": "string" },
+              "capabilities": { "type": "array", "items": { "type": "string" } },
+              "markdown": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "tables": { "type": "string", "enum": ["native", "codeblock", "disabled"] }
+                }
+              },
+              "enabled": { "type": "boolean" },
+              "configWrites": { "type": "boolean" },
+              "enableAdminActions": { "type": "boolean" },
+              "url": { "type": "string" },
+              "site": { "type": "string" },
+              "realm": { "type": "string" },
+              "email": { "type": "string" },
+              "apiKey": { "type": "string" },
+              "streams": { "type": "array", "items": { "type": "string" } },
+              "defaultTopic": { "type": "string" },
+              "chatmode": { "type": "string", "enum": ["oncall", "onmessage", "onchar"] },
+              "oncharPrefixes": { "type": "array", "items": { "type": "string" } },
+              "requireMention": { "type": "boolean" },
+              "dmPolicy": { "type": "string", "enum": ["pairing", "allowlist", "open", "disabled"] },
+              "allowFrom": { "type": "array", "items": { "anyOf": [{ "type": "string" }, { "type": "number" }] } },
+              "groupAllowFrom": { "type": "array", "items": { "anyOf": [{ "type": "string" }, { "type": "number" }] } },
+              "groupPolicy": { "type": "string", "enum": ["open", "disabled", "allowlist"] },
+              "mediaMaxMb": { "type": "integer", "minimum": 1 },
+              "reactions": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "enabled": { "type": "boolean" },
+                  "clearOnFinish": { "type": "boolean" },
+                  "onStart": { "type": "string" },
+                  "onSuccess": { "type": "string" },
+                  "onError": { "type": "string" }
+                }
+              },
+              "textChunkLimit": { "type": "integer", "minimum": 1 },
+              "chunkMode": { "type": "string", "enum": ["length", "newline"] },
+              "blockStreaming": { "type": "boolean" },
+              "blockStreamingCoalesce": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "minChars": { "type": "integer", "minimum": 1 },
+                  "maxChars": { "type": "integer", "minimum": 1 },
+                  "idleMs": { "type": "integer", "minimum": 0 }
+                }
+              },
+              "responsePrefix": { "type": "string" }
+            }
+          }
+        }
+      },
+      "uiHints": {
+        "url": {
+          "label": "Zulip Server URL",
+          "placeholder": "https://your-org.zulipchat.com"
+        },
+        "email": {
+          "label": "Bot Email",
+          "placeholder": "bot@your-org.zulipchat.com"
+        },
+        "apiKey": {
+          "label": "API Key",
+          "sensitive": true
+        },
+        "streams": {
+          "label": "Streams to Monitor",
+          "placeholder": "[\"general\", \"random\"]"
+        },
+        "defaultTopic": {
+          "label": "Default Topic",
+          "placeholder": "general chat"
+        },
+        "dmPolicy": {
+          "label": "DM Policy"
+        },
+        "groupPolicy": {
+          "label": "Group Policy"
+        },
+        "requireMention": {
+          "label": "Require @mention in Streams"
+        },
+        "reactions.enabled": {
+          "label": "Reaction Indicators"
+        }
+      }
+    }
   },
   "uiHints": {
     "url": {

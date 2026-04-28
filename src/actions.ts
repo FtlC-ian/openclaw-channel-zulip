@@ -428,7 +428,7 @@ export const zulipMessageActions: ChannelMessageActionAdapter = {
     // actions.add("user-reactivate" as ChannelMessageActionName);
     // actions.add("org-settings" as ChannelMessageActionName);
     // actions.add("org-settings-edit" as ChannelMessageActionName);
-    return { actions: Array.from(actions), capabilities: ["interactive"] };
+    return { actions: Array.from(actions) };
   },
   extractToolSend: ({ args }) => {
     const action = typeof args.action === "string" ? args.action.trim() : "";

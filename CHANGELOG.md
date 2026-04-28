@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026.4.26
+
+### Compatibility
+- **OpenClaw 2026.4.26 compatibility**: Raise package and host metadata to target OpenClaw `2026.4.26`.
+- **Runtime store alignment**: Replace the Zulip runtime module singleton with the SDK `createPluginRuntimeStore(...)` helper while preserving the existing initialization error.
+
 ## 2026.4.14
 
 ### Features

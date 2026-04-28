@@ -19,9 +19,11 @@ import { looksLikeZulipTargetId, normalizeZulipMessagingTarget } from "./normali
 import { getZulipRuntime } from "./runtime.js";
 import type { ZulipAccountConfig, ZulipConfig } from "./types.js";
 import {
+  isZulipAccountConfigured,
   listZulipAccountIds,
   resolveDefaultZulipAccountId,
   resolveZulipAccount,
+  resolveZulipRuntimeAccount,
   type ResolvedZulipAccount,
 } from "./zulip/accounts.js";
 import { zulipApprovalAuth } from "./approval-auth.js";
@@ -30,6 +32,7 @@ import { monitorZulipProvider } from "./zulip/monitor.js";
 import { probeZulip } from "./zulip/probe.js";
 import { sendMessageZulip } from "./zulip/send.js";
 import { resolveZulipSessionConversation } from "./session-conversation.js";
+import { zulipSecrets } from "./secret-contract.js";
 
 const meta = {
   id: "zulip",
@@ -88,6 +91,7 @@ export const zulipPlugin = {
   },
   reload: { configPrefixes: ["channels.zulip"] },
   configSchema: buildChannelConfigSchema(ZulipConfigSchema),
+  secrets: zulipSecrets,
   config: {
     listAccountIds: (cfg) => listZulipAccountIds(cfg),
     resolveAccount: (cfg, accountId) => resolveZulipAccount({ cfg, accountId }),
@@ -107,15 +111,16 @@ export const zulipPlugin = {
         accountId,
         clearBaseFields: ["apiKey", "email", "url", "name"] as const,
       }),
-    isConfigured: (account) => Boolean(account.apiKey && account.email && account.baseUrl),
+    isConfigured: (account) => isZulipAccountConfigured(account),
     describeAccount: (account) => ({
       accountId: account.accountId,
       name: account.name,
       enabled: account.enabled,
-      configured: Boolean(account.apiKey && account.email && account.baseUrl),
+      configured: isZulipAccountConfigured(account),
       // tokenSource for OpenClaw status display (maps apiKey → token)
       tokenSource: account.apiKeySource,
       apiKeySource: account.apiKeySource,
+      ...(account.apiKeyRef ? { apiKeyRef: `${account.apiKeyRef.source}:${account.apiKeyRef.provider}:${account.apiKeyRef.id}` } : {}),
       emailSource: account.emailSource,
       baseUrl: account.baseUrl,
     }),
@@ -284,10 +289,11 @@ export const zulipPlugin = {
         lastProbeAt: zulipSnapshot.lastProbeAt ?? null,
       };
     },
-    probeAccount: async ({ account, timeoutMs }) => {
-      const apiKey = account.apiKey?.trim();
-      const email = account.email?.trim();
-      const baseUrl = account.baseUrl?.trim();
+    probeAccount: async ({ account, timeoutMs, cfg }) => {
+      const runtimeAccount = await resolveZulipRuntimeAccount({ cfg, accountId: account.accountId });
+      const apiKey = runtimeAccount.apiKey?.trim();
+      const email = runtimeAccount.email?.trim();
+      const baseUrl = runtimeAccount.baseUrl?.trim();
       if (!apiKey || !email || !baseUrl) {
         return { ok: false, error: "apiKey, email, or url missing" };
       }
@@ -298,11 +304,11 @@ export const zulipPlugin = {
         accountId: account.accountId,
         name: account.name,
         enabled: account.enabled,
-        configured: Boolean(account.apiKey && account.email && account.baseUrl),
+        configured: isZulipAccountConfigured(account),
         // Expose token/tokenSource for status display (maps to apiKey)
-        token: account.apiKey,
         tokenSource: account.apiKeySource,
         apiKeySource: account.apiKeySource,
+        ...(account.apiKeyRef ? { apiKeyRef: `${account.apiKeyRef.source}:${account.apiKeyRef.provider}:${account.apiKeyRef.id}` } : {}),
         emailSource: account.emailSource,
         baseUrl: account.baseUrl,
         running: runtime?.running ?? false,
@@ -405,7 +411,7 @@ export const zulipPlugin = {
   },
   gateway: {
     startAccount: async (ctx) => {
-      const account = ctx.account;
+      const account = await resolveZulipRuntimeAccount({ cfg: ctx.cfg, accountId: ctx.account.accountId });
       ctx.setStatus({
         accountId: account.accountId,
         baseUrl: account.baseUrl,
@@ -414,7 +420,6 @@ export const zulipPlugin = {
       } as ChannelAccountSnapshot);
       ctx.log?.info(`[${account.accountId}] starting channel`);
       return monitorZulipProvider({
-        apiKey: account.apiKey ?? undefined,
         email: account.email ?? undefined,
         baseUrl: account.baseUrl ?? undefined,
         accountId: account.accountId,

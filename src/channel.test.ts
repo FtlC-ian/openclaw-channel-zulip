@@ -3,6 +3,8 @@ import { createReplyPrefixOptions } from "openclaw/plugin-sdk/channel-runtime";
 import { describe, expect, it } from "vitest";
 import { zulipPlugin } from "./channel.js";
 import { resolveZulipSessionConversation } from "./session-conversation.js";
+import { zulipMessageActions } from "./actions.js";
+import { zulipOnboardingAdapter } from "./onboarding.js";
 import { resolveZulipAccount } from "./zulip/accounts.js";
 
 describe("zulipPlugin", () => {
@@ -131,6 +133,27 @@ describe("zulipPlugin", () => {
 
       const account = resolveZulipAccount({ cfg, accountId: "default" });
       expect(account.baseUrl).toBe("https://base-site.example.com");
+    });
+
+    it("treats SecretRef-backed apiKeys as configured in inspect-mode surfaces", async () => {
+      const cfg: OpenClawConfig = {
+        channels: {
+          zulip: {
+            apiKey: { source: "env", provider: "default", id: "ZULIP_API_KEY" },
+            email: "bot@example.test",
+            url: "https://zulip.example.test",
+          },
+        },
+      };
+      const account = resolveZulipAccount({ cfg });
+
+      expect(account.apiKey).toBeUndefined();
+      expect(account.apiKeySource).toBe("secretRef");
+      expect(zulipPlugin.config.isConfigured?.(account)).toBe(true);
+      expect(zulipPlugin.config.describeAccount?.(account)).toMatchObject({ configured: true });
+      expect(zulipPlugin.status.buildAccountSnapshot({ account, runtime: undefined, probe: undefined })).toMatchObject({ configured: true });
+      expect(zulipMessageActions.describeMessageTool({ cfg }).actions).toContain("send");
+      await expect(zulipOnboardingAdapter.getStatus({ cfg })).resolves.toMatchObject({ configured: true });
     });
 
     it("restricts approvals to normalized allowFrom identities when configured", () => {

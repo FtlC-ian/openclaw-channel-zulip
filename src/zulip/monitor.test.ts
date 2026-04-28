@@ -126,7 +126,7 @@ vi.mock("./client.js", () => ({
 }));
 
 vi.mock("./accounts.js", () => ({
-  resolveZulipAccount: vi.fn(() => state.account),
+  resolveZulipRuntimeAccount: vi.fn(async () => state.account),
 }));
 
 vi.mock("./send.js", () => ({

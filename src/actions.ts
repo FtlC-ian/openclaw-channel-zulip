@@ -4,7 +4,11 @@ import type {
   OpenClawConfig,
 } from "./sdk.js";
 import { jsonResult, readNumberParam, readStringParam } from "./sdk.js";
-import { resolveZulipAccount } from "./zulip/accounts.js";
+import {
+  isZulipAccountConfigured,
+  resolveZulipAccount,
+  resolveZulipRuntimeAccount,
+} from "./zulip/accounts.js";
 import {
   addZulipReaction,
   createZulipClient,
@@ -55,8 +59,8 @@ type SendTarget =
   | { kind: "stream"; stream: string; topic: string }
   | { kind: "user"; email: string };
 
-function resolveZulipClient(cfg: OpenClawConfig, accountId?: string | null) {
-  const account = resolveZulipAccount({ cfg, accountId });
+async function resolveZulipClient(cfg: OpenClawConfig, accountId?: string | null) {
+  const account = await resolveZulipRuntimeAccount({ cfg, accountId });
   const apiKey = account.apiKey?.trim();
   const email = account.email?.trim();
   if (!apiKey || !email) {
@@ -397,7 +401,7 @@ function readRealmUpdateParams(
 export const zulipMessageActions: ChannelMessageActionAdapter = {
   describeMessageTool: ({ cfg }) => {
     const accounts = [resolveZulipAccount({ cfg })].filter((account) =>
-      Boolean(account.apiKey && account.email && account.baseUrl),
+      isZulipAccountConfigured(account),
     );
     if (accounts.length === 0) {
       return { actions: [] };
@@ -443,7 +447,7 @@ export const zulipMessageActions: ChannelMessageActionAdapter = {
     return { to, accountId };
   },
   handleAction: async ({ action, params, cfg, accountId, toolContext }) => {
-    const { client, account } = resolveZulipClient(cfg, accountId ?? undefined);
+    const { client, account } = await resolveZulipClient(cfg, accountId ?? undefined);
 
     if (action === "send") {
       const to = readStringParam(params, "to", { required: true });

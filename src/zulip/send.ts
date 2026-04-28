@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { resolvePreferredOpenClawTmpDir } from "../sdk.js";
 import type { InteractiveReply } from "../sdk.js";
 import { getZulipRuntime } from "../runtime.js";
-import { resolveZulipAccount } from "./accounts.js";
+import { resolveZulipRuntimeAccount } from "./accounts.js";
 import {
   createZulipClient,
   normalizeZulipBaseUrl,
@@ -254,7 +254,7 @@ export async function sendMessageZulip(
   const core = getCore();
   const logger = core.logging.getChildLogger({ module: "zulip" });
   const cfg = core.config.loadConfig();
-  const account = resolveZulipAccount({
+  const account = await resolveZulipRuntimeAccount({
     cfg,
     accountId: opts.accountId,
   });

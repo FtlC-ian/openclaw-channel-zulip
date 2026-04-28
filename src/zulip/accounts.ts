@@ -2,10 +2,28 @@ import type { OpenClawConfig } from "../sdk.js";
 import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from "../sdk.js";
 import type { ZulipAccountConfig, ZulipChatMode, ZulipConfig } from "../types.js";
 import { normalizeZulipBaseUrl } from "./client.js";
+import {
+  coerceSecretRef,
+  normalizeSecretInputString,
+  resolveConfiguredSecretInputString,
+  resolveSecretInputString,
+  type SecretInput,
+} from "openclaw/plugin-sdk/secret-input-runtime";
+import type { SecretRef } from "openclaw/plugin-sdk/secret-ref-runtime";
 
-export type ZulipTokenSource = "env" | "config" | "none";
+export type ZulipTokenSource = "env" | "config" | "secretRef" | "none";
 export type ZulipEmailSource = "env" | "config" | "none";
 export type ZulipBaseUrlSource = "env" | "config" | "none";
+
+type ApiKeyResolution = {
+  apiKey?: string;
+  apiKeySource: ZulipTokenSource;
+  apiKeyRef?: SecretRef;
+};
+
+export function isZulipAccountConfigured(account: Pick<ResolvedZulipAccount, "apiKeySource" | "email" | "baseUrl">): boolean {
+  return account.apiKeySource !== "none" && Boolean(account.email && account.baseUrl);
+}
 
 export type ResolvedZulipAccount = {
   accountId: string;
@@ -15,11 +33,13 @@ export type ResolvedZulipAccount = {
   email?: string;
   baseUrl?: string;
   apiKeySource: ZulipTokenSource;
+  apiKeyRef?: SecretRef;
   emailSource: ZulipEmailSource;
   baseUrlSource: ZulipBaseUrlSource;
   // Aliases for OpenClaw status display (maps apiKey → token)
   token?: string;
   tokenSource: ZulipTokenSource;
+  tokenRef?: SecretRef;
   config: ZulipAccountConfig;
   enableAdminActions?: boolean;
   chatmode?: ZulipChatMode;
@@ -92,10 +112,65 @@ function resolveZulipRequireMention(config: ZulipAccountConfig): boolean | undef
   return config.requireMention;
 }
 
-export function resolveZulipAccount(params: {
+function formatSecretRefLabel(ref: SecretRef): string {
+  return `${ref.source}:${ref.provider}:${ref.id}`;
+}
+
+function resolveApiKeyForInspect(params: {
   cfg: OpenClawConfig;
-  accountId?: string | null;
-}): ResolvedZulipAccount {
+  value: SecretInput | undefined;
+  path: string;
+  allowEnvFallback: boolean;
+  env: NodeJS.ProcessEnv;
+}): ApiKeyResolution {
+  const resolved = resolveSecretInputString({
+    value: params.value,
+    path: params.path,
+    defaults: params.cfg.secrets?.defaults,
+    mode: "inspect",
+  });
+  if (resolved.status === "available") {
+    return { apiKey: resolved.value, apiKeySource: "config" };
+  }
+  if (resolved.status === "configured_unavailable") {
+    return { apiKeySource: "secretRef", apiKeyRef: resolved.ref };
+  }
+  const envApiKey = params.allowEnvFallback ? params.env.ZULIP_API_KEY?.trim() : undefined;
+  return { apiKey: envApiKey, apiKeySource: envApiKey ? "env" : "none" };
+}
+
+async function resolveApiKeyForRuntime(params: {
+  cfg: OpenClawConfig;
+  value: SecretInput | undefined;
+  path: string;
+  allowEnvFallback: boolean;
+  env: NodeJS.ProcessEnv;
+}): Promise<ApiKeyResolution> {
+  const envApiKey = params.allowEnvFallback ? params.env.ZULIP_API_KEY?.trim() : undefined;
+  if (params.value !== undefined) {
+    const ref = coerceSecretRef(params.value, params.cfg.secrets?.defaults);
+    if (!ref) {
+      const value = normalizeSecretInputString(params.value);
+      return value
+        ? { apiKey: value, apiKeySource: "config" }
+        : { apiKey: envApiKey, apiKeySource: envApiKey ? "env" : "none" };
+    }
+    const resolved = await resolveConfiguredSecretInputString({
+      config: params.cfg,
+      env: params.env,
+      value: params.value,
+      path: params.path,
+      unresolvedReasonStyle: "detailed",
+    });
+    if (!resolved.value) {
+      throw new Error(resolved.unresolvedRefReason ?? `${params.path}: unresolved SecretRef "${formatSecretRefLabel(ref)}".`);
+    }
+    return { apiKey: resolved.value, apiKeySource: "secretRef", apiKeyRef: ref };
+  }
+  return { apiKey: envApiKey, apiKeySource: envApiKey ? "env" : "none" };
+}
+
+function resolveMergedConfig(params: { cfg: OpenClawConfig; accountId?: string | null }) {
   const accountId = normalizeAccountId(params.accountId);
   const zulipSection = resolveZulipSection(params.cfg);
   const baseEnabled = zulipSection?.enabled !== false;
@@ -104,14 +179,29 @@ export function resolveZulipAccount(params: {
   const merged = { ...baseConfig, ...accountConfig };
   const accountEnabled = merged.enabled !== false;
   const enabled = baseEnabled && accountEnabled;
+  const hasAccountApiKey = Object.prototype.hasOwnProperty.call(accountConfig, "apiKey");
+  const hasBaseApiKey = Object.prototype.hasOwnProperty.call(baseConfig, "apiKey");
+  const apiKeyPath = hasAccountApiKey
+    ? `channels.zulip.accounts.${accountId}.apiKey`
+    : "channels.zulip.apiKey";
+  const rawApiKey = merged.apiKey;
+  const hasConfiguredApiKey = typeof rawApiKey === "string" ? rawApiKey.trim().length > 0 : rawApiKey !== undefined;
+  return { accountId, baseConfig, accountConfig, merged, enabled, apiKeyPath, hasConfiguredApiKey };
+}
 
+function buildResolvedAccount(params: {
+  cfg: OpenClawConfig;
+  accountId?: string | null;
+  apiKeyResolution: ApiKeyResolution;
+  env?: NodeJS.ProcessEnv;
+}): ResolvedZulipAccount {
+  const { accountId, baseConfig, accountConfig, merged, enabled } = resolveMergedConfig(params);
+  const env = params.env ?? process.env;
   const allowEnv = accountId === DEFAULT_ACCOUNT_ID;
-  const envApiKey = allowEnv ? process.env.ZULIP_API_KEY?.trim() : undefined;
-  const envEmail = allowEnv ? process.env.ZULIP_EMAIL?.trim() : undefined;
-  const envUrl = allowEnv ? process.env.ZULIP_URL?.trim() : undefined;
-  const envSite = allowEnv ? process.env.ZULIP_SITE?.trim() : undefined;
-  const envRealm = allowEnv ? process.env.ZULIP_REALM?.trim() : undefined;
-  const configApiKey = merged.apiKey?.trim();
+  const envEmail = allowEnv ? env.ZULIP_EMAIL?.trim() : undefined;
+  const envUrl = allowEnv ? env.ZULIP_URL?.trim() : undefined;
+  const envSite = allowEnv ? env.ZULIP_SITE?.trim() : undefined;
+  const envRealm = allowEnv ? env.ZULIP_REALM?.trim() : undefined;
   const configEmail = merged.email?.trim();
   const configUrl =
     accountConfig.url ??
@@ -121,12 +211,9 @@ export function resolveZulipAccount(params: {
     baseConfig.site ??
     baseConfig.realm;
   const configUrlTrimmed = configUrl?.trim();
-  const apiKey = configApiKey || envApiKey;
   const email = configEmail || envEmail;
   const baseUrl = normalizeZulipBaseUrl(configUrlTrimmed || envUrl || envSite || envRealm);
   const requireMention = resolveZulipRequireMention(merged);
-
-  const apiKeySource: ZulipTokenSource = configApiKey ? "config" : envApiKey ? "env" : "none";
   const emailSource: ZulipEmailSource = configEmail ? "config" : envEmail ? "env" : "none";
   const baseUrlSource: ZulipBaseUrlSource = configUrlTrimmed
     ? "config"
@@ -138,15 +225,16 @@ export function resolveZulipAccount(params: {
     accountId,
     enabled,
     name: merged.name?.trim() || undefined,
-    apiKey,
+    apiKey: params.apiKeyResolution.apiKey,
     email,
     baseUrl,
-    apiKeySource,
+    apiKeySource: params.apiKeyResolution.apiKeySource,
+    apiKeyRef: params.apiKeyResolution.apiKeyRef,
     emailSource,
     baseUrlSource,
-    // Expose token/tokenSource aliases for OpenClaw status display
-    token: apiKey,
-    tokenSource: apiKeySource,
+    // Expose source/ref aliases for OpenClaw status display without leaking the secret value.
+    tokenSource: params.apiKeyResolution.apiKeySource,
+    tokenRef: params.apiKeyResolution.apiKeyRef,
     config: merged,
     enableAdminActions: merged.enableAdminActions,
     chatmode: merged.chatmode,
@@ -157,6 +245,46 @@ export function resolveZulipAccount(params: {
     blockStreamingCoalesce: merged.blockStreamingCoalesce,
     streams: merged.streams,
   };
+}
+
+export function resolveZulipAccount(params: {
+  cfg: OpenClawConfig;
+  accountId?: string | null;
+  env?: NodeJS.ProcessEnv;
+}): ResolvedZulipAccount {
+  const merged = resolveMergedConfig(params);
+  return buildResolvedAccount({
+    cfg: params.cfg,
+    accountId: params.accountId,
+    env: params.env,
+    apiKeyResolution: resolveApiKeyForInspect({
+      cfg: params.cfg,
+      value: merged.merged.apiKey,
+      path: merged.apiKeyPath,
+      allowEnvFallback: merged.accountId === DEFAULT_ACCOUNT_ID && !merged.hasConfiguredApiKey,
+      env: params.env ?? process.env,
+    }),
+  });
+}
+
+export async function resolveZulipRuntimeAccount(params: {
+  cfg: OpenClawConfig;
+  accountId?: string | null;
+  env?: NodeJS.ProcessEnv;
+}): Promise<ResolvedZulipAccount> {
+  const merged = resolveMergedConfig(params);
+  return buildResolvedAccount({
+    cfg: params.cfg,
+    accountId: params.accountId,
+    env: params.env,
+    apiKeyResolution: await resolveApiKeyForRuntime({
+      cfg: params.cfg,
+      value: merged.merged.apiKey,
+      path: merged.apiKeyPath,
+      allowEnvFallback: merged.accountId === DEFAULT_ACCOUNT_ID && !merged.hasConfiguredApiKey,
+      env: params.env ?? process.env,
+    }),
+  });
 }
 
 export function listEnabledZulipAccounts(cfg: OpenClawConfig): ResolvedZulipAccount[] {

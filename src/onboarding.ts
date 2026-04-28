@@ -3,6 +3,7 @@ import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from "./sdk.js";
 import { promptAccountId } from "./onboarding-helpers.js";
 import type { ZulipAccountConfig, ZulipConfig } from "./types.js";
 import {
+  isZulipAccountConfigured,
   listZulipAccountIds,
   resolveDefaultZulipAccountId,
   resolveZulipAccount,
@@ -28,7 +29,7 @@ export const zulipOnboardingAdapter: ChannelSetupWizardAdapter = {
   getStatus: async ({ cfg }) => {
     const configured = listZulipAccountIds(cfg).some((accountId) => {
       const account = resolveZulipAccount({ cfg, accountId });
-      return Boolean(account.apiKey && account.email && account.baseUrl);
+      return isZulipAccountConfigured(account);
     });
     return {
       channel,
@@ -58,9 +59,7 @@ export const zulipOnboardingAdapter: ChannelSetupWizardAdapter = {
       cfg: next,
       accountId,
     });
-    const accountConfigured = Boolean(
-      resolvedAccount.apiKey && resolvedAccount.email && resolvedAccount.baseUrl,
-    );
+    const accountConfigured = isZulipAccountConfigured(resolvedAccount);
     const allowEnv = accountId === DEFAULT_ACCOUNT_ID;
     const canUseEnv =
       allowEnv &&

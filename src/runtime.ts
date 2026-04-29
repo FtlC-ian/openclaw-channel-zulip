@@ -1,14 +1,16 @@
+import { createPluginRuntimeStore } from "openclaw/plugin-sdk/runtime-store";
+
 import type { PluginRuntime } from "./sdk.js";
 
-let runtime: PluginRuntime | null = null;
+const zulipRuntimeStore = createPluginRuntimeStore<PluginRuntime>({
+  pluginId: "zulip",
+  errorMessage: "Zulip runtime not initialized",
+});
 
 export function setZulipRuntime(next: PluginRuntime) {
-  runtime = next;
+  zulipRuntimeStore.setRuntime(next);
 }
 
 export function getZulipRuntime(): PluginRuntime {
-  if (!runtime) {
-    throw new Error("Zulip runtime not initialized");
-  }
-  return runtime;
+  return zulipRuntimeStore.getRuntime();
 }

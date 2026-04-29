@@ -3,8 +3,9 @@ import fsPromises from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolvePreferredOpenClawTmpDir } from "../sdk.js";
+import type { InteractiveReply } from "../sdk.js";
 import { getZulipRuntime } from "../runtime.js";
-import { resolveZulipAccount } from "./accounts.js";
+import { resolveZulipRuntimeAccount } from "./accounts.js";
 import {
   createZulipClient,
   normalizeZulipBaseUrl,
@@ -13,22 +14,7 @@ import {
   uploadZulipFile,
 } from "./client.js";
 
-type InteractiveButton = {
-  label: string;
-  value: string;
-  style?: "primary" | "secondary" | "success" | "danger";
-};
-
-type InteractiveBlock = {
-  type: "text" | "buttons" | "select";
-  text?: string;
-  buttons?: InteractiveButton[];
-};
-
-type InteractivePayload = {
-  blocks?: InteractiveBlock[];
-};
-
+type InteractivePayload = InteractiveReply;
 type ZulipChannelData = {
   zulip?: {
     widgetContent?: unknown;
@@ -268,7 +254,7 @@ export async function sendMessageZulip(
   const core = getCore();
   const logger = core.logging.getChildLogger({ module: "zulip" });
   const cfg = core.config.loadConfig();
-  const account = resolveZulipAccount({
+  const account = await resolveZulipRuntimeAccount({
     cfg,
     accountId: opts.accountId,
   });

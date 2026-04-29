@@ -14,6 +14,80 @@
       "schema": {
         "type": "object",
         "additionalProperties": true,
+        "$defs": {
+          "secretRef": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "source": { "type": "string", "enum": ["env", "file", "exec"] },
+              "provider": { "type": "string" },
+              "id": { "type": "string" }
+            },
+            "required": ["source", "provider", "id"]
+          },
+          "secretInput": {
+            "anyOf": [{ "type": "string" }, { "$ref": "#/$defs/secretRef" }]
+          },
+          "zulipAccount": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "name": { "type": "string" },
+              "capabilities": { "type": "array", "items": { "type": "string" } },
+              "markdown": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "tables": { "type": "string", "enum": ["native", "codeblock", "disabled"] }
+                }
+              },
+              "enabled": { "type": "boolean" },
+              "configWrites": { "type": "boolean" },
+              "enableAdminActions": { "type": "boolean" },
+              "url": { "type": "string" },
+              "site": { "type": "string" },
+              "realm": { "type": "string" },
+              "email": { "type": "string" },
+              "apiKey": { "$ref": "#/$defs/secretInput" },
+              "streams": { "type": "array", "items": { "type": "string" } },
+              "defaultTopic": { "type": "string" },
+              "chatmode": { "type": "string", "enum": ["oncall", "onmessage", "onchar"] },
+              "oncharPrefixes": { "type": "array", "items": { "type": "string" } },
+              "requireMention": { "type": "boolean" },
+              "dmPolicy": { "type": "string", "enum": ["pairing", "allowlist", "open", "disabled"] },
+              "allowFrom": { "type": "array", "items": { "anyOf": [{ "type": "string" }, { "type": "number" }] } },
+              "groupAllowFrom": { "type": "array", "items": { "anyOf": [{ "type": "string" }, { "type": "number" }] } },
+              "groupPolicy": { "type": "string", "enum": ["open", "disabled", "allowlist"] },
+              "mediaMaxMb": { "type": "integer", "minimum": 1 },
+              "reactions": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "enabled": { "type": "boolean" },
+                  "clearOnFinish": { "type": "boolean" },
+                  "onStart": { "type": "string" },
+                  "onSuccess": { "type": "string" },
+                  "onError": { "type": "string" }
+                }
+              },
+              "textChunkLimit": { "type": "integer", "minimum": 1 },
+              "chunkMode": { "type": "string", "enum": ["length", "newline"] },
+              "blockStreaming": {
+                "type": "boolean"
+              },
+              "blockStreamingCoalesce": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "minChars": { "type": "integer", "minimum": 1 },
+                  "maxChars": { "type": "integer", "minimum": 1 },
+                  "idleMs": { "type": "integer", "minimum": 0 }
+                }
+              },
+              "responsePrefix": { "type": "string" }
+            }
+          }
+        },
         "properties": {
           "name": { "type": "string" },
           "capabilities": { "type": "array", "items": { "type": "string" } },
@@ -31,7 +105,7 @@
           "site": { "type": "string" },
           "realm": { "type": "string" },
           "email": { "type": "string" },
-          "apiKey": { "type": "string" },
+          "apiKey": { "$ref": "#/$defs/secretInput" },
           "streams": { "type": "array", "items": { "type": "string" } },
           "defaultTopic": { "type": "string" },
           "chatmode": { "type": "string", "enum": ["oncall", "onmessage", "onchar"] },
@@ -71,65 +145,6 @@
             "additionalProperties": { "$ref": "#/$defs/zulipAccount" }
           },
           "defaultAccount": { "type": "string" }
-        },
-        "$defs": {
-          "zulipAccount": {
-            "type": "object",
-            "additionalProperties": true,
-            "properties": {
-              "name": { "type": "string" },
-              "capabilities": { "type": "array", "items": { "type": "string" } },
-              "markdown": {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                  "tables": { "type": "string", "enum": ["native", "codeblock", "disabled"] }
-                }
-              },
-              "enabled": { "type": "boolean" },
-              "configWrites": { "type": "boolean" },
-              "enableAdminActions": { "type": "boolean" },
-              "url": { "type": "string" },
-              "site": { "type": "string" },
-              "realm": { "type": "string" },
-              "email": { "type": "string" },
-              "apiKey": { "type": "string" },
-              "streams": { "type": "array", "items": { "type": "string" } },
-              "defaultTopic": { "type": "string" },
-              "chatmode": { "type": "string", "enum": ["oncall", "onmessage", "onchar"] },
-              "oncharPrefixes": { "type": "array", "items": { "type": "string" } },
-              "requireMention": { "type": "boolean" },
-              "dmPolicy": { "type": "string", "enum": ["pairing", "allowlist", "open", "disabled"] },
-              "allowFrom": { "type": "array", "items": { "anyOf": [{ "type": "string" }, { "type": "number" }] } },
-              "groupAllowFrom": { "type": "array", "items": { "anyOf": [{ "type": "string" }, { "type": "number" }] } },
-              "groupPolicy": { "type": "string", "enum": ["open", "disabled", "allowlist"] },
-              "mediaMaxMb": { "type": "integer", "minimum": 1 },
-              "reactions": {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                  "enabled": { "type": "boolean" },
-                  "clearOnFinish": { "type": "boolean" },
-                  "onStart": { "type": "string" },
-                  "onSuccess": { "type": "string" },
-                  "onError": { "type": "string" }
-                }
-              },
-              "textChunkLimit": { "type": "integer", "minimum": 1 },
-              "chunkMode": { "type": "string", "enum": ["length", "newline"] },
-              "blockStreaming": { "type": "boolean" },
-              "blockStreamingCoalesce": {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                  "minChars": { "type": "integer", "minimum": 1 },
-                  "maxChars": { "type": "integer", "minimum": 1 },
-                  "idleMs": { "type": "integer", "minimum": 0 }
-                }
-              },
-              "responsePrefix": { "type": "string" }
-            }
-          }
         }
       },
       "uiHints": {

@@ -4,7 +4,11 @@ import type {
   OpenClawConfig,
 } from "./sdk.js";
 import { jsonResult, readNumberParam, readStringParam } from "./sdk.js";
-import { resolveZulipAccount } from "./zulip/accounts.js";
+import {
+  isZulipAccountConfigured,
+  resolveZulipAccount,
+  resolveZulipRuntimeAccount,
+} from "./zulip/accounts.js";
 import {
   addZulipReaction,
   createZulipClient,
@@ -55,8 +59,8 @@ type SendTarget =
   | { kind: "stream"; stream: string; topic: string }
   | { kind: "user"; email: string };
 
-function resolveZulipClient(cfg: OpenClawConfig, accountId?: string | null) {
-  const account = resolveZulipAccount({ cfg, accountId });
+async function resolveZulipClient(cfg: OpenClawConfig, accountId?: string | null) {
+  const account = await resolveZulipRuntimeAccount({ cfg, accountId });
   const apiKey = account.apiKey?.trim();
   const email = account.email?.trim();
   if (!apiKey || !email) {
@@ -89,7 +93,7 @@ async function requireZulipAdmin(client: ReturnType<typeof createZulipClient>): 
   }
 }
 
-function splitStreamTarget(raw: string): StreamTarget {
+export function splitStreamTarget(raw: string): StreamTarget {
   const trimmed = raw.trim();
   if (!trimmed) {
     throw new Error("Stream is required for Zulip channel actions.");
@@ -114,7 +118,7 @@ function splitStreamTarget(raw: string): StreamTarget {
     stream = candidate.slice(0, topicMatch.index).trim();
     topic = topicMatch[1].trim();
   } else {
-    const sepIndex = candidate.search(/[\/#]/);
+    const sepIndex = lower.startsWith("stream:") ? candidate.indexOf(":") : candidate.search(/[:\/#]/);
     if (sepIndex > -1) {
       stream = candidate.slice(0, sepIndex).trim();
       topic = candidate.slice(sepIndex + 1).trim();
@@ -397,7 +401,7 @@ function readRealmUpdateParams(
 export const zulipMessageActions: ChannelMessageActionAdapter = {
   describeMessageTool: ({ cfg }) => {
     const accounts = [resolveZulipAccount({ cfg })].filter((account) =>
-      Boolean(account.apiKey && account.email && account.baseUrl),
+      isZulipAccountConfigured(account),
     );
     if (accounts.length === 0) {
       return { actions: [] };
@@ -428,7 +432,7 @@ export const zulipMessageActions: ChannelMessageActionAdapter = {
     // actions.add("user-reactivate" as ChannelMessageActionName);
     // actions.add("org-settings" as ChannelMessageActionName);
     // actions.add("org-settings-edit" as ChannelMessageActionName);
-    return { actions: Array.from(actions), capabilities: ["interactive"] };
+    return { actions: Array.from(actions) };
   },
   extractToolSend: ({ args }) => {
     const action = typeof args.action === "string" ? args.action.trim() : "";
@@ -443,7 +447,7 @@ export const zulipMessageActions: ChannelMessageActionAdapter = {
     return { to, accountId };
   },
   handleAction: async ({ action, params, cfg, accountId, toolContext }) => {
-    const { client, account } = resolveZulipClient(cfg, accountId ?? undefined);
+    const { client, account } = await resolveZulipClient(cfg, accountId ?? undefined);
 
     if (action === "send") {
       const to = readStringParam(params, "to", { required: true });

@@ -44,6 +44,38 @@ describe("interactiveToZulipWidgetContent", () => {
     });
   });
 
+  it("skips URL-only or missing-value buttons", () => {
+    expect(
+      interactiveToZulipWidgetContent({
+        blocks: [
+          { type: "text", text: "Approval Request" },
+          {
+            type: "buttons",
+            buttons: [
+              { label: "Docs", url: "https://example.test/docs" },
+              { label: "Blank", value: "   " },
+              { label: "Allow Once", value: "/approve req-1 allow-once" },
+            ],
+          },
+        ],
+      }),
+    ).toEqual({
+      widget_type: "zform",
+      extra_data: {
+        type: "choices",
+        heading: "Approval Request",
+        choices: [
+          {
+            type: "multiple_choice",
+            short_name: "Allow Once",
+            long_name: "Allow Once",
+            reply: "/approve req-1 allow-once",
+          },
+        ],
+      },
+    });
+  });
+
   it("returns undefined when there are no buttons", () => {
     expect(interactiveToZulipWidgetContent({ blocks: [{ type: "text", text: "hi" }] })).toBeUndefined();
   });
@@ -112,7 +144,7 @@ vi.mock("../runtime.js", () => ({
 }));
 
 vi.mock("./accounts.js", () => ({
-  resolveZulipAccount: vi.fn(() => sendState.account),
+  resolveZulipRuntimeAccount: vi.fn(async () => sendState.account),
 }));
 
 vi.mock("./client.js", () => ({

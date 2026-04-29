@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026.4.26
+
+### Compatibility
+- **OpenClaw 2026.4.26 compatibility**: Raise package and host metadata to target OpenClaw `2026.4.26`.
+- **Runtime store alignment**: Replace the Zulip runtime module singleton with the SDK `createPluginRuntimeStore(...)` helper while preserving the existing initialization error.
+- **SecretRef API keys**: Allow Zulip `apiKey` fields to use OpenClaw SecretInput/SecretRef objects while preserving plain-string config and default-account environment fallback.
+
 ## 2026.4.14
 
 ### Features

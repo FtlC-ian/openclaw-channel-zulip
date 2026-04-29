@@ -24,7 +24,7 @@ import {
   type HistoryEntry,
 } from "../sdk.js";
 import { getZulipRuntime } from "../runtime.js";
-import { resolveZulipAccount } from "./accounts.js";
+import { resolveZulipRuntimeAccount } from "./accounts.js";
 import {
   createZulipClient,
   fetchZulipMe,
@@ -214,7 +214,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
   const core = getZulipRuntime();
   const cfg = opts.config ?? core.config.loadConfig();
   const runtime = resolveRuntime(opts);
-  const account = resolveZulipAccount({
+  const account = await resolveZulipRuntimeAccount({
     cfg,
     accountId: opts.accountId,
   });

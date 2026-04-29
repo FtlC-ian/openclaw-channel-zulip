@@ -1,4 +1,5 @@
 import type { DmPolicy, GroupPolicy } from "./sdk.js";
+import type { SecretInput } from "openclaw/plugin-sdk/secret-input";
 
 type BlockStreamingCoalesceConfig = {
   minChars?: number;
@@ -28,7 +29,7 @@ export type ZulipAccountConfig = {
   /** Zulip bot email address. */
   email?: string;
   /** Zulip API key for the bot. */
-  apiKey?: string;
+  apiKey?: SecretInput;
   /** Default topic for messages without a topic. Empty string = Zulip's "general chat". */
   defaultTopic?: string;
   /** Restrict monitored streams ("*" = all streams). */

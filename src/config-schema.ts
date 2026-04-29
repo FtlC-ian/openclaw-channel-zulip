@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { buildOptionalSecretInputSchema } from "openclaw/plugin-sdk/secret-input";
 
 // Inlined from openclaw/plugin-sdk to avoid module resolution issues
 // when installed via npm to ~/.openclaw/extensions/. These are stable
@@ -18,6 +19,8 @@ const BlockStreamingCoalesceSchema = z
   .strict();
 
 const MarkdownTableModeSchema = z.enum(["native", "codeblock", "disabled"]);
+
+const OptionalSecretInputSchema = buildOptionalSecretInputSchema();
 
 const MarkdownConfigSchema = z
   .object({
@@ -62,7 +65,7 @@ const ZulipAccountSchemaBase = z
     site: z.string().optional(),
     realm: z.string().optional(),
     email: z.string().optional(),
-    apiKey: z.string().optional(),
+    apiKey: OptionalSecretInputSchema,
     streams: z.array(z.string()).optional(),
     defaultTopic: z.string().optional(),
     chatmode: z.enum(["oncall", "onmessage", "onchar"]).optional(),

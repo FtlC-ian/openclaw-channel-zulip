@@ -90,6 +90,8 @@ Add the plugin id to `plugins.allow` in `~/.openclaw/openclaw.json`:
       "url": "https://your-org.zulipchat.com",
       "email": "yourbot@your-org.zulipchat.com",
       "apiKey": "your-zulip-api-key",
+      // Or store the API key in an OpenClaw SecretRef:
+      // "apiKey": { "source": "env", "provider": "zulip", "id": "ZULIP_API_KEY" },
 
       // Which streams to monitor ("*" = all)
       "streams": ["general", "bot-testing"],

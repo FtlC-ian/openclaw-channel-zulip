@@ -118,7 +118,7 @@ export function splitStreamTarget(raw: string): StreamTarget {
     stream = candidate.slice(0, topicMatch.index).trim();
     topic = topicMatch[1].trim();
   } else {
-    const sepIndex = lower.startsWith("stream:") ? candidate.indexOf(":") : candidate.search(/[\/#]/);
+    const sepIndex = lower.startsWith("stream:") ? candidate.indexOf(":") : candidate.search(/[:\/#]/);
     if (sepIndex > -1) {
       stream = candidate.slice(0, sepIndex).trim();
       topic = candidate.slice(sepIndex + 1).trim();

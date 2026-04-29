@@ -15,4 +15,11 @@ describe("splitStreamTarget", () => {
       topic: "Zulip Plugin PR",
     });
   });
+
+  it("parses core-inferred stream topic targets without the stream prefix", () => {
+    expect(splitStreamTarget("debbie:Zulip Plugin PR")).toEqual({
+      stream: "debbie",
+      topic: "Zulip Plugin PR",
+    });
+  });
 });

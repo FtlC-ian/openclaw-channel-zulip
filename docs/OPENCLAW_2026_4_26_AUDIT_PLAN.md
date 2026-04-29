@@ -104,8 +104,8 @@ Release notes deprecate direct plugin config load/write helpers in favor of pass
 
 Current real reads:
 
-- `src/zulip/send.ts` calls `core.config.loadConfig()`.
-- `src/zulip/monitor.ts` uses `opts.config ?? core.config.loadConfig()`.
+- ✅ `src/zulip/send.ts` now requires resolved runtime config via `ZulipSendOpts.cfg` instead of calling `core.config.loadConfig()`.
+- ✅ `src/zulip/monitor.ts` now requires `opts.config` and fails fast if a monitor starts without resolved runtime config.
 
 Plan:
 

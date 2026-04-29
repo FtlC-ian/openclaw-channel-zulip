@@ -34,6 +34,10 @@ export type ZulipAccountConfig = {
   defaultTopic?: string;
   /** Restrict monitored streams ("*" = all streams). */
   streams?: string[];
+  /** Restrict monitored stream topics globally ("*" or empty = all topics). Case-insensitive after trimming. */
+  topics?: string[];
+  /** Restrict monitored topics per stream name or stream id. Case-insensitive after trimming. */
+  streamTopics?: Record<string, string[]>;
   /**
    * Controls when channel messages trigger replies.
    * - "oncall": only respond when mentioned

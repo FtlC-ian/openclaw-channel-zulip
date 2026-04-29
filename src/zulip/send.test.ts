@@ -109,7 +109,7 @@ const sendState = vi.hoisted(() => {
   const sendZulipStreamMessage = vi.fn(async () => ({ id: 9002 }));
   return {
     runtime: {
-      config: { loadConfig: vi.fn(() => ({ channels: { zulip: {} } })) },
+      config: {},
       logging: {
         getChildLogger: () => ({ debug: vi.fn(), warn: vi.fn() }),
       },
@@ -158,7 +158,10 @@ vi.mock("./client.js", () => ({
 describe("sendMessageZulip target parsing hardening", () => {
   it("rejects malformed dm-like targets instead of silently auto-correcting", async () => {
     await expect(
-      sendMessageZulip("user:user:user8@zlp.pubnerd.app", "hello", { accountId: "default" }),
+      sendMessageZulip("user:user:user8@zlp.pubnerd.app", "hello", {
+        cfg: { channels: { zulip: {} } },
+        accountId: "default",
+      }),
     ).rejects.toThrow("Invalid Zulip direct-message target; expected an email address");
   });
 });

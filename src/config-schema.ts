@@ -67,6 +67,8 @@ const ZulipAccountSchemaBase = z
     email: z.string().optional(),
     apiKey: OptionalSecretInputSchema,
     streams: z.array(z.string()).optional(),
+    topics: z.array(z.string()).optional(),
+    streamTopics: z.record(z.string(), z.array(z.string())).optional(),
     defaultTopic: z.string().optional(),
     chatmode: z.enum(["oncall", "onmessage", "onchar"]).optional(),
     oncharPrefixes: z.array(z.string()).optional(),

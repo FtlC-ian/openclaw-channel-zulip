@@ -218,6 +218,11 @@ async function runMonitorOnce() {
 describe("monitorZulipProvider", () => {
   beforeEach(() => {
     state.core = state.createCore();
+    state.account.config = {
+      dmPolicy: "open",
+      groupPolicy: "open",
+      reactions: { enabled: false },
+    };
     state.pollResponses = [];
     state.abortController = undefined;
     registerZulipQueueMock.mockClear();
@@ -338,6 +343,83 @@ describe("monitorZulipProvider", () => {
         accountId: "default",
       },
     });
+  });
+
+  it("drops stream messages outside the configured global topic filter", async () => {
+    state.account.config = {
+      ...state.account.config,
+      topics: ["allowed-topic"],
+    };
+    state.pollResponses = [
+      {
+        result: "success",
+        events: [{ id: 1, type: "message", message: makeChannelMessage(1200) }],
+      },
+    ];
+
+    await runMonitorOnce();
+
+    expect(state.core.channel.reply.finalizeInboundContext).not.toHaveBeenCalled();
+    expect(state.core.channel.reply.dispatchReplyFromConfig).not.toHaveBeenCalled();
+  });
+
+  it("processes stream messages inside configured topic filters with case and whitespace normalization", async () => {
+    state.account.config = {
+      ...state.account.config,
+      topics: ["  ZULIP-PLUGIN-PR  "],
+      streamTopics: { "  DEBBIE  ": ["  Zulip-Plugin-PR  "] },
+    };
+    state.pollResponses = [
+      {
+        result: "success",
+        events: [{ id: 1, type: "message", message: makeChannelMessage(1201) }],
+      },
+    ];
+
+    await runMonitorOnce();
+
+    expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.reply.dispatchReplyFromConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops stream messages outside a configured stream-scoped topic filter", async () => {
+    state.account.config = {
+      ...state.account.config,
+      topics: ["*"],
+      streamTopics: { "4": ["another-topic"] },
+    };
+    state.pollResponses = [
+      {
+        result: "success",
+        events: [{ id: 1, type: "message", message: makeChannelMessage(1202) }],
+      },
+    ];
+
+    await runMonitorOnce();
+
+    expect(state.core.channel.reply.finalizeInboundContext).not.toHaveBeenCalled();
+    expect(state.core.channel.reply.dispatchReplyFromConfig).not.toHaveBeenCalled();
+  });
+
+  it("treats empty and wildcard stream-scoped topic filters as unrestricted", async () => {
+    state.account.config = {
+      ...state.account.config,
+      streamTopics: {
+        debbie: [],
+        "4": ["*"],
+      },
+    };
+    state.pollResponses = [
+      {
+        result: "success",
+        events: [{ id: 1, type: "message", message: makeChannelMessage(1203) }],
+      },
+    ];
+
+    await runMonitorOnce();
+
+    expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.reply.dispatchReplyFromConfig).toHaveBeenCalledTimes(1);
   });
 
   it("ignores duplicate inbound message ids on repeat processing", async () => {

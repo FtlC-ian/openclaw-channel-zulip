@@ -106,6 +106,48 @@ function resolveOncharPrefixes(prefixes: string[] | undefined): string[] {
   return cleaned.length > 0 ? cleaned : DEFAULT_ONCHAR_PREFIXES;
 }
 
+function normalizeTopicFilterValue(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function normalizeTopicFilterList(values?: string[]): Set<string> | undefined {
+  const normalized = (values ?? [])
+    .map(normalizeTopicFilterValue)
+    .filter(Boolean);
+  if (normalized.length === 0 || normalized.includes("*")) {
+    return undefined;
+  }
+  return new Set(normalized);
+}
+
+function shouldMonitorTopic(params: {
+  topic: string;
+  streamName?: string;
+  streamId?: string;
+  topics?: string[];
+  streamTopics?: Record<string, string[]>;
+}): boolean {
+  const topic = normalizeTopicFilterValue(params.topic);
+  const globalTopics = normalizeTopicFilterList(params.topics);
+  if (globalTopics && !globalTopics.has(topic)) {
+    return false;
+  }
+
+  const streamTopics = params.streamTopics ?? {};
+  const candidateKeys = [params.streamName, params.streamId]
+    .map((value) => value?.trim())
+    .filter((value): value is string => Boolean(value));
+  const matchingStreamFilter = Object.entries(streamTopics).find(([key]) =>
+    candidateKeys.some((candidate) => normalizeTopicFilterValue(candidate) === normalizeTopicFilterValue(key)),
+  );
+  if (!matchingStreamFilter) {
+    return true;
+  }
+
+  const allowedTopics = normalizeTopicFilterList(matchingStreamFilter[1]);
+  return !allowedTopics || allowedTopics.has(topic);
+}
+
 function stripOncharPrefix(
   text: string,
   prefixes: string[],
@@ -212,7 +254,10 @@ function delay(ms: number): Promise<void> {
 
 export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise<void> {
   const core = getZulipRuntime();
-  const cfg = opts.config ?? core.config.loadConfig();
+  if (!opts.config) {
+    throw new Error("monitorZulipProvider requires resolved runtime config");
+  }
+  const cfg = opts.config;
   const runtime = resolveRuntime(opts);
   const account = await resolveZulipRuntimeAccount({
     cfg,
@@ -318,6 +363,23 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         streamName = message.display_recipient;
       }
       topic = message.subject?.trim() || defaultTopic;
+      if (
+        !shouldMonitorTopic({
+          topic,
+          streamName,
+          streamId,
+          topics: account.config.topics,
+          streamTopics: account.config.streamTopics,
+        })
+      ) {
+        logInboundDrop({
+          log: logVerboseMessage,
+          channel: "zulip",
+          reason: `topic filter (${streamName || streamId}:${topic})`,
+          target: senderIdentity,
+        });
+        return;
+      }
     }
 
     const rawText = stripHtmlToText(message.content ?? "");
@@ -446,7 +508,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
                   idLine: `Your Zulip email: ${senderIdentity}`,
                   code,
                 }),
-                { accountId: account.accountId },
+                { cfg, accountId: account.accountId },
               );
               opts.statusSink?.({ lastOutboundAt: Date.now() });
             } catch (err) {
@@ -734,6 +796,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
                 continue;
               }
               await sendMessageZulip(to, chunk, {
+                cfg,
                 accountId: account.accountId,
                 topic: resolvedTopic,
               });
@@ -744,6 +807,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
               const caption = first ? text : "";
               first = false;
               await sendMessageZulip(to, caption, {
+                cfg,
                 accountId: account.accountId,
                 mediaUrl,
                 topic: resolvedTopic,

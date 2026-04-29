@@ -90,9 +90,24 @@ Add the plugin id to `plugins.allow` in `~/.openclaw/openclaw.json`:
       "url": "https://your-org.zulipchat.com",
       "email": "yourbot@your-org.zulipchat.com",
       "apiKey": "your-zulip-api-key",
+      // Or store the API key in an OpenClaw SecretRef:
+      // "apiKey": { "source": "env", "provider": "zulip", "id": "ZULIP_API_KEY" },
 
       // Which streams to monitor ("*" = all)
       "streams": ["general", "bot-testing"],
+
+      // Optional inbound topic filters for monitored streams.
+      // Topic matching trims whitespace and is case-insensitive.
+      // Omit, use [], or include "*" to allow all topics.
+      "topics": ["support", "bot help"],
+
+      // Optional per-stream topic filters. Keys may be stream names or ids.
+      // A matching stream-specific filter further restricts the global topics list;
+      // streams with no entry use only the global topics filter.
+      "streamTopics": {
+        "general": ["support"],
+        "42": ["bot help"]
+      },
 
       // Default topic for outbound messages with no explicit topic
       "defaultTopic": "bot replies",

@@ -216,14 +216,16 @@ export const zulipPlugin = {
         }
         return { ok: true, to: trimmed };
       },
-      sendText: async ({ to, text, accountId }) => {
+      sendText: async ({ cfg, to, text, accountId }) => {
         const result = await sendMessageZulip(to, text, {
+          cfg,
           accountId: accountId ?? undefined,
         });
         return { channel: "zulip", ...result };
       },
-      sendMedia: async ({ to, text, mediaUrl, accountId }) => {
+      sendMedia: async ({ cfg, to, text, mediaUrl, accountId }) => {
         const result = await sendMessageZulip(to, text, {
+          cfg,
           accountId: accountId ?? undefined,
           mediaUrl,
         });
@@ -240,6 +242,7 @@ export const zulipPlugin = {
           let lastResult;
           for (let i = 0; i < mediaUrls.length; i++) {
             lastResult = await sendMessageZulip(ctx.to, i === 0 ? text : "", {
+              cfg: ctx.cfg,
               accountId: ctx.accountId ?? undefined,
               mediaUrl: mediaUrls[i],
               interactive: i === 0 ? ctx.payload.interactive : undefined,
@@ -249,6 +252,7 @@ export const zulipPlugin = {
           return { channel: "zulip", ...lastResult! };
         }
         const result = await sendMessageZulip(ctx.to, text, {
+          cfg: ctx.cfg,
           accountId: ctx.accountId ?? undefined,
           interactive: ctx.payload.interactive,
           channelData: ctx.payload.channelData as ReplyPayload["channelData"] | undefined,

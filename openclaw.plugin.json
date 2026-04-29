@@ -50,6 +50,11 @@
               "email": { "type": "string" },
               "apiKey": { "$ref": "#/$defs/secretInput" },
               "streams": { "type": "array", "items": { "type": "string" } },
+              "topics": { "type": "array", "items": { "type": "string" } },
+              "streamTopics": {
+                "type": "object",
+                "additionalProperties": { "type": "array", "items": { "type": "string" } }
+              },
               "defaultTopic": { "type": "string" },
               "chatmode": { "type": "string", "enum": ["oncall", "onmessage", "onchar"] },
               "oncharPrefixes": { "type": "array", "items": { "type": "string" } },
@@ -107,6 +112,11 @@
           "email": { "type": "string" },
           "apiKey": { "$ref": "#/$defs/secretInput" },
           "streams": { "type": "array", "items": { "type": "string" } },
+          "topics": { "type": "array", "items": { "type": "string" } },
+          "streamTopics": {
+            "type": "object",
+            "additionalProperties": { "type": "array", "items": { "type": "string" } }
+          },
           "defaultTopic": { "type": "string" },
           "chatmode": { "type": "string", "enum": ["oncall", "onmessage", "onchar"] },
           "oncharPrefixes": { "type": "array", "items": { "type": "string" } },
@@ -164,6 +174,14 @@
           "label": "Streams to Monitor",
           "placeholder": "[\"general\", \"random\"]"
         },
+        "topics": {
+          "label": "Topics to Monitor",
+          "placeholder": "[\"support\", \"bot help\"]"
+        },
+        "streamTopics": {
+          "label": "Per-Stream Topic Filters",
+          "placeholder": "{\"general\":[\"support\"]}"
+        },
         "defaultTopic": {
           "label": "Default Topic",
           "placeholder": "general chat"
@@ -199,6 +217,14 @@
     "streams": {
       "label": "Streams to Monitor",
       "placeholder": "[\"general\", \"random\"]"
+    },
+    "topics": {
+      "label": "Topics to Monitor",
+      "placeholder": "[\"support\", \"bot help\"]"
+    },
+    "streamTopics": {
+      "label": "Per-Stream Topic Filters",
+      "placeholder": "{\"general\":[\"support\"]}"
     },
     "defaultTopic": {
       "label": "Default Topic",

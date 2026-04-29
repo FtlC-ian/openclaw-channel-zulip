@@ -3,7 +3,7 @@ import fsPromises from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolvePreferredOpenClawTmpDir } from "../sdk.js";
-import type { InteractiveReply } from "../sdk.js";
+import type { InteractiveReply, OpenClawConfig } from "../sdk.js";
 import { getZulipRuntime } from "../runtime.js";
 import { resolveZulipRuntimeAccount } from "./accounts.js";
 import {
@@ -44,6 +44,7 @@ type ZulipWidgetContent = {
 };
 
 export type ZulipSendOpts = {
+  cfg: OpenClawConfig;
   apiKey?: string;
   email?: string;
   baseUrl?: string;
@@ -249,13 +250,12 @@ function parseZulipTarget(raw: string): ZulipTarget {
 export async function sendMessageZulip(
   to: string,
   text: string,
-  opts: ZulipSendOpts = {},
+  opts: ZulipSendOpts,
 ): Promise<ZulipSendResult> {
   const core = getCore();
   const logger = core.logging.getChildLogger({ module: "zulip" });
-  const cfg = core.config.loadConfig();
   const account = await resolveZulipRuntimeAccount({
-    cfg,
+    cfg: opts.cfg,
     accountId: opts.accountId,
   });
   const apiKey = opts.apiKey?.trim() || account.apiKey?.trim();
@@ -295,7 +295,7 @@ export async function sendMessageZulip(
       const upload = await uploadZulipFile(client, localPath);
       mediaUrl = upload.url;
     } else if (isHttpUrl(mediaUrl) && !isZulipHosted) {
-      const maxBytes = (cfg.agents?.defaults?.mediaMaxMb ?? 5) * 1024 * 1024;
+      const maxBytes = (opts.cfg.agents?.defaults?.mediaMaxMb ?? 5) * 1024 * 1024;
       const fetched = await core.channel.media.fetchRemoteMedia({
         url: mediaUrl,
         maxBytes,
@@ -336,7 +336,7 @@ export async function sendMessageZulip(
 
   if (message) {
     const tableMode = core.channel.text.resolveMarkdownTableMode({
-      cfg,
+      cfg: opts.cfg,
       channel: "zulip",
       accountId: account.accountId,
     });

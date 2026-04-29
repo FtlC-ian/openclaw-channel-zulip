@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026.4.29
+
+### Features
+- **Inbound topic filters**: Add `topics` and `streamTopics` config for filtering monitored Zulip stream messages by topic. Topic matching trims whitespace and is case-insensitive; omitted, empty, or `"*"` filters allow all topics. Per-stream filters can be keyed by stream name or stream id and further restrict the global topic allowlist.
+
+### Compatibility
+- **OpenClaw 2026.4.26 compatibility carry-forward**: Includes the 2026.4.26 runtime alignment, SecretRef API key support, and stream target parsing fixes from the prior compatibility PR.
+
 ## 2026.4.26
 
 ### Compatibility

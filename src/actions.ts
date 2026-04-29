@@ -93,7 +93,7 @@ async function requireZulipAdmin(client: ReturnType<typeof createZulipClient>): 
   }
 }
 
-function splitStreamTarget(raw: string): StreamTarget {
+export function splitStreamTarget(raw: string): StreamTarget {
   const trimmed = raw.trim();
   if (!trimmed) {
     throw new Error("Stream is required for Zulip channel actions.");
@@ -118,7 +118,7 @@ function splitStreamTarget(raw: string): StreamTarget {
     stream = candidate.slice(0, topicMatch.index).trim();
     topic = topicMatch[1].trim();
   } else {
-    const sepIndex = candidate.search(/[\/#]/);
+    const sepIndex = lower.startsWith("stream:") ? candidate.indexOf(":") : candidate.search(/[\/#]/);
     if (sepIndex > -1) {
       stream = candidate.slice(0, sepIndex).trim();
       topic = candidate.slice(sepIndex + 1).trim();

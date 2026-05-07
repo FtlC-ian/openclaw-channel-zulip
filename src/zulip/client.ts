@@ -3,6 +3,25 @@ export type ZulipClient = {
   authHeader: string;
   fetchImpl: typeof fetch;
   request: <T>(path: string, init?: RequestInit) => Promise<T>;
+  log?: ZulipRequestLogger;
+};
+
+export type ZulipRequestLogEvent = {
+  path: string;
+  method: string;
+  attempt: number;
+  maxRetries: number;
+  status?: number;
+  statusText?: string;
+  retryAfterMs?: number;
+  waitMs?: number;
+  detail?: string;
+  error?: string;
+};
+
+export type ZulipRequestLogger = {
+  retry?: (event: ZulipRequestLogEvent) => void;
+  failure?: (event: ZulipRequestLogEvent) => void;
 };
 
 export type ZulipApiResponse = {
@@ -115,6 +134,7 @@ export function createZulipClient(params: {
   email: string;
   apiKey: string;
   fetchImpl?: typeof fetch;
+  log?: ZulipRequestLogger;
 }): ZulipClient {
   const baseUrl = normalizeZulipBaseUrl(params.baseUrl);
   if (!baseUrl) {
@@ -147,7 +167,7 @@ export function createZulipClient(params: {
     return (await res.json()) as T;
   };
 
-  return { baseUrl, authHeader, fetchImpl, request };
+  return { baseUrl, authHeader, fetchImpl, request, log: params.log };
 }
 
 function assertSuccess(payload: ZulipApiResponse, context: string): void {
@@ -174,6 +194,7 @@ export async function zulipRequestWithRetry<T>(
   const maxDelayMs = options?.maxDelayMs ?? 120000;
   const retryStatuses = new Set(options?.retryStatuses ?? [429, 502, 503, 504]);
   const rateLimitDelayMs = options?.rateLimitDelayMs ?? baseDelayMs;
+  const method = init?.method ?? "GET";
 
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     const url = buildZulipApiUrl(client.baseUrl, path);
@@ -182,7 +203,24 @@ export async function zulipRequestWithRetry<T>(
     if (init?.body && !headers.has("Content-Type") && typeof init.body === "string") {
       headers.set("Content-Type", "application/x-www-form-urlencoded");
     }
-    const res = await client.fetchImpl(url, { ...init, headers });
+
+    let res: Response;
+    try {
+      res = await client.fetchImpl(url, { ...init, headers });
+    } catch (err) {
+      const errorText = err instanceof Error ? err.message : String(err);
+      if (attempt >= maxRetries) {
+        client.log?.failure?.({ path, method, attempt, maxRetries, error: errorText });
+        throw err;
+      }
+      const backoff = Math.min(maxDelayMs, baseDelayMs * 2 ** attempt);
+      const jitter = Math.random() * 0.2 * backoff;
+      const waitMs = backoff + jitter;
+      client.log?.retry?.({ path, method, attempt, maxRetries, waitMs, error: errorText });
+      await delay(waitMs);
+      continue;
+    }
+
     if (res.ok) {
       return (await res.json()) as T;
     }
@@ -197,6 +235,16 @@ export async function zulipRequestWithRetry<T>(
     error.retryAfterMs = retryAfterMs;
 
     if (!retryStatuses.has(status) || attempt >= maxRetries) {
+      client.log?.failure?.({
+        path,
+        method,
+        attempt,
+        maxRetries,
+        status,
+        statusText: res.statusText,
+        retryAfterMs,
+        detail,
+      });
       throw error;
     }
 
@@ -205,6 +253,17 @@ export async function zulipRequestWithRetry<T>(
     const jitter = Math.random() * 0.2 * backoff; // up to 20% jitter
     const waitMs =
       retryAfterMs && retryAfterMs > 0 ? Math.min(maxDelayMs, retryAfterMs) : backoff + jitter;
+    client.log?.retry?.({
+      path,
+      method,
+      attempt,
+      maxRetries,
+      status,
+      statusText: res.statusText,
+      retryAfterMs,
+      waitMs,
+      detail,
+    });
     await delay(waitMs);
   }
 

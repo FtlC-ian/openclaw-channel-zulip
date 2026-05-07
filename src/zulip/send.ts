@@ -272,7 +272,15 @@ export async function sendMessageZulip(
     );
   }
 
-  const client = createZulipClient({ baseUrl, email, apiKey });
+  const client = createZulipClient({
+    baseUrl,
+    email,
+    apiKey,
+    log: {
+      retry: (event) => logger.warn?.("zulip api request retry", event),
+      failure: (event) => logger.error?.("zulip api request failed", event),
+    },
+  });
   const normalizedTarget = normalizeLegacyZulipTarget(to);
   if (normalizedTarget.convertedFromLegacy) {
     logger.warn?.("zulip send received legacy session-key target, auto-converting", {
@@ -343,6 +351,17 @@ export async function sendMessageZulip(
     message = core.channel.text.convertMarkdownTables(message, tableMode);
   }
 
+  const preflightTargetSummary = (() => {
+    if (target.kind === "user") {
+      return { targetKind: target.kind, to: target.email };
+    }
+    return {
+      targetKind: target.kind,
+      stream: target.stream,
+      topic: target.topic || opts.topic || DEFAULT_TOPIC,
+    };
+  })();
+
   const interactiveWidget = interactiveToZulipWidgetContent(opts.interactive);
   const widgetContent = interactiveWidget ?? resolveZulipWidgetContent({
     interactive: undefined,
@@ -358,8 +377,10 @@ export async function sendMessageZulip(
     : opts.channelData?.zulip?.widgetContent
       ? "channelData"
       : "none";
-  logger.debug?.("zulip send payload", {
-    targetKind: target.kind,
+  logger.debug?.("zulip outbound send start", {
+    ...preflightTargetSummary,
+    accountId: account.accountId,
+    hasMedia: Boolean(rawMediaUrl),
     hasInteractive: Boolean(opts.interactive?.blocks?.length),
     channelDataKeys: Object.keys(opts.channelData ?? {}),
     hasExecApprovalChannelData: Boolean(opts.channelData?.execApproval),
@@ -395,8 +416,9 @@ export async function sendMessageZulip(
     messageId = response.id ? String(response.id) : "unknown";
   }
 
-  logger.debug?.("zulip send success", {
-    targetKind: target.kind,
+  logger.debug?.("zulip outbound send success", {
+    ...preflightTargetSummary,
+    accountId: account.accountId,
     messageId,
     hadWidget: Boolean(widgetContent),
     widgetContentSource,

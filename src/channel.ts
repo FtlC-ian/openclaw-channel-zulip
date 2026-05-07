@@ -232,12 +232,21 @@ export const zulipPlugin = {
         return { channel: "zulip", ...result };
       },
       sendPayload: async (ctx) => {
+        const logger = getZulipRuntime().logging.getChildLogger({ module: "zulip" });
         const text = ctx.payload.text ?? "";
         const mediaUrls = ctx.payload.mediaUrls?.length
           ? ctx.payload.mediaUrls
           : ctx.payload.mediaUrl
             ? [ctx.payload.mediaUrl]
             : [];
+        logger.debug?.("zulip outbound payload accepted", {
+          to: ctx.to,
+          accountId: ctx.accountId ?? "default",
+          textLength: text.length,
+          mediaCount: mediaUrls.length,
+          hasInteractive: Boolean(ctx.payload.interactive?.blocks?.length),
+          channelDataKeys: Object.keys(ctx.payload.channelData ?? {}),
+        });
         if (mediaUrls.length > 0) {
           let lastResult;
           for (let i = 0; i < mediaUrls.length; i++) {

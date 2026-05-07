@@ -16,3 +16,6 @@ dist/
 # Misc
 .DS_Store
 *.log
+
+# Local learning notes
+.learnings/

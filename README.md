@@ -179,6 +179,21 @@ This plugin processes events **concurrently**: each message is dispatched immedi
 
 ---
 
+## Troubleshooting: stream replies
+
+If the bot appears to receive DMs but does not reply in Zulip streams, check the stream policy first. Stream messages are treated as group messages, so `groupPolicy` controls whether the bot is allowed to respond there.
+
+Common setups that intentionally produce no visible stream reply:
+
+- `groupPolicy: "disabled"` drops all stream messages.
+- `groupPolicy: "allowlist"` requires the sender to match `groupAllowFrom`; if the sender is not allowed, the message is ignored.
+- `chatmode: "oncall"` or `requireMention: true` means the bot only replies when it is mentioned.
+- `topics` or `streamTopics` filters only allow matching topics; messages in other topics are ignored.
+
+For the simplest “reply in monitored streams” setup, use `groupPolicy: "open"` with the stream listed in `streams`, then add mention or topic filters only after the basic path works.
+
+---
+
 ## Updating
 
 If installed via npm:

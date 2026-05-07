@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026.5.7
+
+### Bug Fixes
+- **Zulip stream reply troubleshooting**: Document the common configuration causes for DMs working while stream replies are intentionally ignored, including `groupPolicy`, allowlists, mention requirements, and topic filters.
+- **Outbound observability**: Add retry and failure logging for Zulip API requests, including thrown network/fetch exceptions, while keeping normal per-message send logs at debug level to avoid noisy production logs.
+- **Retry resilience**: Retry transient thrown fetch/network errors in the Zulip API client, matching the existing retry behavior for retryable HTTP statuses.
+
+### Maintenance
+- **Release hygiene**: Add deterministic retry/logging tests, ignore local `.learnings/` notes, refresh the OpenClaw devDependency to the stable `^2026.5.6`, and update Zod to `^4.4.3`.
+
 ## 2026.4.29
 
 ### Features

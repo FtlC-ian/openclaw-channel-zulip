@@ -9,6 +9,23 @@ export function normalizeZulipEmojiName(raw?: string | null): string {
   return trimmed.replace(/^:+|:+$/g, "");
 }
 
+function decodeHtmlEntities(value: string): string {
+  return value
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+}
+
+function trimUploadUrlCandidate(raw: string): string {
+  let candidate = decodeHtmlEntities(raw).trim();
+  while (/[),.;!?]$/.test(candidate)) {
+    candidate = candidate.slice(0, -1);
+  }
+  return candidate;
+}
+
 export function extractZulipUploadUrls(html: string, baseUrl: string): string[] {
   if (!html) {
     return [];
@@ -22,7 +39,7 @@ export function extractZulipUploadUrls(html: string, baseUrl: string): string[] 
   const matches = html.matchAll(/(?:https?:\/\/[^\s"'<>)]+)?\/user_uploads\/[^\s"'<>)]+/g);
   const urls = new Set<string>();
   for (const match of matches) {
-    const raw = match[0];
+    const raw = trimUploadUrlCandidate(match[0]);
     try {
       const absolute = new URL(raw, baseUrl);
       if (baseOrigin && absolute.origin !== baseOrigin) continue;
@@ -50,7 +67,7 @@ function resolveFilename(url: string, contentDisposition?: string | null): strin
     const parsed = new URL(url);
     const base = path.basename(parsed.pathname);
     if (base) {
-      return base;
+      return decodeURIComponent(base);
     }
   } catch {
     // ignore

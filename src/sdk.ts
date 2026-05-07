@@ -26,7 +26,7 @@ export {
   setAccountEnabledInConfigSection,
 } from "openclaw/plugin-sdk/core";
 
-export { jsonResult } from "openclaw/plugin-sdk/browser-support";
+export { jsonResult } from "openclaw/plugin-sdk/core";
 export { readNumberParam, readStringParam } from "openclaw/plugin-sdk/param-readers";
 export { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/temp-path";
 export { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";

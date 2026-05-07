@@ -390,13 +390,20 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     const mediaTypes: string[] = [];
     const mediaUrls: string[] = [];
     if (uploadUrls.length > 0) {
+      logVerboseMessage(
+        `zulip: discovered ${uploadUrls.length} upload${uploadUrls.length === 1 ? "" : "s"} for message ${messageId} maxBytes=${mediaMaxBytes}`,
+      );
       for (const uploadUrl of uploadUrls) {
         try {
+          logVerboseMessage(`zulip: downloading upload ${uploadUrl}`);
           const downloaded = await downloadZulipUpload(
             uploadUrl,
             baseUrl,
             client.authHeader,
             mediaMaxBytes,
+          );
+          logVerboseMessage(
+            `zulip: downloaded upload filename=${downloaded.filename} type=${downloaded.contentType} bytes=${downloaded.buffer.length}`,
           );
           const saved = await saveZulipMediaBuffer({
             core,
@@ -408,7 +415,10 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
           if (saved) {
             mediaPaths.push(saved.path);
             mediaTypes.push(saved.contentType);
-            mediaUrls.push(uploadUrl);
+            mediaUrls.push(saved.path);
+            logVerboseMessage(
+              `zulip: saved upload filename=${downloaded.filename} path=${saved.path} type=${saved.contentType}`,
+            );
           }
         } catch (err) {
           logVerboseMessage(`zulip: failed to download/save upload ${uploadUrl}: ${String(err)}`);

@@ -73,7 +73,9 @@ const state = vi.hoisted(() => {
   return {
     abortController: undefined as AbortController | undefined,
     pollResponses: [] as Array<Record<string, unknown>>,
-    client: { authHeader: "Basic fake" },
+    downloadedUploads: [] as Array<{ buffer: Buffer; contentType: string; filename: string }>,
+    extractedUploadUrls: [] as string[],
+    client: { authHeader: "fake-auth" },
     botUser: {
       id: 999,
       email: "debbie-bot@zlp.pubnerd.app",
@@ -133,11 +135,18 @@ vi.mock("./send.js", () => ({
   sendMessageZulip: vi.fn(async () => {}),
 }));
 
-vi.mock("./uploads.js", () => ({
-  downloadZulipUpload: vi.fn(async () => {
+const downloadZulipUploadMock = vi.fn(async () => {
+  const next = state.downloadedUploads.shift();
+  if (!next) {
     throw new Error("unexpected upload download in test");
-  }),
-  extractZulipUploadUrls: vi.fn(() => []),
+  }
+  return next;
+});
+const extractZulipUploadUrlsMock = vi.fn(() => state.extractedUploadUrls);
+
+vi.mock("./uploads.js", () => ({
+  downloadZulipUpload: downloadZulipUploadMock,
+  extractZulipUploadUrls: extractZulipUploadUrlsMock,
   normalizeZulipEmojiName: vi.fn((name: string) => name),
 }));
 
@@ -224,7 +233,11 @@ describe("monitorZulipProvider", () => {
       reactions: { enabled: false },
     };
     state.pollResponses = [];
+    state.downloadedUploads = [];
+    state.extractedUploadUrls = [];
     state.abortController = undefined;
+    downloadZulipUploadMock.mockClear();
+    extractZulipUploadUrlsMock.mockClear();
     registerZulipQueueMock.mockClear();
     getZulipEventsWithRetryMock.mockClear();
     deleteZulipQueueMock.mockClear();
@@ -259,6 +272,51 @@ describe("monitorZulipProvider", () => {
     expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledTimes(1);
     expect(state.core.channel.reply.dispatchReplyFromConfig).toHaveBeenCalledTimes(1);
     expect(state.core.system.enqueueSystemEvent).not.toHaveBeenCalled();
+  });
+
+  it("downloads Zulip uploads and surfaces saved local media paths to the agent", async () => {
+    state.extractedUploadUrls = [
+      "https://zlp.pubnerd.app/user_uploads/2/aa/song.mp3",
+      "https://zlp.pubnerd.app/user_uploads/2/bb/image.png",
+      "https://zlp.pubnerd.app/user_uploads/2/cc/report.pdf",
+    ];
+    state.downloadedUploads = [
+      { buffer: Buffer.from("synthetic mp3"), contentType: "audio/mpeg", filename: "song.mp3" },
+      { buffer: Buffer.from("synthetic png"), contentType: "image/png", filename: "image.png" },
+      { buffer: Buffer.from("synthetic pdf"), contentType: "application/pdf", filename: "report.pdf" },
+    ];
+    state.core.channel.media.saveMediaBuffer.mockImplementation(
+      async (_buffer: Buffer, contentType: string, _direction: string, _maxBytes: number, filename: string) => ({
+        path: `/managed/${filename}`,
+        contentType,
+      }),
+    );
+    state.pollResponses = [
+      {
+        result: "success",
+        events: [{ id: 1, type: "message", message: makeChannelMessage(1004) }],
+      },
+    ];
+
+    await runMonitorOnce();
+
+    expect(downloadZulipUploadMock).toHaveBeenCalledWith(
+      "https://zlp.pubnerd.app/user_uploads/2/aa/song.mp3",
+      "https://zlp.pubnerd.app",
+      "fake-auth",
+      5 * 1024 * 1024,
+    );
+    expect(state.core.channel.media.saveMediaBuffer).toHaveBeenCalledTimes(3);
+    expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        MediaPath: "/managed/song.mp3",
+        MediaPaths: ["/managed/song.mp3", "/managed/image.png", "/managed/report.pdf"],
+        MediaUrl: "/managed/song.mp3",
+        MediaUrls: ["/managed/song.mp3", "/managed/image.png", "/managed/report.pdf"],
+        MediaType: "audio/mpeg",
+        MediaTypes: ["audio/mpeg", "image/png", "application/pdf"],
+      }),
+    );
   });
 
   it("stores last-route delivery context for stream-topic messages", async () => {

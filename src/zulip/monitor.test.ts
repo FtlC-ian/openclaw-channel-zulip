@@ -148,6 +148,16 @@ vi.mock("./uploads.js", () => ({
   downloadZulipUpload: downloadZulipUploadMock,
   extractZulipUploadUrls: extractZulipUploadUrlsMock,
   normalizeZulipEmojiName: vi.fn((name: string) => name),
+  sanitizeUploadFilename: vi.fn((name: string) =>
+    name
+      .replace(/[\u0000-\u001f\u007f]/g, " ")
+      .replace(/[\\/]+/g, "_")
+      .split(/_+/g)
+      .filter((part) => part && part !== "." && part !== "..")
+      .join("_")
+      .replace(/\s+/g, " ")
+      .trim() || "upload.bin",
+  ),
 }));
 
 const typingCallbacksMock = vi.fn(() => ({
@@ -274,10 +284,10 @@ describe("monitorZulipProvider", () => {
     expect(state.core.system.enqueueSystemEvent).not.toHaveBeenCalled();
   });
 
-  it("falls back to temp-file media storage when runtime saveMediaBuffer is unavailable", async () => {
+  it("falls back to temp-file media storage with a sanitized filename when runtime saveMediaBuffer is unavailable", async () => {
     state.extractedUploadUrls = ["https://zlp.pubnerd.app/user_uploads/2/aa/report.pdf"];
     state.downloadedUploads = [
-      { buffer: Buffer.from("synthetic pdf"), contentType: "application/pdf", filename: "report.pdf" },
+      { buffer: Buffer.from("synthetic pdf"), contentType: "application/pdf", filename: "../evil/name.pdf" },
     ];
     state.core.channel.media = {};
     state.pollResponses = [
@@ -291,7 +301,7 @@ describe("monitorZulipProvider", () => {
 
     expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledWith(
       expect.objectContaining({
-        MediaPath: expect.stringMatching(/^\/tmp\/zulip-upload-[^/]+\/report\.pdf$/),
+        MediaPath: expect.stringMatching(/^\/tmp\/zulip-upload-[^/]+\/evil_name\.pdf$/),
         MediaType: "application/pdf",
       }),
     );

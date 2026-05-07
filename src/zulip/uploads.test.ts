@@ -80,6 +80,32 @@ describe("downloadZulipUpload", () => {
     expect(release).toHaveBeenCalled();
   });
 
+  it.each([
+    ["attachment; filename*=UTF-8''evil%2Fname.mp3", "https://zlp.pubnerd.app/user_uploads/2/ab/safe.mp3", "evil_name.mp3"],
+    ["attachment; filename*=UTF-8''evil%5Cname.pdf", "https://zlp.pubnerd.app/user_uploads/2/ab/safe.pdf", "evil_name.pdf"],
+    ["attachment; filename=\"..%2F..%2Fsecret.txt\"", "https://zlp.pubnerd.app/user_uploads/2/ab/safe.txt", "secret.txt"],
+    ["attachment; filename=\"../../secret.txt\"", "https://zlp.pubnerd.app/user_uploads/2/ab/safe.txt", "secret.txt"],
+    [undefined, "https://zlp.pubnerd.app/user_uploads/2/ab/evil%2Fname.mp3", "evil_name.mp3"],
+    [undefined, "https://zlp.pubnerd.app/user_uploads/2/ab/evil%5Cname.pdf", "evil_name.pdf"],
+    ["attachment; filename=\"../..\"", "https://zlp.pubnerd.app/user_uploads/2/ab/safe.bin", "upload.bin"],
+  ])("sanitizes decoded upload filenames from content-disposition and URL fallbacks", async (contentDisposition, url, expected) => {
+    const release = vi.fn(async () => {});
+    sdkState.fetchWithSsrFGuard.mockResolvedValueOnce({
+      release,
+      response: new Response(Buffer.from("ok"), {
+        status: 200,
+        headers: {
+          ...(contentDisposition ? { "content-disposition": contentDisposition } : {}),
+        },
+      }),
+    });
+
+    const result = await downloadZulipUpload(url, "https://zlp.pubnerd.app", "encoded-auth", 1024);
+
+    expect(result.filename).toBe(expected);
+    expect(release).toHaveBeenCalled();
+  });
+
   it("rejects chunked uploads above the configured max size after buffering", async () => {
     const release = vi.fn(async () => {});
     sdkState.fetchWithSsrFGuard.mockResolvedValueOnce({

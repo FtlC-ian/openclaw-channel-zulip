@@ -45,7 +45,7 @@ import {
 } from "./monitor-helpers.js";
 import { buildZulipStreamConversation } from "../session-conversation.js";
 import { sendMessageZulip } from "./send.js";
-import { downloadZulipUpload, extractZulipUploadUrls, normalizeZulipEmojiName } from "./uploads.js";
+import { downloadZulipUpload, extractZulipUploadUrls, normalizeZulipEmojiName, sanitizeUploadFilename } from "./uploads.js";
 
 export type MonitorZulipOpts = {
   apiKey?: string;
@@ -228,7 +228,8 @@ async function saveZulipMediaBuffer(params: {
   filename: string;
   maxBytes: number;
 }): Promise<{ path: string; contentType: string } | null> {
-  const { core, buffer, contentType, filename, maxBytes } = params;
+  const { core, buffer, contentType, maxBytes } = params;
+  const filename = sanitizeUploadFilename(params.filename);
   if (core.channel.media?.saveMediaBuffer) {
     const saved = await core.channel.media.saveMediaBuffer(
       buffer,

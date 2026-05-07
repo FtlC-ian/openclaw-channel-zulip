@@ -52,22 +52,45 @@ export function extractZulipUploadUrls(html: string, baseUrl: string): string[] 
   return Array.from(urls);
 }
 
+export function sanitizeUploadFilename(raw: string): string {
+  const cleaned = raw
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/[\\/]+/g, "_")
+    .split(/_+/g)
+    .filter((part) => part && part !== "." && part !== "..")
+    .join("_")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleaned || /^\.+$/.test(cleaned)) {
+    return "upload.bin";
+  }
+  return cleaned;
+}
+
+function decodeUploadFilename(raw: string): string {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
 function resolveFilename(url: string, contentDisposition?: string | null): string {
   if (contentDisposition) {
     const encodedMatch = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
     if (encodedMatch?.[1]) {
-      return decodeURIComponent(encodedMatch[1]);
+      return sanitizeUploadFilename(decodeUploadFilename(encodedMatch[1]));
     }
     const match = contentDisposition.match(/filename="?([^";]+)"?/i);
     if (match?.[1]) {
-      return match[1];
+      return sanitizeUploadFilename(decodeUploadFilename(match[1]));
     }
   }
   try {
     const parsed = new URL(url);
     const base = path.basename(parsed.pathname);
     if (base) {
-      return decodeURIComponent(base);
+      return sanitizeUploadFilename(decodeUploadFilename(base));
     }
   } catch {
     // ignore

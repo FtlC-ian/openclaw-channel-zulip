@@ -274,6 +274,29 @@ describe("monitorZulipProvider", () => {
     expect(state.core.system.enqueueSystemEvent).not.toHaveBeenCalled();
   });
 
+  it("falls back to temp-file media storage when runtime saveMediaBuffer is unavailable", async () => {
+    state.extractedUploadUrls = ["https://zlp.pubnerd.app/user_uploads/2/aa/report.pdf"];
+    state.downloadedUploads = [
+      { buffer: Buffer.from("synthetic pdf"), contentType: "application/pdf", filename: "report.pdf" },
+    ];
+    state.core.channel.media = {};
+    state.pollResponses = [
+      {
+        result: "success",
+        events: [{ id: 1, type: "message", message: makeChannelMessage(1005) }],
+      },
+    ];
+
+    await runMonitorOnce();
+
+    expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        MediaPath: expect.stringMatching(/^\/tmp\/zulip-upload-[^/]+\/report\.pdf$/),
+        MediaType: "application/pdf",
+      }),
+    );
+  });
+
   it("downloads Zulip uploads and surfaces saved local media paths to the agent", async () => {
     state.extractedUploadUrls = [
       "https://zlp.pubnerd.app/user_uploads/2/aa/song.mp3",

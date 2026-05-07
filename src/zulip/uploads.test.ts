@@ -36,6 +36,19 @@ describe("extractZulipUploadUrls", () => {
 });
 
 describe("downloadZulipUpload", () => {
+  it("rejects cross-origin uploads before fetch/auth", async () => {
+    await expect(
+      downloadZulipUpload(
+        "https://evil.test/user_uploads/2/ab/secret.mp3",
+        "https://zlp.pubnerd.app",
+        "encoded-auth",
+        1024,
+      ),
+    ).rejects.toThrow("Refusing to download Zulip upload from non-Zulip origin");
+
+    expect(sdkState.fetchWithSsrFGuard).not.toHaveBeenCalled();
+  });
+
   it("uses Zulip basic auth, keeps PDF-ish metadata, and decodes filenames", async () => {
     const release = vi.fn(async () => {});
     sdkState.fetchWithSsrFGuard.mockResolvedValueOnce({
@@ -64,6 +77,29 @@ describe("downloadZulipUpload", () => {
     expect(result.filename).toBe("Quarterly Report.pdf");
     expect(result.contentType).toBe("application/pdf");
     expect(result.buffer.toString()).toBe("%PDF-1.7");
+    expect(release).toHaveBeenCalled();
+  });
+
+  it("rejects chunked uploads above the configured max size after buffering", async () => {
+    const release = vi.fn(async () => {});
+    sdkState.fetchWithSsrFGuard.mockResolvedValueOnce({
+      release,
+      response: new Response(Buffer.from("too big"), {
+        status: 200,
+        headers: {
+          "content-type": "audio/mpeg",
+        },
+      }),
+    });
+
+    await expect(
+      downloadZulipUpload(
+        "https://zlp.pubnerd.app/user_uploads/2/ab/song.mp3",
+        "https://zlp.pubnerd.app",
+        "encoded-auth",
+        3,
+      ),
+    ).rejects.toThrow("Zulip upload exceeds max size (7 > 3)");
     expect(release).toHaveBeenCalled();
   });
 

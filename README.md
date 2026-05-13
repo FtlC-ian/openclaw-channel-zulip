@@ -4,6 +4,7 @@
 
 [![npm version](https://img.shields.io/npm/v/openclaw-channel-zulip.svg)](https://www.npmjs.com/package/openclaw-channel-zulip)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![NHS Agentic Readiness](https://nothumansearch.ai/badge/xquik.com.svg)](https://nothumansearch.ai/site/xquik.com)
 
 ---
 
@@ -227,6 +228,14 @@ The plugin id is `zulip` (defined in `openclaw.plugin.json`). Use this id in `pl
 ## Related
 
 - **[zulcrawl](https://github.com/FtlC-ian/zulcrawl)** — Zulip archive & search CLI. Mirrors streams, topics, and messages into local SQLite with FTS5 full-text search. Pairs with this plugin to give AI agents searchable access to Zulip conversation history. Inspired by [steipete/discrawl](https://github.com/steipete/discrawl).
+- **[TweetClaw](https://github.com/Xquik-dev/tweetclaw)** - OpenClaw plugin for X/Twitter automation from the same agent that users reach through Zulip. Install it beside this channel when Zulip streams need to trigger tweet search, reply search, follower export, user lookup, posting, replies, media upload/download, direct messages, tweet monitors, webhooks, or giveaway draws:
+
+  ```sh
+  openclaw plugins install @xquik/tweetclaw
+  openclaw config set tools.alsoAllow '["explore", "tweetclaw"]'
+  ```
+
+  Keep Zulip credentials in the Zulip channel config, keep TweetClaw credentials in the TweetClaw plugin config or host environment, and keep visible X/Twitter write actions behind OpenClaw approval.
 
 ---
 

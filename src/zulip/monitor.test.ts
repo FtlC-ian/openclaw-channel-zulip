@@ -288,7 +288,7 @@ describe("monitorZulipProvider", () => {
         invite_only: false,
         is_web_public: false,
         history_public_to_subscribers: true,
-        subscriber_count: 12,
+        subscribers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
       },
     ];
     state.streamLookups = new Map();
@@ -343,7 +343,7 @@ describe("monitorZulipProvider", () => {
         invite_only: true,
         is_web_public: false,
         history_public_to_subscribers: false,
-        subscriber_count: 3,
+        subscribers: [123, 999, 1000],
       },
     ];
     state.pollResponses = [
@@ -367,6 +367,10 @@ describe("monitorZulipProvider", () => {
         StreamId: "4",
       }),
     );
+    expect(fetchZulipSubscriptionsMock).toHaveBeenCalledWith(state.client, {
+      includeAllPublic: true,
+      includeSubscribers: true,
+    });
     expect(fetchZulipStreamMock).not.toHaveBeenCalled();
   });
 
@@ -378,7 +382,7 @@ describe("monitorZulipProvider", () => {
         invite_only: false,
         is_web_public: true,
         history_public_to_subscribers: true,
-        subscriber_count: 48,
+        subscribers: [10, 20, 30, 40],
       },
     ];
     state.pollResponses = [
@@ -398,7 +402,7 @@ describe("monitorZulipProvider", () => {
         InviteOnly: false,
         IsWebPublic: true,
         HistoryPublicToSubscribers: true,
-        SubscriberCount: 48,
+        SubscriberCount: 4,
         StreamId: "4",
       }),
     );
@@ -431,7 +435,7 @@ describe("monitorZulipProvider", () => {
       expect.objectContaining({
         ChatType: "channel",
         ChannelPrivacy: "unknown",
-        IsPrivateChannel: false,
+        IsPrivateChannel: undefined,
         StreamId: "404",
       }),
     );

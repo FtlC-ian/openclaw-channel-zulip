@@ -102,7 +102,12 @@ function normalizeZulipStreamMetadata(
     inviteOnly: stream.invite_only,
     isWebPublic: stream.is_web_public,
     historyPublicToSubscribers: stream.history_public_to_subscribers,
-    subscriberCount: stream.subscriber_count,
+    subscriberCount:
+      typeof stream.subscriber_count === "number"
+        ? stream.subscriber_count
+        : Array.isArray(stream.subscribers)
+          ? stream.subscribers.length
+          : undefined,
   };
 }
 
@@ -131,7 +136,10 @@ async function seedZulipStreamMetadataCache(params: {
   log: (message: string) => void;
 }): Promise<void> {
   try {
-    const subscriptions = await fetchZulipSubscriptions(params.client, { includeAllPublic: true });
+    const subscriptions = await fetchZulipSubscriptions(params.client, {
+      includeAllPublic: true,
+      includeSubscribers: true,
+    });
     for (const subscription of subscriptions) {
       const metadata = normalizeZulipStreamMetadata(subscription);
       if (metadata) {
@@ -788,7 +796,8 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       AccountId: route.accountId,
       ChatType: chatType,
       ChannelPrivacy: channelPrivacy,
-      IsPrivateChannel: kind !== "dm" ? channelPrivacy === "private" : undefined,
+      IsPrivateChannel:
+        kind !== "dm" && channelPrivacy !== "unknown" ? channelPrivacy === "private" : undefined,
       InviteOnly: streamMetadata?.inviteOnly,
       IsWebPublic: streamMetadata?.isWebPublic,
       HistoryPublicToSubscribers: streamMetadata?.historyPublicToSubscribers,

@@ -59,6 +59,7 @@ export type ZulipStream = {
   is_web_public?: boolean;
   history_public_to_subscribers?: boolean;
   subscriber_count?: number;
+  subscribers?: Array<number | string>;
 };
 
 export type ZulipSubscription = {
@@ -70,6 +71,7 @@ export type ZulipSubscription = {
   is_web_public?: boolean;
   history_public_to_subscribers?: boolean;
   subscriber_count?: number;
+  subscribers?: Array<number | string>;
 };
 
 export type ZulipMessage = {
@@ -338,6 +340,7 @@ export async function fetchZulipStream(
         is_web_public?: boolean;
         history_public_to_subscribers?: boolean;
         subscriber_count?: number;
+        subscribers?: Array<number | string>;
       };
     }
   >(`/streams/${streamId}`);
@@ -351,6 +354,7 @@ export async function fetchZulipStream(
     is_web_public: stream?.is_web_public,
     history_public_to_subscribers: stream?.history_public_to_subscribers,
     subscriber_count: stream?.subscriber_count,
+    subscribers: stream?.subscribers,
   };
 }
 
@@ -594,11 +598,14 @@ export async function sendZulipTyping(
 
 export async function fetchZulipSubscriptions(
   client: ZulipClient,
-  params: { includeAllPublic?: boolean } = {},
+  params: { includeAllPublic?: boolean; includeSubscribers?: boolean } = {},
 ): Promise<ZulipSubscription[]> {
   const qs = new URLSearchParams();
   if (params.includeAllPublic) {
     qs.set("include_all_public_streams", "true");
+  }
+  if (params.includeSubscribers) {
+    qs.set("include_subscribers", "true");
   }
   const suffix = qs.toString();
   const payload = await client.request<ZulipApiResponse & { subscriptions?: ZulipSubscription[] }>(
@@ -619,6 +626,7 @@ export async function fetchZulipStreams(client: ZulipClient): Promise<ZulipStrea
         is_web_public?: boolean;
         history_public_to_subscribers?: boolean;
         subscriber_count?: number;
+        subscribers?: Array<number | string>;
       }>;
     }
   >("/streams");
@@ -631,6 +639,7 @@ export async function fetchZulipStreams(client: ZulipClient): Promise<ZulipStrea
     is_web_public: stream.is_web_public,
     history_public_to_subscribers: stream.history_public_to_subscribers,
     subscriber_count: stream.subscriber_count,
+    subscribers: stream.subscribers,
   }));
 }
 

@@ -55,6 +55,10 @@ export type ZulipStream = {
   id: string;
   name?: string | null;
   description?: string | null;
+  invite_only?: boolean;
+  is_web_public?: boolean;
+  history_public_to_subscribers?: boolean;
+  subscriber_count?: number;
 };
 
 export type ZulipSubscription = {
@@ -64,6 +68,8 @@ export type ZulipSubscription = {
   email_address?: string | null;
   invite_only?: boolean;
   is_web_public?: boolean;
+  history_public_to_subscribers?: boolean;
+  subscriber_count?: number;
 };
 
 export type ZulipMessage = {
@@ -323,7 +329,17 @@ export async function fetchZulipStream(
   streamId: string,
 ): Promise<ZulipStream> {
   const payload = await client.request<
-    ZulipApiResponse & { stream?: { stream_id: number; name?: string; description?: string } }
+    ZulipApiResponse & {
+      stream?: {
+        stream_id: number;
+        name?: string;
+        description?: string;
+        invite_only?: boolean;
+        is_web_public?: boolean;
+        history_public_to_subscribers?: boolean;
+        subscriber_count?: number;
+      };
+    }
   >(`/streams/${streamId}`);
   assertSuccess(payload, "Zulip /streams/{id} failed");
   const stream = payload.stream;
@@ -331,6 +347,10 @@ export async function fetchZulipStream(
     id: String(stream?.stream_id ?? streamId),
     name: stream?.name ?? null,
     description: stream?.description ?? null,
+    invite_only: stream?.invite_only,
+    is_web_public: stream?.is_web_public,
+    history_public_to_subscribers: stream?.history_public_to_subscribers,
+    subscriber_count: stream?.subscriber_count,
   };
 }
 
@@ -591,7 +611,15 @@ export async function fetchZulipSubscriptions(
 export async function fetchZulipStreams(client: ZulipClient): Promise<ZulipStream[]> {
   const payload = await client.request<
     ZulipApiResponse & {
-      streams?: Array<{ stream_id: number; name?: string; description?: string }>;
+      streams?: Array<{
+        stream_id: number;
+        name?: string;
+        description?: string;
+        invite_only?: boolean;
+        is_web_public?: boolean;
+        history_public_to_subscribers?: boolean;
+        subscriber_count?: number;
+      }>;
     }
   >("/streams");
   assertSuccess(payload, "Zulip /streams failed");
@@ -599,6 +627,10 @@ export async function fetchZulipStreams(client: ZulipClient): Promise<ZulipStrea
     id: String(stream.stream_id),
     name: stream.name ?? null,
     description: stream.description ?? null,
+    invite_only: stream.invite_only,
+    is_web_public: stream.is_web_public,
+    history_public_to_subscribers: stream.history_public_to_subscribers,
+    subscriber_count: stream.subscriber_count,
   }));
 }
 

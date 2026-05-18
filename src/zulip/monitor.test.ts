@@ -73,6 +73,8 @@ const state = vi.hoisted(() => {
   return {
     abortController: undefined as AbortController | undefined,
     pollResponses: [] as Array<Record<string, unknown>>,
+    streamSubscriptions: [] as Array<Record<string, unknown>>,
+    streamLookups: new Map<string, Record<string, unknown> | Error>(),
     downloadedUploads: [] as Array<{ buffer: Buffer; contentType: string; filename: string }>,
     extractedUploadUrls: [] as string[],
     client: { authHeader: "fake-auth" },
@@ -113,11 +115,23 @@ const getZulipEventsWithRetryMock = vi.fn(async () => {
   return next;
 });
 const deleteZulipQueueMock = vi.fn(async () => {});
+const fetchZulipSubscriptionsMock = vi.fn(async () => state.streamSubscriptions);
+const fetchZulipStreamMock = vi.fn(async (_client: unknown, streamId: string) => {
+  const result = state.streamLookups.get(String(streamId));
+  if (result instanceof Error) {
+    throw result;
+  }
+  if (result) {
+    return result;
+  }
+  throw new Error(`unexpected stream metadata lookup: ${streamId}`);
+});
 
 vi.mock("./client.js", () => ({
   createZulipClient: vi.fn(() => state.client),
   fetchZulipMe: vi.fn(async () => state.botUser),
-  fetchZulipStream: vi.fn(),
+  fetchZulipStream: fetchZulipStreamMock,
+  fetchZulipSubscriptions: fetchZulipSubscriptionsMock,
   normalizeZulipBaseUrl: vi.fn((url?: string) => url ?? ""),
   registerZulipQueue: registerZulipQueueMock,
   getZulipEventsWithRetry: getZulipEventsWithRetryMock,
@@ -267,6 +281,17 @@ describe("monitorZulipProvider", () => {
       reactions: { enabled: false },
     };
     state.pollResponses = [];
+    state.streamSubscriptions = [
+      {
+        stream_id: 4,
+        name: "debbie",
+        invite_only: false,
+        is_web_public: false,
+        history_public_to_subscribers: true,
+        subscriber_count: 12,
+      },
+    ];
+    state.streamLookups = new Map();
     state.downloadedUploads = [];
     state.extractedUploadUrls = [];
     state.abortController = undefined;
@@ -275,6 +300,8 @@ describe("monitorZulipProvider", () => {
     registerZulipQueueMock.mockClear();
     getZulipEventsWithRetryMock.mockClear();
     deleteZulipQueueMock.mockClear();
+    fetchZulipSubscriptionsMock.mockClear();
+    fetchZulipStreamMock.mockClear();
   });
 
   it("wires typing idle cleanup into the reply dispatcher", async () => {
@@ -306,6 +333,109 @@ describe("monitorZulipProvider", () => {
     expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledTimes(1);
     expect(state.core.channel.reply.dispatchReplyFromConfig).toHaveBeenCalledTimes(1);
     expect(state.core.system.enqueueSystemEvent).not.toHaveBeenCalled();
+  });
+
+  it("surfaces private invite-only stream metadata while keeping ChatType channel", async () => {
+    state.streamSubscriptions = [
+      {
+        stream_id: 4,
+        name: "debbie",
+        invite_only: true,
+        is_web_public: false,
+        history_public_to_subscribers: false,
+        subscriber_count: 3,
+      },
+    ];
+    state.pollResponses = [
+      {
+        result: "success",
+        events: [{ id: 1, type: "message", message: makeChannelMessage(1006) }],
+      },
+    ];
+
+    await runMonitorOnce();
+
+    expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ChatType: "channel",
+        ChannelPrivacy: "private",
+        IsPrivateChannel: true,
+        InviteOnly: true,
+        IsWebPublic: false,
+        HistoryPublicToSubscribers: false,
+        SubscriberCount: 3,
+        StreamId: "4",
+      }),
+    );
+    expect(fetchZulipStreamMock).not.toHaveBeenCalled();
+  });
+
+  it("surfaces public stream metadata from cached subscriptions", async () => {
+    state.streamSubscriptions = [
+      {
+        stream_id: 4,
+        name: "debbie",
+        invite_only: false,
+        is_web_public: true,
+        history_public_to_subscribers: true,
+        subscriber_count: 48,
+      },
+    ];
+    state.pollResponses = [
+      {
+        result: "success",
+        events: [{ id: 1, type: "message", message: makeChannelMessage(1007) }],
+      },
+    ];
+
+    await runMonitorOnce();
+
+    expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ChatType: "channel",
+        ChannelPrivacy: "public",
+        IsPrivateChannel: false,
+        InviteOnly: false,
+        IsWebPublic: true,
+        HistoryPublicToSubscribers: true,
+        SubscriberCount: 48,
+        StreamId: "4",
+      }),
+    );
+  });
+
+  it("falls back to unknown stream privacy when metadata lookup fails", async () => {
+    state.streamSubscriptions = [];
+    state.streamLookups.set("404", new Error("metadata unavailable"));
+    state.pollResponses = [
+      {
+        result: "success",
+        events: [
+          {
+            id: 1,
+            type: "message",
+            message: {
+              ...makeChannelMessage(1008),
+              stream_id: 404,
+              display_recipient: "missing-private",
+            },
+          },
+        ],
+      },
+    ];
+
+    await runMonitorOnce();
+
+    expect(fetchZulipStreamMock).toHaveBeenCalledWith(state.client, "404");
+    expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ChatType: "channel",
+        ChannelPrivacy: "unknown",
+        IsPrivateChannel: false,
+        StreamId: "404",
+      }),
+    );
+    expect(state.core.channel.reply.dispatchReplyFromConfig).toHaveBeenCalledTimes(1);
   });
 
   it("falls back to temp-file media storage with a sanitized filename when runtime saveMediaBuffer is unavailable", async () => {

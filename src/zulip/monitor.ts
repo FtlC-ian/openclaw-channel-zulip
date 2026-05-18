@@ -29,6 +29,7 @@ import {
   createZulipClient,
   fetchZulipMe,
   fetchZulipStream,
+  fetchZulipSubscriptions,
   normalizeZulipBaseUrl,
   registerZulipQueue,
   getZulipEventsWithRetry,
@@ -38,6 +39,7 @@ import {
   removeZulipReaction,
   type ZulipMessage,
   type ZulipStream,
+  type ZulipSubscription,
 } from "./client.js";
 import {
   createDedupeCache,
@@ -68,6 +70,106 @@ const recentInboundMessages = createDedupeCache({
   ttlMs: RECENT_MESSAGE_TTL_MS,
   maxSize: RECENT_MESSAGE_MAX,
 });
+
+type ZulipStreamMetadata = {
+  streamId: string;
+  name?: string | null;
+  inviteOnly?: boolean;
+  isWebPublic?: boolean;
+  historyPublicToSubscribers?: boolean;
+  subscriberCount?: number;
+};
+
+type ZulipStreamPrivacy = "private" | "public" | "unknown";
+
+const streamMetadataCache = new Map<string, ZulipStreamMetadata>();
+
+function streamMetadataCacheKey(accountId: string, streamId: string): string {
+  return `${accountId}:${streamId}`;
+}
+
+function normalizeZulipStreamMetadata(
+  stream: ZulipStream | ZulipSubscription,
+): ZulipStreamMetadata | null {
+  const rawStreamId = "id" in stream ? stream.id : stream.stream_id;
+  const streamId = String(rawStreamId ?? "").trim();
+  if (!streamId) {
+    return null;
+  }
+  return {
+    streamId,
+    name: stream.name ?? null,
+    inviteOnly: stream.invite_only,
+    isWebPublic: stream.is_web_public,
+    historyPublicToSubscribers: stream.history_public_to_subscribers,
+    subscriberCount: stream.subscriber_count,
+  };
+}
+
+function cacheZulipStreamMetadata(accountId: string, metadata: ZulipStreamMetadata): void {
+  streamMetadataCache.set(streamMetadataCacheKey(accountId, metadata.streamId), metadata);
+}
+
+function resolveZulipStreamPrivacy(
+  metadata: ZulipStreamMetadata | undefined,
+): ZulipStreamPrivacy {
+  if (!metadata) {
+    return "unknown";
+  }
+  if (metadata.inviteOnly === true) {
+    return "private";
+  }
+  if (metadata.inviteOnly === false || metadata.isWebPublic === true) {
+    return "public";
+  }
+  return "unknown";
+}
+
+async function seedZulipStreamMetadataCache(params: {
+  client: ReturnType<typeof createZulipClient>;
+  accountId: string;
+  log: (message: string) => void;
+}): Promise<void> {
+  try {
+    const subscriptions = await fetchZulipSubscriptions(params.client, { includeAllPublic: true });
+    for (const subscription of subscriptions) {
+      const metadata = normalizeZulipStreamMetadata(subscription);
+      if (metadata) {
+        cacheZulipStreamMetadata(params.accountId, metadata);
+      }
+    }
+  } catch (err) {
+    params.log(`zulip: stream metadata seed failed: ${String(err)}`);
+  }
+}
+
+async function resolveCachedZulipStreamMetadata(params: {
+  client: ReturnType<typeof createZulipClient>;
+  accountId: string;
+  streamId: string;
+  log: (message: string) => void;
+}): Promise<ZulipStreamMetadata | undefined> {
+  const streamId = params.streamId.trim();
+  if (!streamId) {
+    return undefined;
+  }
+  const key = streamMetadataCacheKey(params.accountId, streamId);
+  const cached = streamMetadataCache.get(key);
+  if (cached) {
+    return cached;
+  }
+  try {
+    const stream = await fetchZulipStream(params.client, streamId);
+    const metadata = normalizeZulipStreamMetadata(stream);
+    if (metadata) {
+      cacheZulipStreamMetadata(params.accountId, metadata);
+      return metadata;
+    }
+  } catch (err) {
+    params.log(`zulip: stream metadata lookup failed streamId=${streamId}: ${String(err)}`);
+  }
+  return undefined;
+}
 
 function resolveRuntime(opts: MonitorZulipOpts): RuntimeEnv {
   return (
@@ -291,6 +393,11 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
   const logVerboseMessage = core.logging.shouldLogVerbose()
     ? (message: string) => logger.debug?.(message)
     : () => {};
+  await seedZulipStreamMetadataCache({
+    client,
+    accountId: account.accountId,
+    log: logVerboseMessage,
+  });
 
   const defaultTopic = account.config.defaultTopic?.trim() ?? FALLBACK_TOPIC;
   const oncharPrefixes = resolveOncharPrefixes(account.oncharPrefixes);
@@ -611,6 +718,16 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
             streamId: channelId,
             topic,
           });
+    const streamMetadata =
+      kind === "dm"
+        ? undefined
+        : await resolveCachedZulipStreamMetadata({
+            client,
+            accountId: account.accountId,
+            streamId: channelId,
+            log: logVerboseMessage,
+          });
+    const channelPrivacy = kind === "dm" ? undefined : resolveZulipStreamPrivacy(streamMetadata);
 
     const route = core.channel.routing.resolveAgentRoute({
       cfg,
@@ -670,6 +787,13 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       ParentSessionKey: parentSessionKey,
       AccountId: route.accountId,
       ChatType: chatType,
+      ChannelPrivacy: channelPrivacy,
+      IsPrivateChannel: kind !== "dm" ? channelPrivacy === "private" : undefined,
+      InviteOnly: streamMetadata?.inviteOnly,
+      IsWebPublic: streamMetadata?.isWebPublic,
+      HistoryPublicToSubscribers: streamMetadata?.historyPublicToSubscribers,
+      SubscriberCount: streamMetadata?.subscriberCount,
+      StreamId: kind !== "dm" ? streamId : undefined,
       ConversationLabel: fromLabel,
       GroupSubject: kind !== "dm" ? roomLabel : undefined,
       GroupChannel: streamName ? `#${streamName}` : undefined,

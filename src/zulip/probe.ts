@@ -1,4 +1,4 @@
-import { fetchWithSsrFGuard } from "../sdk.js";
+import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
 import { normalizeZulipBaseUrl, readZulipError, type ZulipUser } from "./client.js";
 
 export type ZulipProbe = {
@@ -28,6 +28,7 @@ export async function probeZulip(
       init: {
         headers: {
           Authorization: `Basic ${authHeader}`,
+          "Accept-Encoding": "identity",
         },
         signal: controller.signal,
       },

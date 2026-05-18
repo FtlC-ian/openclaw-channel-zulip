@@ -9,6 +9,22 @@ function jsonResponse(body: unknown, init?: ResponseInit): Response {
 }
 
 describe("zulipRequestWithRetry", () => {
+  it("requests identity encoding so Zulip responses are not parsed while still gzipped", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({ result: "success", events: [] }));
+    const client = createZulipClient({
+      baseUrl: "https://zulip.example.test/",
+      email: "bot@example.test",
+      apiKey: "secret",
+      fetchImpl,
+    });
+
+    await zulipRequestWithRetry(client, "/events", { method: "GET" }, { maxRetries: 0 });
+
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    const headers = new Headers(init?.headers);
+    expect(headers.get("Accept-Encoding")).toBe("identity");
+  });
+
   it("retries thrown fetch/network exceptions and logs retry events", async () => {
     const retry = vi.fn<NonNullable<ZulipRequestLogger["retry"]>>();
     const failure = vi.fn<NonNullable<ZulipRequestLogger["failure"]>>();

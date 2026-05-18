@@ -166,21 +166,45 @@ const typingCallbacksMock = vi.fn(() => ({
 }));
 
 vi.mock("../sdk.js", () => ({
-  createReplyPrefixOptions: vi.fn(() => ({ onModelSelected: vi.fn() })),
   createScopedPairingAccess: vi.fn(() => ({
     upsertPairingRequest: vi.fn(async () => ({ code: "123456", created: false })),
     readStoreForDmPolicy: vi.fn(async () => []),
   })),
+}));
+
+vi.mock("openclaw/plugin-sdk/channel-runtime", () => ({
+  createReplyPrefixOptions: vi.fn(() => ({ onModelSelected: vi.fn() })),
   createTypingCallbacks: typingCallbacksMock,
+}));
+
+vi.mock("openclaw/plugin-sdk/channel-inbound", () => ({
   logInboundDrop: vi.fn(),
+}));
+
+vi.mock("openclaw/plugin-sdk/channel-feedback", () => ({
   logTypingFailure: vi.fn(),
+}));
+
+vi.mock("openclaw/plugin-sdk/reply-history", () => ({
   buildPendingHistoryContextFromMap: vi.fn(() => undefined),
   clearHistoryEntriesIfEnabled: vi.fn(),
   DEFAULT_GROUP_HISTORY_LIMIT: 20,
   recordPendingHistoryEntryIfEnabled: vi.fn(),
+}));
+
+vi.mock("openclaw/plugin-sdk/command-auth", () => ({
   resolveControlCommandGate: vi.fn(() => ({ shouldBlock: false, commandAuthorized: true })),
+}));
+
+vi.mock("openclaw/plugin-sdk/media-runtime", () => ({
   resolveChannelMediaMaxBytes: vi.fn(() => undefined),
+}));
+
+vi.mock("openclaw/plugin-sdk/temp-path", () => ({
   resolvePreferredOpenClawTmpDir: vi.fn(() => "/tmp"),
+}));
+
+vi.mock("openclaw/plugin-sdk/channel-policy", () => ({
   readStoreAllowFromForDmPolicy: vi.fn(async () => []),
   resolveDmGroupAccessWithLists: vi.fn(
     ({ allowFrom, groupAllowFrom }: { allowFrom: string[]; groupAllowFrom: string[] }) => ({

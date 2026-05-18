@@ -28,8 +28,6 @@ import {
 } from "./zulip/accounts.js";
 import { zulipApprovalAuth } from "./approval-auth.js";
 import { normalizeZulipBaseUrl } from "./zulip/client.js";
-import { monitorZulipProvider } from "./zulip/monitor.js";
-import { probeZulip } from "./zulip/probe.js";
 import { sendMessageZulip } from "./zulip/send.js";
 import { resolveZulipSessionConversation } from "./session-conversation.js";
 import { zulipSecrets } from "./secret-contract.js";
@@ -310,6 +308,7 @@ export const zulipPlugin = {
       if (!apiKey || !email || !baseUrl) {
         return { ok: false, error: "apiKey, email, or url missing" };
       }
+      const { probeZulip } = await import("./zulip/probe.js");
       return await probeZulip(baseUrl, email, apiKey, timeoutMs);
     },
     buildAccountSnapshot: ({ account, runtime, probe }) =>
@@ -432,6 +431,7 @@ export const zulipPlugin = {
         emailSource: account.emailSource,
       } as ChannelAccountSnapshot);
       ctx.log?.info(`[${account.accountId}] starting channel`);
+      const { monitorZulipProvider } = await import("./zulip/monitor.js");
       return monitorZulipProvider({
         email: account.email ?? undefined,
         baseUrl: account.baseUrl ?? undefined,

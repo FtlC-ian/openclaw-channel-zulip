@@ -1,5 +1,5 @@
 import path from "node:path";
-import { fetchWithSsrFGuard } from "../sdk.js";
+import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
 
 export function normalizeZulipEmojiName(raw?: string | null): string {
   const trimmed = raw?.trim() ?? "";
@@ -114,6 +114,7 @@ export async function downloadZulipUpload(
     init: {
       headers: {
         Authorization: `Basic ${authHeader}`,
+        "Accept-Encoding": "identity",
       },
     },
   });

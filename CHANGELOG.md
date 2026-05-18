@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026.5.18
+
+### Bug Fixes
+- **Zulip polling compression**: Request identity encoding for Zulip API calls so event responses are not handed back still gzipped by runtime fetch behavior.
+
+### Compatibility
+- **OpenClaw 2026.5.12 compatibility**: Raise the OpenClaw development dependency and plugin host metadata to `2026.5.12`, and import newer SDK helpers directly from their plugin-sdk modules.
+
 ## 2026.5.7
 
 ### Bug Fixes

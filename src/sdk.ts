@@ -9,7 +9,6 @@ export type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 export type { WizardPrompter } from "openclaw/plugin-sdk/setup";
 
 export type { ChannelGroupContext } from "openclaw/plugin-sdk/channel-runtime";
-export { createReplyPrefixOptions, createTypingCallbacks } from "openclaw/plugin-sdk/channel-runtime";
 
 export type { ChannelOutboundAdapter } from "openclaw/plugin-sdk/channel-send-result";
 
@@ -29,10 +28,6 @@ export {
 export { jsonResult } from "openclaw/plugin-sdk/core";
 export { readNumberParam, readStringParam } from "openclaw/plugin-sdk/param-readers";
 export { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/temp-path";
-export { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
-export { resolveControlCommandGate } from "openclaw/plugin-sdk/command-auth";
-export { resolveChannelMediaMaxBytes } from "openclaw/plugin-sdk/media-runtime";
-export { readStoreAllowFromForDmPolicy, resolveDmGroupAccessWithLists } from "openclaw/plugin-sdk/channel-policy";
 
 export function createScopedPairingAccess(params: {
   core: OpenClawPluginRuntime;
@@ -62,12 +57,4 @@ export function createScopedPairingAccess(params: {
       }),
   };
 }
-export {
-  buildPendingHistoryContextFromMap,
-  clearHistoryEntriesIfEnabled,
-  DEFAULT_GROUP_HISTORY_LIMIT,
-  recordPendingHistoryEntryIfEnabled,
-} from "openclaw/plugin-sdk/reply-history";
 export type { HistoryEntry } from "openclaw/plugin-sdk/reply-history";
-export { logInboundDrop } from "openclaw/plugin-sdk/channel-inbound";
-export { logTypingFailure } from "openclaw/plugin-sdk/channel-feedback";

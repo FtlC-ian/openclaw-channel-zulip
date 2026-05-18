@@ -117,6 +117,20 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function prepareZulipRequestHeaders(init?: RequestInit, authHeader?: string): Headers {
+  const headers = new Headers(init?.headers);
+  if (authHeader) {
+    headers.set("Authorization", `Basic ${authHeader}`);
+  }
+  if (!headers.has("Accept-Encoding")) {
+    headers.set("Accept-Encoding", "identity");
+  }
+  if (init?.body && !headers.has("Content-Type") && typeof init.body === "string") {
+    headers.set("Content-Type", "application/x-www-form-urlencoded");
+  }
+  return headers;
+}
+
 export async function readZulipError(res: Response): Promise<string> {
   const contentType = res.headers.get("content-type") ?? "";
   if (contentType.includes("application/json")) {
@@ -150,11 +164,7 @@ export function createZulipClient(params: {
 
   const request = async <T>(path: string, init?: RequestInit): Promise<T> => {
     const url = buildZulipApiUrl(baseUrl, path);
-    const headers = new Headers(init?.headers);
-    headers.set("Authorization", `Basic ${authHeader}`);
-    if (init?.body && !headers.has("Content-Type") && typeof init.body === "string") {
-      headers.set("Content-Type", "application/x-www-form-urlencoded");
-    }
+    const headers = prepareZulipRequestHeaders(init, authHeader);
     const res = await fetchImpl(url, { ...init, headers });
     if (!res.ok) {
       const detail = await readZulipError(res);
@@ -198,11 +208,7 @@ export async function zulipRequestWithRetry<T>(
 
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     const url = buildZulipApiUrl(client.baseUrl, path);
-    const headers = new Headers(init?.headers);
-    headers.set("Authorization", `Basic ${client.authHeader}`);
-    if (init?.body && !headers.has("Content-Type") && typeof init.body === "string") {
-      headers.set("Content-Type", "application/x-www-form-urlencoded");
-    }
+    const headers = prepareZulipRequestHeaders(init, client.authHeader);
 
     let res: Response;
     try {

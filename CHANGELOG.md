@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026.5.22
+
+### Features
+- **OpenClaw channel message adapter**: Expose the 2026.5.22 durable message adapter and route shared `message(action="send")` calls through core delivery instead of the legacy action-only path.
+- **Poll delivery**: Send generic OpenClaw polls as Zulip zform widgets.
+
+### Bug Fixes
+- **Threaded sends**: Preserve `threadId` as the Zulip topic for durable text, media, and payload sends.
+- **Multipart media receipts**: Return all platform message ids for multi-media payloads so durable receipts, hooks, and recovery can track every delivered Zulip message.
+- **Host media access**: Forward host-provided media access/read capabilities for durable local media sends.
+
+### Compatibility
+- **OpenClaw 2026.5.22 compatibility**: Raise the OpenClaw development dependency and plugin host metadata to `2026.5.22` for the new channel-message SDK subpath.
+
 ## 2026.5.18
 
 ### Bug Fixes

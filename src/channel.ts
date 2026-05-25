@@ -7,6 +7,7 @@ import {
   migrateBaseNameToDefaultAccount,
   normalizeAccountId,
   setAccountEnabledInConfigSection,
+  createChannelMessageAdapterFromOutbound,
   type ChannelAccountSnapshot,
   type ChannelOutboundAdapter,
   type ChannelPlugin,
@@ -28,7 +29,7 @@ import {
 } from "./zulip/accounts.js";
 import { zulipApprovalAuth } from "./approval-auth.js";
 import { normalizeZulipBaseUrl } from "./zulip/client.js";
-import { sendMessageZulip } from "./zulip/send.js";
+import { sendMessageZulip, sendPollZulip } from "./zulip/send.js";
 import { resolveZulipSessionConversation } from "./session-conversation.js";
 import { zulipSecrets } from "./secret-contract.js";
 
@@ -45,6 +46,148 @@ const meta = {
   quickstartAllowFrom: true,
   preferSessionLookupForAnnounceTarget: true,
 } as const;
+
+export const zulipOutboundAdapter: ChannelOutboundAdapter = {
+  deliveryMode: "direct",
+  chunker: (text, limit) => getZulipRuntime().channel.text.chunkMarkdownText(text, limit),
+  chunkerMode: "markdown",
+  textChunkLimit: 4000,
+  pollMaxOptions: 25,
+  deliveryCapabilities: {
+    durableFinal: {
+      text: true,
+      media: true,
+      payload: true,
+      poll: true,
+      messageSendingHooks: true,
+    },
+  },
+  resolveTarget: ({ to }) => {
+    const trimmed = to?.trim();
+    if (!trimmed) {
+      return {
+        ok: false,
+        error: new Error(
+          "Delivering to Zulip requires --to <stream:NAME[:topic]|user:email|#stream[:topic]|@email>",
+        ),
+      };
+    }
+    return { ok: true, to: trimmed };
+  },
+  sendText: async ({ cfg, to, text, accountId, threadId }) => {
+    const result = await sendMessageZulip(to, text, {
+      cfg,
+      accountId: accountId ?? undefined,
+      topic: threadId == null ? undefined : String(threadId),
+    });
+    return { channel: "zulip", ...result };
+  },
+  sendMedia: async ({
+    cfg,
+    to,
+    text,
+    mediaUrl,
+    accountId,
+    threadId,
+    mediaAccess,
+    mediaLocalRoots,
+    mediaReadFile,
+  }) => {
+    const result = await sendMessageZulip(to, text, {
+      cfg,
+      accountId: accountId ?? undefined,
+      mediaUrl,
+      topic: threadId == null ? undefined : String(threadId),
+      mediaAccess,
+      mediaLocalRoots,
+      mediaReadFile,
+    });
+    return { channel: "zulip", ...result };
+  },
+  sendPayload: async (ctx) => {
+    const logger = getZulipRuntime().logging.getChildLogger({ module: "zulip" });
+    const text = ctx.payload.text ?? "";
+    const mediaUrls = ctx.payload.mediaUrls?.length
+      ? ctx.payload.mediaUrls
+      : ctx.payload.mediaUrl
+        ? [ctx.payload.mediaUrl]
+        : [];
+    logger.debug?.("zulip outbound payload accepted", {
+      to: ctx.to,
+      accountId: ctx.accountId ?? "default",
+      textLength: text.length,
+      mediaCount: mediaUrls.length,
+      hasInteractive: Boolean(ctx.payload.interactive?.blocks?.length),
+      channelDataKeys: Object.keys(ctx.payload.channelData ?? {}),
+    });
+    if (mediaUrls.length > 0) {
+      const results: Array<{ messageId: string; channelId: string }> = [];
+      for (let i = 0; i < mediaUrls.length; i++) {
+        const result = await sendMessageZulip(ctx.to, i === 0 ? text : "", {
+          cfg: ctx.cfg,
+          accountId: ctx.accountId ?? undefined,
+          mediaUrl: mediaUrls[i],
+          topic: ctx.threadId == null ? undefined : String(ctx.threadId),
+          mediaAccess: ctx.mediaAccess,
+          mediaLocalRoots: ctx.mediaLocalRoots,
+          mediaReadFile: ctx.mediaReadFile,
+          interactive: i === 0 ? ctx.payload.interactive : undefined,
+          channelData: i === 0 ? (ctx.payload.channelData as ReplyPayload["channelData"] | undefined) : undefined,
+        });
+        results.push(result);
+      }
+      const primary = results[0];
+      if (!primary) {
+        throw new Error("Zulip media payload produced no send results");
+      }
+      const platformMessageIds = results.map((result) => result.messageId).filter(Boolean);
+      return {
+        channel: "zulip",
+        messageId: primary.messageId,
+        channelId: primary.channelId,
+        receipt: {
+          primaryPlatformMessageId: platformMessageIds[0],
+          platformMessageIds,
+          parts: results.map((result, index) => ({
+            platformMessageId: result.messageId,
+            kind: "media" as const,
+            index,
+            ...(ctx.threadId == null ? {} : { threadId: String(ctx.threadId) }),
+            raw: { channel: "zulip", messageId: result.messageId, channelId: result.channelId },
+          })),
+          ...(ctx.threadId == null ? {} : { threadId: String(ctx.threadId) }),
+          sentAt: Date.now(),
+          raw: results.map((result) => ({
+            channel: "zulip",
+            messageId: result.messageId,
+            channelId: result.channelId,
+          })),
+        },
+      };
+    }
+    const result = await sendMessageZulip(ctx.to, text, {
+      cfg: ctx.cfg,
+      accountId: ctx.accountId ?? undefined,
+      topic: ctx.threadId == null ? undefined : String(ctx.threadId),
+      interactive: ctx.payload.interactive,
+      channelData: ctx.payload.channelData as ReplyPayload["channelData"] | undefined,
+    });
+    return { channel: "zulip", ...result };
+  },
+  sendPoll: async ({ cfg, to, poll, accountId, threadId }) => {
+    const result = await sendPollZulip(to, poll, {
+      cfg,
+      accountId: accountId ?? undefined,
+      topic: threadId == null ? undefined : String(threadId),
+    });
+    return { channel: "zulip", pollId: result.messageId, ...result };
+  },
+};
+
+export const zulipMessageAdapter = createChannelMessageAdapterFromOutbound({
+  id: "zulip",
+  outbound: zulipOutboundAdapter,
+});
 
 function normalizeAllowEntry(entry: string): string {
   return entry
@@ -82,6 +225,7 @@ export const zulipPlugin = {
     chatTypes: ["direct", "channel", "group", "thread"],
     threads: true,
     media: true,
+    polls: true,
     interactiveReplies: true,
   },
   streaming: {
@@ -196,79 +340,8 @@ export const zulipPlugin = {
       hint: "<stream:NAME[:topic]|user:email|#stream[:topic]|@email>",
     },
   },
-  outbound: (() => {
-    const outbound: ChannelOutboundAdapter = {
-      deliveryMode: "direct",
-      chunker: (text, limit) => getZulipRuntime().channel.text.chunkMarkdownText(text, limit),
-      chunkerMode: "markdown",
-      textChunkLimit: 4000,
-      resolveTarget: ({ to }) => {
-        const trimmed = to?.trim();
-        if (!trimmed) {
-          return {
-            ok: false,
-            error: new Error(
-              "Delivering to Zulip requires --to <stream:NAME[:topic]|user:email|#stream[:topic]|@email>",
-            ),
-          };
-        }
-        return { ok: true, to: trimmed };
-      },
-      sendText: async ({ cfg, to, text, accountId }) => {
-        const result = await sendMessageZulip(to, text, {
-          cfg,
-          accountId: accountId ?? undefined,
-        });
-        return { channel: "zulip", ...result };
-      },
-      sendMedia: async ({ cfg, to, text, mediaUrl, accountId }) => {
-        const result = await sendMessageZulip(to, text, {
-          cfg,
-          accountId: accountId ?? undefined,
-          mediaUrl,
-        });
-        return { channel: "zulip", ...result };
-      },
-      sendPayload: async (ctx) => {
-        const logger = getZulipRuntime().logging.getChildLogger({ module: "zulip" });
-        const text = ctx.payload.text ?? "";
-        const mediaUrls = ctx.payload.mediaUrls?.length
-          ? ctx.payload.mediaUrls
-          : ctx.payload.mediaUrl
-            ? [ctx.payload.mediaUrl]
-            : [];
-        logger.debug?.("zulip outbound payload accepted", {
-          to: ctx.to,
-          accountId: ctx.accountId ?? "default",
-          textLength: text.length,
-          mediaCount: mediaUrls.length,
-          hasInteractive: Boolean(ctx.payload.interactive?.blocks?.length),
-          channelDataKeys: Object.keys(ctx.payload.channelData ?? {}),
-        });
-        if (mediaUrls.length > 0) {
-          let lastResult;
-          for (let i = 0; i < mediaUrls.length; i++) {
-            lastResult = await sendMessageZulip(ctx.to, i === 0 ? text : "", {
-              cfg: ctx.cfg,
-              accountId: ctx.accountId ?? undefined,
-              mediaUrl: mediaUrls[i],
-              interactive: i === 0 ? ctx.payload.interactive : undefined,
-              channelData: i === 0 ? (ctx.payload.channelData as ReplyPayload["channelData"] | undefined) : undefined,
-            });
-          }
-          return { channel: "zulip", ...lastResult! };
-        }
-        const result = await sendMessageZulip(ctx.to, text, {
-          cfg: ctx.cfg,
-          accountId: ctx.accountId ?? undefined,
-          interactive: ctx.payload.interactive,
-          channelData: ctx.payload.channelData as ReplyPayload["channelData"] | undefined,
-        });
-        return { channel: "zulip", ...result };
-      },
-    };
-    return outbound;
-  })(),
+  outbound: zulipOutboundAdapter,
+  message: zulipMessageAdapter,
   status: {
     defaultRuntime: {
       accountId: DEFAULT_ACCOUNT_ID,

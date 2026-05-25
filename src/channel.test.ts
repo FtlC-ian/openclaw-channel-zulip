@@ -53,6 +53,40 @@ describe("zulipPlugin", () => {
     });
   });
 
+  describe("message actions", () => {
+    it("prepares send payloads for durable core delivery", async () => {
+      const payload = {
+        text: "hello",
+        mediaUrls: ["https://example.test/a.png"],
+        channelData: { zulip: { widgetContent: { widget_type: "zform" } } },
+      };
+
+      expect(
+        await zulipMessageActions.prepareSendPayload?.({
+          ctx: {} as never,
+          to: "stream:general:topic",
+          payload,
+          threadId: "topic",
+        }),
+      ).toBe(payload);
+    });
+
+    it("advertises poll while letting core route through outbound.sendPoll", () => {
+      const cfg: OpenClawConfig = {
+        channels: {
+          zulip: {
+            apiKey: { source: "env", provider: "default", id: "ZULIP_API_KEY" },
+            email: "bot@example.test",
+            url: "https://zulip.example.test",
+          },
+        },
+      };
+
+      expect(zulipMessageActions.describeMessageTool({ cfg }).actions).toContain("poll");
+      expect(zulipMessageActions.supportsAction?.({ action: "poll" })).toBe(false);
+    });
+  });
+
   describe("pairing", () => {
     it("normalizes allowlist entries", () => {
       const normalize = zulipPlugin.pairing?.normalizeAllowEntry;

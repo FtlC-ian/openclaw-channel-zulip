@@ -11,6 +11,13 @@ export type { WizardPrompter } from "openclaw/plugin-sdk/setup";
 export type { ChannelGroupContext } from "openclaw/plugin-sdk/channel-runtime";
 
 export type { ChannelOutboundAdapter } from "openclaw/plugin-sdk/channel-send-result";
+export { loadOutboundMediaFromUrl } from "openclaw/plugin-sdk/outbound-media";
+
+export {
+  createChannelMessageAdapterFromOutbound,
+  verifyChannelMessageAdapterCapabilityProofs,
+} from "openclaw/plugin-sdk/channel-message";
+export type { ChannelMessageAdapterShape } from "openclaw/plugin-sdk/channel-message";
 
 export type { ChannelSetupWizardAdapter, DmPolicy, GroupPolicy } from "openclaw/plugin-sdk/setup";
 

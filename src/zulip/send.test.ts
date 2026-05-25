@@ -2,8 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 import {
   interactiveToZulipWidgetContent,
   normalizeLegacyZulipTarget,
+  pollToZulipWidgetContent,
   resolveZulipWidgetContent,
   sendMessageZulip,
+  sendPollZulip,
 } from "./send.js";
 
 describe("interactiveToZulipWidgetContent", () => {
@@ -78,6 +80,40 @@ describe("interactiveToZulipWidgetContent", () => {
 
   it("returns undefined when there are no buttons", () => {
     expect(interactiveToZulipWidgetContent({ blocks: [{ type: "text", text: "hi" }] })).toBeUndefined();
+  });
+});
+
+describe("pollToZulipWidgetContent", () => {
+  it("maps generic polls to Zulip zform choices", () => {
+    expect(
+      pollToZulipWidgetContent({
+        question: "Lunch?",
+        options: ["Pizza", "Sushi", "  "],
+        maxSelections: 2,
+      }),
+    ).toEqual({
+      widget_type: "zform",
+      extra_data: {
+        type: "choices",
+        heading: "Lunch?",
+        poll: true,
+        max_selections: 2,
+        choices: [
+          {
+            type: "multiple_choice",
+            short_name: "Pizza",
+            long_name: "Pizza",
+            reply: "Pizza",
+          },
+          {
+            type: "multiple_choice",
+            short_name: "Sushi",
+            long_name: "Sushi",
+            reply: "Sushi",
+          },
+        ],
+      },
+    });
   });
 });
 
@@ -163,6 +199,53 @@ describe("sendMessageZulip target parsing hardening", () => {
         accountId: "default",
       }),
     ).rejects.toThrow("Invalid Zulip direct-message target; expected an email address");
+  });
+});
+
+describe("sendPollZulip", () => {
+  it("sends generic polls through Zulip widget content", async () => {
+    await sendPollZulip(
+      "stream:general:lunch",
+      {
+        question: "Lunch?",
+        options: ["Pizza", "Sushi"],
+      },
+      {
+        cfg: { channels: { zulip: {} } },
+        accountId: "default",
+      },
+    );
+
+    expect(sendState.sendZulipStreamMessage).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        stream: "general",
+        topic: "lunch",
+        content: "Lunch?",
+        widgetContent: {
+          widget_type: "zform",
+          extra_data: {
+            type: "choices",
+            heading: "Lunch?",
+            poll: true,
+            choices: [
+              {
+                type: "multiple_choice",
+                short_name: "Pizza",
+                long_name: "Pizza",
+                reply: "Pizza",
+              },
+              {
+                type: "multiple_choice",
+                short_name: "Sushi",
+                long_name: "Sushi",
+                reply: "Sushi",
+              },
+            ],
+          },
+        },
+      }),
+    );
   });
 });
 

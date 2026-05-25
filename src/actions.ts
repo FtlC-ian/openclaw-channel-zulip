@@ -420,6 +420,7 @@ export const zulipMessageActions: ChannelMessageActionAdapter = {
       "member-info",
       "pin",
       "unpin",
+      "poll",
     ]);
     // TODO: These actions require core SDK changes to MESSAGE_ACTION_TARGET_MODE.
     // Re-enable once the SDK supports plugin-registered action target modes.
@@ -434,6 +435,7 @@ export const zulipMessageActions: ChannelMessageActionAdapter = {
     // actions.add("org-settings-edit" as ChannelMessageActionName);
     return { actions: Array.from(actions) };
   },
+  supportsAction: ({ action }) => action !== "poll",
   extractToolSend: ({ args }) => {
     const action = typeof args.action === "string" ? args.action.trim() : "";
     if (action !== "send") {
@@ -446,6 +448,7 @@ export const zulipMessageActions: ChannelMessageActionAdapter = {
     const accountId = typeof args.accountId === "string" ? args.accountId.trim() : undefined;
     return { to, accountId };
   },
+  prepareSendPayload: ({ payload }) => payload,
   handleAction: async ({ action, params, cfg, accountId, toolContext }) => {
     const { client, account } = await resolveZulipClient(cfg, accountId ?? undefined);
 

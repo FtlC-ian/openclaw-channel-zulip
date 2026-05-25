@@ -2,7 +2,10 @@ import fs from "node:fs";
 import fsPromises from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { resolvePreferredOpenClawTmpDir } from "../sdk.js";
+import {
+  loadOutboundMediaFromUrl,
+  resolvePreferredOpenClawTmpDir,
+} from "../sdk.js";
 import type { InteractiveReply, OpenClawConfig } from "../sdk.js";
 import { getZulipRuntime } from "../runtime.js";
 import { resolveZulipRuntimeAccount } from "./accounts.js";
@@ -27,6 +30,12 @@ type ZulipChannelData = {
   [key: string]: unknown;
 };
 
+type OutboundMediaAccess = {
+  localRoots?: readonly string[];
+  readFile?: (filePath: string) => Promise<Buffer>;
+  workspaceDir?: string;
+};
+
 type ZulipWidgetChoice = {
   type: "multiple_choice";
   short_name: string;
@@ -40,7 +49,15 @@ type ZulipWidgetContent = {
     type: "choices";
     heading: string;
     choices: ZulipWidgetChoice[];
+    max_selections?: number;
+    poll?: true;
   };
+};
+
+type PollInput = {
+  question: string;
+  options: string[];
+  maxSelections?: number;
 };
 
 export type ZulipSendOpts = {
@@ -50,6 +67,9 @@ export type ZulipSendOpts = {
   baseUrl?: string;
   accountId?: string;
   mediaUrl?: string;
+  mediaAccess?: OutboundMediaAccess;
+  mediaLocalRoots?: readonly string[];
+  mediaReadFile?: (filePath: string) => Promise<Buffer>;
   topic?: string;
   interactive?: InteractivePayload;
   channelData?: ZulipChannelData;
@@ -107,6 +127,32 @@ function interactiveToZulipWidgetContent(
 
 export { interactiveToZulipWidgetContent };
 
+export function pollToZulipWidgetContent(poll: PollInput): ZulipWidgetContent {
+  const heading = poll.question.trim();
+  const choices = poll.options
+    .map((option) => option.trim())
+    .filter(Boolean)
+    .map((option) => ({
+      type: "multiple_choice" as const,
+      short_name: option,
+      long_name: option,
+      reply: option,
+    }));
+
+  return {
+    widget_type: "zform",
+    extra_data: {
+      type: "choices",
+      heading,
+      choices,
+      poll: true,
+      ...(poll.maxSelections && poll.maxSelections > 1
+        ? { max_selections: poll.maxSelections }
+        : {}),
+    },
+  };
+}
+
 export function resolveZulipWidgetContent(params: {
   interactive?: InteractivePayload;
   channelData?: ZulipChannelData;
@@ -148,6 +194,10 @@ function resolveZulipLocalPath(value: string): string | null {
     return value;
   }
   return null;
+}
+
+function hasHostMediaAccess(opts: ZulipSendOpts): boolean {
+  return Boolean(opts.mediaAccess || opts.mediaLocalRoots?.length || opts.mediaReadFile);
 }
 
 async function writeTempFile(
@@ -299,7 +349,32 @@ export async function sendMessageZulip(
   if (mediaUrl) {
     const localPath = resolveZulipLocalPath(mediaUrl);
     const isZulipHosted = isHttpUrl(mediaUrl) && mediaUrl.startsWith(baseUrl);
-    if (localPath && fs.existsSync(localPath)) {
+    if (hasHostMediaAccess(opts) && !isZulipHosted) {
+      const maxBytes = (opts.cfg.agents?.defaults?.mediaMaxMb ?? 5) * 1024 * 1024;
+      const loaded = await loadOutboundMediaFromUrl(mediaUrl, {
+        maxBytes,
+        mediaAccess: opts.mediaAccess,
+        mediaLocalRoots: opts.mediaLocalRoots,
+        mediaReadFile: opts.mediaReadFile,
+      });
+      const filename =
+        loaded.fileName ||
+        (() => {
+          try {
+            return path.basename(new URL(mediaUrl).pathname) || "upload.bin";
+          } catch {
+            return path.basename(localPath ?? "") || "upload.bin";
+          }
+        })();
+      const temp = await writeTempFile(loaded.buffer, filename);
+      tempFilePath = temp.filePath;
+      tempDir = temp.dir;
+      tempFileCleanup = true;
+      const upload = await uploadZulipFile(client, tempFilePath);
+      mediaUrl = upload.url;
+      await fsPromises.unlink(tempFilePath).catch(() => undefined);
+      await fsPromises.rmdir(tempDir).catch(() => undefined);
+    } else if (localPath && fs.existsSync(localPath)) {
       const upload = await uploadZulipFile(client, localPath);
       mediaUrl = upload.url;
     } else if (isHttpUrl(mediaUrl) && !isZulipHosted) {
@@ -434,4 +509,19 @@ export async function sendMessageZulip(
     messageId,
     channelId: target.kind === "stream" ? target.stream : target.email,
   };
+}
+
+export async function sendPollZulip(
+  to: string,
+  poll: PollInput,
+  opts: Omit<ZulipSendOpts, "interactive" | "channelData">,
+): Promise<ZulipSendResult> {
+  return await sendMessageZulip(to, poll.question, {
+    ...opts,
+    channelData: {
+      zulip: {
+        widgetContent: pollToZulipWidgetContent(poll),
+      },
+    },
+  });
 }

@@ -1,6 +1,41 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const state = vi.hoisted(() => {
+  const createMemoryKeyedStore = <T>(maxEntries = Number.MAX_SAFE_INTEGER) => {
+    const values = new Map<string, { key: string; value: T; createdAt: number }>();
+    const enforceLimit = (key: string) => {
+      if (!values.has(key) && values.size >= maxEntries) {
+        throw new Error("PLUGIN_STATE_LIMIT_EXCEEDED");
+      }
+    };
+    return {
+      maxEntries,
+      register: vi.fn(async (key: string, value: T) => {
+        enforceLimit(key);
+        values.set(key, { key, value, createdAt: Date.now() });
+      }),
+      registerIfAbsent: vi.fn(async (key: string, value: T) => {
+        if (values.has(key)) {
+          return false;
+        }
+        enforceLimit(key);
+        values.set(key, { key, value, createdAt: Date.now() });
+        return true;
+      }),
+      lookup: vi.fn(async (key: string) => values.get(key)?.value),
+      consume: vi.fn(async (key: string) => {
+        const value = values.get(key)?.value;
+        values.delete(key);
+        return value;
+      }),
+      delete: vi.fn(async (key: string) => values.delete(key)),
+      entries: vi.fn(async () => Array.from(values.values())),
+      clear: vi.fn(async () => {
+        values.clear();
+      }),
+    };
+  };
+
   const createCore = () => ({
     config: {
       channels: {
@@ -13,6 +48,11 @@ const state = vi.hoisted(() => {
       getChildLogger: () => ({ debug: vi.fn() }),
       shouldLogVerbose: () => false,
     },
+    state: undefined as
+      | undefined
+      | {
+          openKeyedStore: ReturnType<typeof vi.fn>;
+        },
     system: {
       enqueueSystemEvent: vi.fn(),
     },
@@ -71,7 +111,9 @@ const state = vi.hoisted(() => {
   });
 
   return {
+    createMemoryKeyedStore,
     abortController: undefined as AbortController | undefined,
+    durableStores: new Map<string, ReturnType<typeof createMemoryKeyedStore>>(),
     pollResponses: [] as Array<Record<string, unknown>>,
     streamSubscriptions: [] as Array<Record<string, unknown>>,
     streamLookups: new Map<string, Record<string, unknown> | Error>(),
@@ -272,9 +314,25 @@ async function runMonitorOnce() {
   });
 }
 
+function enableDurableInboundJournal() {
+  state.durableStores = new Map();
+  state.core.state = {
+    openKeyedStore: vi.fn((options: { namespace: string }) => {
+      const existing = state.durableStores.get(options.namespace);
+      if (existing) {
+        return existing;
+      }
+      const store = state.createMemoryKeyedStore(options.maxEntries);
+      state.durableStores.set(options.namespace, store);
+      return store;
+    }),
+  };
+}
+
 describe("monitorZulipProvider", () => {
   beforeEach(() => {
     state.core = state.createCore();
+    state.durableStores = new Map();
     state.account.config = {
       dmPolicy: "open",
       groupPolicy: "open",
@@ -690,6 +748,114 @@ describe("monitorZulipProvider", () => {
 
     expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledTimes(1);
     expect(state.core.channel.reply.dispatchReplyFromConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it("records and completes durable inbound messages when plugin state is available", async () => {
+    enableDurableInboundJournal();
+    state.pollResponses = [
+      {
+        result: "success",
+        events: [{ id: 2, type: "message", message: makeChannelMessage(2101) }],
+      },
+    ];
+
+    await runMonitorOnce();
+
+    const pendingStore = Array.from(state.durableStores.entries()).find(([namespace]) =>
+      namespace.includes(".pending."),
+    )?.[1];
+    const completedStore = Array.from(state.durableStores.entries()).find(([namespace]) =>
+      namespace.includes(".completed."),
+    )?.[1];
+    await expect(pendingStore?.entries()).resolves.toEqual([]);
+    const completedEntries = await completedStore?.entries();
+    expect(completedEntries).toHaveLength(1);
+    expect(completedEntries?.[0]?.value).toMatchObject({
+      metadata: { queueEventId: 2 },
+    });
+    expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps durable journal store caps below the plugin state row limit", async () => {
+    enableDurableInboundJournal();
+    state.pollResponses = [
+      {
+        result: "success",
+        events: [{ id: 2, type: "message", message: makeChannelMessage(2103) }],
+      },
+    ];
+
+    await runMonitorOnce();
+
+    const storeCaps = Array.from(state.durableStores.values()).map((store) => store.maxEntries);
+    expect(storeCaps).toContain(250);
+    expect(storeCaps).toContain(700);
+    expect(storeCaps.reduce((sum, value) => sum + value, 0)).toBeLessThan(1000);
+  });
+
+  it("replays pending durable inbound messages before polling", async () => {
+    enableDurableInboundJournal();
+    const {
+      createZulipDurableInboundMessageId,
+      createZulipDurableInboundReceiveJournal,
+      serializeZulipDurableInboundMessage,
+    } = await import("./durable-receive.js");
+    const message = makeChannelMessage(2102);
+    const durableId = createZulipDurableInboundMessageId({
+      accountId: state.account.accountId,
+      messageId: String(message.id),
+    });
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    await journal.accept(durableId, {
+      message: serializeZulipDurableInboundMessage(message),
+      receivedAt: Date.now(),
+    });
+
+    await runMonitorOnce();
+
+    await expect(journal.pending()).resolves.toEqual([]);
+    expect(getZulipEventsWithRetryMock).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.reply.dispatchReplyFromConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries same-process durable replay after a handler failure despite volatile dedupe", async () => {
+    enableDurableInboundJournal();
+    const message = makeChannelMessage(2104);
+    let failedOnce = false;
+    state.core.channel.session.updateLastRoute.mockImplementation(async () => {
+      if (!failedOnce) {
+        failedOnce = true;
+        throw new Error("synthetic post-dedupe failure");
+      }
+    });
+    state.pollResponses = [
+      {
+        result: "success",
+        events: [{ id: 2, type: "message", message }],
+      },
+    ];
+
+    await runMonitorOnce();
+
+    const { createZulipDurableInboundMessageId, createZulipDurableInboundReceiveJournal } =
+      await import("./durable-receive.js");
+    const durableId = createZulipDurableInboundMessageId({
+      accountId: state.account.accountId,
+      messageId: String(message.id),
+    });
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    await expect(journal.pending()).resolves.toEqual([
+      expect.objectContaining({ id: durableId, attempts: 1 }),
+    ]);
+
+    state.pollResponses = [{ result: "success", events: [] }];
+    await runMonitorOnce();
+
+    await expect(journal.pending()).resolves.toEqual([]);
+    expect(state.core.channel.session.updateLastRoute).toHaveBeenCalledTimes(2);
+    expect(state.core.channel.reply.dispatchReplyFromConfig).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledTimes(2);
   });
 
   it("re-registers the Zulip event queue after a BAD_EVENT_QUEUE_ID response and still processes the message", async () => {

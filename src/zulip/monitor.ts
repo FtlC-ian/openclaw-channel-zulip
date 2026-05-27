@@ -45,6 +45,14 @@ import {
   createDedupeCache,
   formatInboundFromLabel,
 } from "./monitor-helpers.js";
+import {
+  createZulipDurableInboundMessageId,
+  createZulipDurableInboundReceiveJournal,
+  deserializeZulipDurableInboundMessage,
+  serializeZulipDurableInboundMessage,
+  type ZulipDurableInboundMetadata,
+  type ZulipDurableInboundPayload,
+} from "./durable-receive.js";
 import { buildZulipStreamConversation } from "../session-conversation.js";
 import { sendMessageZulip } from "./send.js";
 import { downloadZulipUpload, extractZulipUploadUrls, normalizeZulipEmojiName, sanitizeUploadFilename } from "./uploads.js";
@@ -439,13 +447,16 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     accountId: account.accountId,
   });
 
-  const handleMessage = async (message: ZulipMessage) => {
+  const handleMessage = async (
+    message: ZulipMessage,
+    options: { skipRecentDedupe?: boolean } = {},
+  ) => {
     const messageId = String(message.id ?? "");
     if (!messageId) {
       return;
     }
     const dedupeKey = `${account.accountId}:${messageId}`;
-    if (recentInboundMessages.check(dedupeKey)) {
+    if (!options.skipRecentDedupe && recentInboundMessages.check(dedupeKey)) {
       return;
     }
 
@@ -1009,6 +1020,14 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
 
   // Register event queue
   const streams = account.streams ?? ["*"];
+  const durableInboundJournal = (() => {
+    try {
+      return createZulipDurableInboundReceiveJournal(account.accountId);
+    } catch (err) {
+      logVerboseMessage(`zulip: durable inbound receive journal unavailable: ${String(err)}`);
+      return undefined;
+    }
+  })();
   const queue = await registerZulipQueue(client, {
     eventTypes: ["message"],
     streams, // Pass ["*"] to trigger all_public_streams=true in registerZulipQueue
@@ -1023,13 +1042,103 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     pollBackoffMs = 0;
   };
 
-  const processMessage = async (message: ZulipMessage): Promise<void> => {
+  const completeDurableInboundMessage = async (
+    durableId: string | undefined,
+    metadata: ZulipDurableInboundMetadata | undefined,
+  ): Promise<void> => {
+    if (!durableInboundJournal || !durableId) {
+      return;
+    }
+    await durableInboundJournal.complete(
+      durableId,
+      metadata?.queueEventId !== undefined
+        ? { metadata: { queueEventId: metadata.queueEventId } }
+        : undefined,
+    );
+  };
+
+  const deliverDurableInboundMessage = async (
+    durableId: string | undefined,
+    message: ZulipMessage,
+    metadata?: ZulipDurableInboundMetadata,
+    options: { replay?: boolean } = {},
+  ): Promise<void> => {
     try {
-      await handleMessage(message);
+      await handleMessage(message, { skipRecentDedupe: options.replay });
+      await completeDurableInboundMessage(durableId, metadata);
     } catch (err) {
+      if (durableInboundJournal && durableId) {
+        await durableInboundJournal.release(durableId, {
+          lastError: String(err),
+        });
+      }
       runtime.error?.(`zulip message handler failed: ${String(err)}`);
     }
   };
+
+  const processMessage = async (
+    message: ZulipMessage,
+    queueEventId?: number,
+  ): Promise<void> => {
+    if (!durableInboundJournal) {
+      await deliverDurableInboundMessage(undefined, message);
+      return;
+    }
+
+    const messageId = String(message.id ?? "");
+    if (!messageId) {
+      await deliverDurableInboundMessage(undefined, message);
+      return;
+    }
+
+    const durableId = createZulipDurableInboundMessageId({
+      accountId: account.accountId,
+      messageId,
+    });
+    const metadata: ZulipDurableInboundMetadata | undefined =
+      queueEventId !== undefined ? { queueEventId } : undefined;
+    try {
+      const accepted = await durableInboundJournal.accept(
+        durableId,
+        {
+          message: serializeZulipDurableInboundMessage(message),
+          receivedAt: Date.now(),
+        },
+        {
+          ...(metadata ? { metadata } : {}),
+          receivedAt:
+            typeof message.timestamp === "number" ? message.timestamp * 1000 : Date.now(),
+        },
+      );
+      if (accepted.kind !== "accepted") {
+        return;
+      }
+    } catch (err) {
+      runtime.log?.(`zulip: failed persisting durable inbound; delivering live: ${String(err)}`);
+      await deliverDurableInboundMessage(undefined, message);
+      return;
+    }
+
+    await deliverDurableInboundMessage(durableId, message, metadata);
+  };
+
+  const replayPendingDurableInboundMessages = async (): Promise<void> => {
+    if (!durableInboundJournal) {
+      return;
+    }
+    const pending = await durableInboundJournal.pending();
+    for (const record of pending) {
+      const payload = record.payload as ZulipDurableInboundPayload;
+      await deliverDurableInboundMessage(
+        record.id,
+        deserializeZulipDurableInboundMessage<ZulipMessage>(payload.message),
+        record.metadata,
+        { replay: true },
+      );
+    }
+  };
+
+  await replayPendingDurableInboundMessages();
 
   // Long-poll at 90s — nginx proxy_read_timeout is now 120s
   while (!opts.abortSignal?.aborted) {
@@ -1080,13 +1189,14 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       // Process messages with staggered start times for more natural feel
       for (const event of events) {
         const nextEventId = Number((event as { id?: unknown })?.id);
-        if (!Number.isNaN(nextEventId) && nextEventId >= 0) {
-          lastEventId = nextEventId;
+        const validEventId = !Number.isNaN(nextEventId) && nextEventId >= 0 ? nextEventId : undefined;
+        if (validEventId !== undefined) {
+          lastEventId = validEventId;
         }
 
         if (event.type === "message" && event.message) {
           // Start processing without awaiting (fire-and-forget with error handling)
-          processMessage(event.message).catch((err) => {
+          processMessage(event.message, validEventId).catch((err) => {
             runtime.error?.(`zulip: message processing failed: ${String(err)}`);
           });
           // Small delay between starting each message for natural pacing

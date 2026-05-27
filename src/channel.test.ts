@@ -51,6 +51,115 @@ describe("zulipPlugin", () => {
       expect(resolveTarget({ kind: "channel", id: "3" })).toBeUndefined();
       expect(resolveTarget({ kind: "group", id: "ian@example.com" })).toBe("user:ian@example.com");
     });
+
+    it("resolves outbound DM session routes with Zulip user targets", () => {
+      const resolveRoute = zulipPlugin.messaging?.resolveOutboundSessionRoute as
+        | ((params: {
+            cfg: OpenClawConfig;
+            agentId: string;
+            target: string;
+          }) => unknown)
+        | undefined;
+      if (!resolveRoute) {
+        throw new Error("resolveOutboundSessionRoute missing");
+      }
+
+      expect(
+        resolveRoute({
+          cfg: {} as OpenClawConfig,
+          agentId: "main",
+          target: "@ian@example.com",
+        }),
+      ).toMatchObject({
+        peer: { kind: "direct", id: "ian@example.com" },
+        chatType: "direct",
+        from: "zulip:ian@example.com",
+        to: "user:ian@example.com",
+      });
+    });
+
+    it("resolves outbound stream topic routes using canonical conversation ids", () => {
+      const resolveRoute = zulipPlugin.messaging?.resolveOutboundSessionRoute as
+        | ((params: {
+            cfg: OpenClawConfig;
+            agentId: string;
+            target: string;
+          }) => unknown)
+        | undefined;
+      if (!resolveRoute) {
+        throw new Error("resolveOutboundSessionRoute missing");
+      }
+
+      expect(
+        resolveRoute({
+          cfg: {} as OpenClawConfig,
+          agentId: "main",
+          target: "#general:Zulip Plugin PR",
+        }),
+      ).toMatchObject({
+        peer: { kind: "channel", id: "general:topic:zulip-plugin-pr" },
+        chatType: "channel",
+        from: "zulip:channel:general",
+        to: "stream:general:Zulip Plugin PR",
+        threadId: "Zulip Plugin PR",
+      });
+    });
+
+    it("preserves existing Zulip thread context when routing stream sends", () => {
+      const resolveRoute = zulipPlugin.messaging?.resolveOutboundSessionRoute as
+        | ((params: {
+            cfg: OpenClawConfig;
+            agentId: string;
+            target: string;
+            threadId?: string;
+          }) => unknown)
+        | undefined;
+      if (!resolveRoute) {
+        throw new Error("resolveOutboundSessionRoute missing");
+      }
+
+      expect(
+        resolveRoute({
+          cfg: {} as OpenClawConfig,
+          agentId: "main",
+          target: "stream:general",
+          threadId: "support",
+        }),
+      ).toMatchObject({
+        peer: { kind: "channel", id: "general:topic:support" },
+        to: "stream:general:support",
+        threadId: "support",
+      });
+    });
+
+    it("prefers raw Zulip reply topics over sanitized session thread ids", () => {
+      const resolveRoute = zulipPlugin.messaging?.resolveOutboundSessionRoute as
+        | ((params: {
+            cfg: OpenClawConfig;
+            agentId: string;
+            target: string;
+            replyToId?: string;
+            threadId?: string;
+          }) => unknown)
+        | undefined;
+      if (!resolveRoute) {
+        throw new Error("resolveOutboundSessionRoute missing");
+      }
+
+      expect(
+        resolveRoute({
+          cfg: {} as OpenClawConfig,
+          agentId: "main",
+          target: "stream:general",
+          replyToId: "Zulip Plugin PR",
+          threadId: "zulip-plugin-pr",
+        }),
+      ).toMatchObject({
+        peer: { kind: "channel", id: "general:topic:zulip-plugin-pr" },
+        to: "stream:general:Zulip Plugin PR",
+        threadId: "Zulip Plugin PR",
+      });
+    });
   });
 
   describe("message actions", () => {

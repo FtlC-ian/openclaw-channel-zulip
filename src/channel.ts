@@ -30,7 +30,10 @@ import {
 import { zulipApprovalAuth } from "./approval-auth.js";
 import { normalizeZulipBaseUrl } from "./zulip/client.js";
 import { sendMessageZulip, sendPollZulip } from "./zulip/send.js";
-import { resolveZulipSessionConversation } from "./session-conversation.js";
+import {
+  resolveZulipOutboundSessionRoute,
+  resolveZulipSessionConversation,
+} from "./session-conversation.js";
 import { zulipSecrets } from "./secret-contract.js";
 
 const meta = {
@@ -334,6 +337,7 @@ export const zulipPlugin = {
         }
         return undefined;
       },
+      resolveOutboundSessionRoute: resolveZulipOutboundSessionRoute,
     } as Record<string, unknown>),
     targetResolver: {
       looksLikeId: looksLikeZulipTargetId,

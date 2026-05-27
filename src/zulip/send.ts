@@ -80,7 +80,7 @@ export type ZulipSendResult = {
   channelId: string;
 };
 
-type ZulipTarget =
+export type ZulipTarget =
   | { kind: "stream"; stream: string; topic?: string }
   | { kind: "user"; email: string };
 
@@ -231,7 +231,7 @@ function isCanonicalDmEmail(value: string): boolean {
   return /^[^\s@:]+@[^\s@:]+$/.test(value);
 }
 
-function parseZulipTarget(raw: string): ZulipTarget {
+export function parseZulipTarget(raw: string): ZulipTarget {
   const { normalized } = normalizeLegacyZulipTarget(raw);
   const trimmed = normalized.trim();
   if (!trimmed) {

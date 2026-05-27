@@ -25,6 +25,7 @@ export {
   DEFAULT_ACCOUNT_ID,
   normalizeAccountId,
   applyAccountNameToChannelSection,
+  buildChannelOutboundSessionRoute,
   buildChannelConfigSchema,
   deleteAccountFromConfigSection,
   formatPairingApproveHint,

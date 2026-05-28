@@ -91,6 +91,30 @@ describe("zulipMessageActions react", () => {
     expect(body.get("reaction_type")).toBe("unicode_emoji");
   });
 
+  it("maps common expressive Unicode reactions to Zulip emoji names", async () => {
+    const cases = [
+      { emoji: "🧠", name: "brain", code: "1f9e0" },
+      { emoji: "🤔", name: "thinking", code: "1f914" },
+      { emoji: "😂", name: "joy", code: "1f602" },
+      { emoji: "🎉", name: "tada", code: "1f389" },
+      { emoji: "❤️", name: "heart", code: "2764" },
+      { emoji: "🔥", name: "fire", code: "1f525" },
+    ];
+
+    for (const { emoji, name, code } of cases) {
+      const { fetchImpl } = await runReactAction({
+        messageId: 456,
+        emoji,
+      });
+
+      const [, init] = fetchImpl.mock.calls[0] ?? [];
+      const body = new URLSearchParams(String(init?.body));
+      expect(body.get("emoji_name")).toBe(name);
+      expect(body.get("emoji_code")).toBe(code);
+      expect(body.get("reaction_type")).toBe("unicode_emoji");
+    }
+  });
+
   it("passes explicit emoji code and reaction type through", async () => {
     const { fetchImpl } = await runReactAction({
       messageId: "789",

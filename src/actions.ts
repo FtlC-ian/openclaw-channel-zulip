@@ -65,56 +65,13 @@ type ZulipReactionParams = {
   reactionType?: string;
 };
 
-const unicodeReactionMap: Record<string, ZulipReactionParams> = {
-  "\u{1f44d}": {
+const expressiveUnicodeReactions = {
+  thumbsUp: {
     emojiName: "thumbs_up",
     emojiCode: "1f44d",
     reactionType: "unicode_emoji",
   },
-  "\u{1f44e}": {
-    emojiName: "thumbs_down",
-    emojiCode: "1f44e",
-    reactionType: "unicode_emoji",
-  },
-  "\u267e": {
-    emojiName: "infinity",
-    emojiCode: "267e",
-    reactionType: "unicode_emoji",
-  },
-  "\u267e\ufe0f": {
-    emojiName: "infinity",
-    emojiCode: "267e",
-    reactionType: "unicode_emoji",
-  },
-};
-
-const namedReactionAliases: Record<string, ZulipReactionParams> = {
-  "+1": {
-    emojiName: "thumbs_up",
-    emojiCode: "1f44d",
-    reactionType: "unicode_emoji",
-  },
-  thumbs_up: {
-    emojiName: "thumbs_up",
-    emojiCode: "1f44d",
-    reactionType: "unicode_emoji",
-  },
-  thumbsup: {
-    emojiName: "thumbs_up",
-    emojiCode: "1f44d",
-    reactionType: "unicode_emoji",
-  },
-  "-1": {
-    emojiName: "thumbs_down",
-    emojiCode: "1f44e",
-    reactionType: "unicode_emoji",
-  },
-  thumbs_down: {
-    emojiName: "thumbs_down",
-    emojiCode: "1f44e",
-    reactionType: "unicode_emoji",
-  },
-  thumbsdown: {
+  thumbsDown: {
     emojiName: "thumbs_down",
     emojiCode: "1f44e",
     reactionType: "unicode_emoji",
@@ -124,6 +81,86 @@ const namedReactionAliases: Record<string, ZulipReactionParams> = {
     emojiCode: "267e",
     reactionType: "unicode_emoji",
   },
+  brain: {
+    emojiName: "brain",
+    emojiCode: "1f9e0",
+    reactionType: "unicode_emoji",
+  },
+  thinking: {
+    emojiName: "thinking",
+    emojiCode: "1f914",
+    reactionType: "unicode_emoji",
+  },
+  joy: {
+    emojiName: "joy",
+    emojiCode: "1f602",
+    reactionType: "unicode_emoji",
+  },
+  tada: {
+    emojiName: "tada",
+    emojiCode: "1f389",
+    reactionType: "unicode_emoji",
+  },
+  heart: {
+    emojiName: "heart",
+    emojiCode: "2764",
+    reactionType: "unicode_emoji",
+  },
+  fire: {
+    emojiName: "fire",
+    emojiCode: "1f525",
+    reactionType: "unicode_emoji",
+  },
+  eyes: {
+    emojiName: "eyes",
+    emojiCode: "1f440",
+    reactionType: "unicode_emoji",
+  },
+  warning: {
+    emojiName: "warning",
+    emojiCode: "26a0",
+    reactionType: "unicode_emoji",
+  },
+} satisfies Record<string, ZulipReactionParams>;
+
+const unicodeReactionMap: Record<string, ZulipReactionParams> = {
+  "\u{1f44d}": expressiveUnicodeReactions.thumbsUp,
+  "\u{1f44e}": expressiveUnicodeReactions.thumbsDown,
+  "\u267e": expressiveUnicodeReactions.infinity,
+  "\u267e\ufe0f": expressiveUnicodeReactions.infinity,
+  "\u{1f9e0}": expressiveUnicodeReactions.brain,
+  "\u{1f914}": expressiveUnicodeReactions.thinking,
+  "\u{1f602}": expressiveUnicodeReactions.joy,
+  "\u{1f389}": expressiveUnicodeReactions.tada,
+  "\u2764": expressiveUnicodeReactions.heart,
+  "\u2764\ufe0f": expressiveUnicodeReactions.heart,
+  "\u{1f525}": expressiveUnicodeReactions.fire,
+  "\u{1f440}": expressiveUnicodeReactions.eyes,
+  "\u26a0": expressiveUnicodeReactions.warning,
+  "\u26a0\ufe0f": expressiveUnicodeReactions.warning,
+};
+
+const namedReactionAliases: Record<string, ZulipReactionParams> = {
+  "+1": expressiveUnicodeReactions.thumbsUp,
+  thumbs_up: expressiveUnicodeReactions.thumbsUp,
+  thumbsup: expressiveUnicodeReactions.thumbsUp,
+  "-1": expressiveUnicodeReactions.thumbsDown,
+  thumbs_down: expressiveUnicodeReactions.thumbsDown,
+  thumbsdown: expressiveUnicodeReactions.thumbsDown,
+  infinity: expressiveUnicodeReactions.infinity,
+  brain: expressiveUnicodeReactions.brain,
+  thinking: expressiveUnicodeReactions.thinking,
+  thinking_face: expressiveUnicodeReactions.thinking,
+  joy: expressiveUnicodeReactions.joy,
+  laugh: expressiveUnicodeReactions.joy,
+  laughing: expressiveUnicodeReactions.joy,
+  tada: expressiveUnicodeReactions.tada,
+  party: expressiveUnicodeReactions.tada,
+  heart: expressiveUnicodeReactions.heart,
+  red_heart: expressiveUnicodeReactions.heart,
+  fire: expressiveUnicodeReactions.fire,
+  eyes: expressiveUnicodeReactions.eyes,
+  warning: expressiveUnicodeReactions.warning,
 };
 
 async function resolveZulipClient(cfg: OpenClawConfig, accountId?: string | null) {

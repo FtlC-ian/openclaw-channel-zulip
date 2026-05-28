@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026.5.26
+
+### Features
+- **Outbound route hook**: Add native Zulip outbound session routing for DMs and stream topics, preserving raw Zulip topics over sanitized session ids.
+- **Durable inbound receive journal**: Add optional keyed-state journaling with bounded pending/completed stores and replay-before-poll behavior when trusted plugin state is available.
+- **Message reactions**: Add `message(action="react")` support for Zulip add/remove reactions, dry-run handling, current-message defaults, idempotent add/remove behavior, and common emoji normalization.
+- **Agent reaction guidance**: Advertise model-controlled Zulip reactions through prompt guidance, defaulting to extensive while keeping lifecycle/status indicators separate.
+
+### Bug Fixes
+- **Reply routing**: Store canonical last-route delivery context for Zulip DMs and stream topics so final replies and follow-ups stay on the right conversation.
+- **Replay dedupe**: Durable replay bypasses volatile in-memory duplicate suppression after handler failures.
+
+### Compatibility
+- **OpenClaw 2026.5.26 compatibility**: Target the current stable OpenClaw plugin/channel SDK surface and keep the minimum host version at `>=2026.5.26`.
+
 ## 2026.5.22
 
 ### Features

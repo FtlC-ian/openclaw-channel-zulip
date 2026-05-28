@@ -217,7 +217,7 @@ function resolveAgentReactionGuidance(
   cfg: OpenClawConfig,
   accountId?: string | null,
 ): Exclude<ZulipAgentReactionGuidance, "off"> | undefined {
-  const level = resolveZulipAccount({ cfg, accountId }).config.agentReactionGuidance ?? "minimal";
+  const level = resolveZulipAccount({ cfg, accountId }).config.agentReactionGuidance ?? "extensive";
   return level === "off" ? undefined : level;
 }
 

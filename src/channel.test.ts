@@ -331,15 +331,15 @@ describe("zulipPlugin", () => {
         },
       }) as OpenClawConfig;
 
-    it("defaults to minimal model-controlled Zulip reaction guidance", () => {
+    it("defaults to extensive model-controlled Zulip reaction guidance", () => {
       const cfg = configuredCfg();
 
       expect(zulipPlugin.agentPrompt?.reactionGuidance?.({ cfg })).toEqual({
-        level: "minimal",
+        level: "extensive",
         channelLabel: "Zulip",
       });
       expect(zulipPlugin.agentPrompt?.messageToolHints?.({ cfg })?.join("\n")).toContain(
-        "keep them optional and sparse",
+        "Use them for natural sentiment",
       );
       expect(zulipMessageActions.describeMessageTool?.({ cfg })?.actions).toContain("react");
     });

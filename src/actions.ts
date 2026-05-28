@@ -59,6 +59,73 @@ type SendTarget =
   | { kind: "stream"; stream: string; topic: string }
   | { kind: "user"; email: string };
 
+type ZulipReactionParams = {
+  emojiName: string;
+  emojiCode?: string;
+  reactionType?: string;
+};
+
+const unicodeReactionMap: Record<string, ZulipReactionParams> = {
+  "\u{1f44d}": {
+    emojiName: "thumbs_up",
+    emojiCode: "1f44d",
+    reactionType: "unicode_emoji",
+  },
+  "\u{1f44e}": {
+    emojiName: "thumbs_down",
+    emojiCode: "1f44e",
+    reactionType: "unicode_emoji",
+  },
+  "\u267e": {
+    emojiName: "infinity",
+    emojiCode: "267e",
+    reactionType: "unicode_emoji",
+  },
+  "\u267e\ufe0f": {
+    emojiName: "infinity",
+    emojiCode: "267e",
+    reactionType: "unicode_emoji",
+  },
+};
+
+const namedReactionAliases: Record<string, ZulipReactionParams> = {
+  "+1": {
+    emojiName: "thumbs_up",
+    emojiCode: "1f44d",
+    reactionType: "unicode_emoji",
+  },
+  thumbs_up: {
+    emojiName: "thumbs_up",
+    emojiCode: "1f44d",
+    reactionType: "unicode_emoji",
+  },
+  thumbsup: {
+    emojiName: "thumbs_up",
+    emojiCode: "1f44d",
+    reactionType: "unicode_emoji",
+  },
+  "-1": {
+    emojiName: "thumbs_down",
+    emojiCode: "1f44e",
+    reactionType: "unicode_emoji",
+  },
+  thumbs_down: {
+    emojiName: "thumbs_down",
+    emojiCode: "1f44e",
+    reactionType: "unicode_emoji",
+  },
+  thumbsdown: {
+    emojiName: "thumbs_down",
+    emojiCode: "1f44e",
+    reactionType: "unicode_emoji",
+  },
+  infinity: {
+    emojiName: "infinity",
+    emojiCode: "267e",
+    reactionType: "unicode_emoji",
+  },
+};
+
 async function resolveZulipClient(cfg: OpenClawConfig, accountId?: string | null) {
   const account = await resolveZulipRuntimeAccount({ cfg, accountId });
   const apiKey = account.apiKey?.trim();
@@ -209,6 +276,21 @@ function readMessageContent(params: Record<string, unknown>): string {
   }
   assertStringLength(content, "message", MAX_STRING_LENGTH);
   return content;
+}
+
+function resolveReactionParams(
+  rawEmojiName: string,
+  params: { emojiCode?: string; reactionType?: string },
+): ZulipReactionParams {
+  const trimmed = rawEmojiName.trim().replace(/^:+|:+$/g, "");
+  const unicodeReaction = unicodeReactionMap[trimmed];
+  const namedReaction = namedReactionAliases[trimmed.toLowerCase()];
+  const resolved = unicodeReaction ?? namedReaction ?? { emojiName: trimmed };
+  return {
+    emojiName: resolved.emojiName,
+    emojiCode: params.emojiCode ?? resolved.emojiCode,
+    reactionType: params.reactionType ?? resolved.reactionType,
+  };
 }
 
 function readSendMessageContent(params: Record<string, unknown>): string {
@@ -449,7 +531,7 @@ export const zulipMessageActions: ChannelMessageActionAdapter = {
     return { to, accountId };
   },
   prepareSendPayload: ({ payload }) => payload,
-  handleAction: async ({ action, params, cfg, accountId, toolContext }) => {
+  handleAction: async ({ action, params, cfg, accountId, toolContext, dryRun }) => {
     const { client, account } = await resolveZulipClient(cfg, accountId ?? undefined);
 
     if (action === "send") {
@@ -733,27 +815,47 @@ export const zulipMessageActions: ChannelMessageActionAdapter = {
         readStringParam(params, "reactionType") ?? readStringParam(params, "reaction_type");
       const remove = params.remove === true;
 
-      if (!emojiName && !remove) {
-        throw new Error("Zulip react requires emoji name unless removing reactions.");
+      if (!emojiName) {
+        throw new Error("Zulip react requires emoji name.");
+      }
+
+      const reaction = resolveReactionParams(emojiName, {
+        emojiCode: emojiCode ?? undefined,
+        reactionType: reactionType ?? undefined,
+      });
+      if (!reaction.emojiName) {
+        throw new Error("Zulip react requires emoji name.");
+      }
+
+      if (dryRun) {
+        return jsonResult({
+          ok: true,
+          dryRun: true,
+          action: remove ? "remove-reaction" : "add-reaction",
+          messageId,
+          emoji: reaction.emojiName,
+          emojiCode: reaction.emojiCode,
+          reactionType: reaction.reactionType,
+        });
       }
 
       if (remove) {
         await removeZulipReaction(client, {
           messageId,
-          emojiName: emojiName ?? undefined,
-          emojiCode: emojiCode ?? undefined,
-          reactionType: reactionType ?? undefined,
+          emojiName: reaction.emojiName,
+          emojiCode: reaction.emojiCode,
+          reactionType: reaction.reactionType,
         });
-        return jsonResult({ ok: true, removed: true, messageId, emoji: emojiName ?? null });
+        return jsonResult({ ok: true, removed: true, messageId, emoji: reaction.emojiName });
       }
 
       await addZulipReaction(client, {
         messageId,
-        emojiName: emojiName ?? "",
-        emojiCode: emojiCode ?? undefined,
-        reactionType: reactionType ?? undefined,
+        emojiName: reaction.emojiName,
+        emojiCode: reaction.emojiCode,
+        reactionType: reaction.reactionType,
       });
-      return jsonResult({ ok: true, added: emojiName, messageId });
+      return jsonResult({ ok: true, added: reaction.emojiName, messageId });
     }
 
     if (action === "edit") {

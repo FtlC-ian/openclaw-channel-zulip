@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { createZulipClient, zulipRequestWithRetry, type ZulipRequestLogger } from "./client.js";
+import {
+  addZulipReaction,
+  createZulipClient,
+  removeZulipReaction,
+  zulipRequestWithRetry,
+  type ZulipRequestLogger,
+} from "./client.js";
 
 function jsonResponse(body: unknown, init?: ResponseInit): Response {
   return new Response(JSON.stringify(body), {
@@ -189,5 +195,91 @@ describe("zulipRequestWithRetry", () => {
       detail: "still bad gateway",
     });
     random.mockRestore();
+  });
+});
+
+describe("Zulip reactions", () => {
+  it("treats duplicate add-reaction responses as idempotent success", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(jsonResponse({ result: "error", msg: "Reaction already exists" }));
+    const client = createZulipClient({
+      baseUrl: "https://zulip.example.test/",
+      email: "bot@example.test",
+      apiKey: "secret",
+      fetchImpl,
+    });
+
+    await expect(
+      addZulipReaction(client, { messageId: "123", emojiName: "octopus" }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("treats already-removed reaction responses as idempotent success", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(jsonResponse({ result: "error", msg: "Reaction doesn't exist." }));
+    const client = createZulipClient({
+      baseUrl: "https://zulip.example.test/",
+      email: "bot@example.test",
+      apiKey: "secret",
+      fetchImpl,
+    });
+
+    await expect(
+      removeZulipReaction(client, { messageId: "123", emojiName: "octopus" }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("treats REACTION_DOES_NOT_EXIST code as idempotent success", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({
+        result: "error",
+        code: "REACTION_DOES_NOT_EXIST",
+        msg: "Reaction doesn't exist.",
+      }),
+    );
+    const client = createZulipClient({
+      baseUrl: "https://zulip.example.test/",
+      email: "bot@example.test",
+      apiKey: "secret",
+      fetchImpl,
+    });
+
+    await expect(
+      removeZulipReaction(client, { messageId: "123", emojiName: "octopus" }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("does not treat invalid emoji remove errors as idempotent success", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(jsonResponse({ result: "error", msg: "Emoji 'bogus' does not exist" }));
+    const client = createZulipClient({
+      baseUrl: "https://zulip.example.test/",
+      email: "bot@example.test",
+      apiKey: "secret",
+      fetchImpl,
+    });
+
+    await expect(
+      removeZulipReaction(client, { messageId: "123", emojiName: "bogus" }),
+    ).rejects.toThrow("Zulip remove reaction failed: Emoji 'bogus' does not exist");
+  });
+
+  it("still reports non-idempotent reaction errors", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(jsonResponse({ result: "error", msg: "Invalid emoji name" }));
+    const client = createZulipClient({
+      baseUrl: "https://zulip.example.test/",
+      email: "bot@example.test",
+      apiKey: "secret",
+      fetchImpl,
+    });
+
+    await expect(
+      addZulipReaction(client, { messageId: "123", emojiName: "not an emoji" }),
+    ).rejects.toThrow("Zulip add reaction failed: Invalid emoji name");
   });
 });

@@ -195,6 +195,31 @@ function assertSuccess(payload: ZulipApiResponse, context: string): void {
   throw new Error(`${context}: ${payload.msg || "unknown error"}`);
 }
 
+function isHarmlessReactionError(
+  payload: ZulipApiResponse,
+  operation: "add" | "remove",
+): boolean {
+  const normalizedMessage = (payload.msg ?? "")
+    .toLowerCase()
+    .replace(/[’']/g, "'")
+    .replace(/[.。]+$/g, "")
+    .trim();
+
+  if (operation === "add") {
+    return (
+      payload.code === "REACTION_ALREADY_EXISTS" ||
+      normalizedMessage === "reaction already exists" ||
+      normalizedMessage === "reaction already exists."
+    );
+  }
+
+  return (
+    payload.code === "REACTION_DOES_NOT_EXIST" ||
+    normalizedMessage === "reaction doesn't exist" ||
+    normalizedMessage === "reaction does not exist"
+  );
+}
+
 export async function zulipRequestWithRetry<T>(
   client: ZulipClient,
   path: string,
@@ -819,6 +844,9 @@ export async function addZulipReaction(
     `/messages/${params.messageId}/reactions`,
     { method: "POST", body: body.toString() },
   );
+  if (isHarmlessReactionError(payload, "add")) {
+    return;
+  }
   assertSuccess(payload, "Zulip add reaction failed");
 }
 
@@ -847,6 +875,9 @@ export async function removeZulipReaction(
     `/messages/${params.messageId}/reactions${suffix ? `?${suffix}` : ""}`,
     { method: "DELETE" },
   );
+  if (isHarmlessReactionError(payload, "remove")) {
+    return;
+  }
   assertSuccess(payload, "Zulip remove reaction failed");
 }
 

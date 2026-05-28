@@ -317,4 +317,91 @@ describe("zulipPlugin", () => {
       expect(result).toEqual({ authorized: true });
     });
   });
+
+  describe("agent prompt reaction guidance", () => {
+    const configuredCfg = (zulip: Record<string, unknown> = {}): OpenClawConfig =>
+      ({
+        channels: {
+          zulip: {
+            apiKey: "secret",
+            email: "bot@example.test",
+            url: "https://zulip.example.test",
+            ...zulip,
+          },
+        },
+      }) as OpenClawConfig;
+
+    it("defaults to minimal model-controlled Zulip reaction guidance", () => {
+      const cfg = configuredCfg();
+
+      expect(zulipPlugin.agentPrompt?.reactionGuidance?.({ cfg })).toEqual({
+        level: "minimal",
+        channelLabel: "Zulip",
+      });
+      expect(zulipPlugin.agentPrompt?.messageToolHints?.({ cfg })?.join("\n")).toContain(
+        "keep them optional and sparse",
+      );
+      expect(zulipMessageActions.describeMessageTool?.({ cfg })?.actions).toContain("react");
+    });
+
+    it("suppresses prompt guidance when agentReactionGuidance is off", () => {
+      const cfg = configuredCfg({ agentReactionGuidance: "off" });
+
+      expect(zulipPlugin.agentPrompt?.reactionGuidance?.({ cfg })).toBeUndefined();
+      expect(zulipPlugin.agentPrompt?.messageToolHints?.({ cfg })).toEqual([]);
+      expect(zulipMessageActions.describeMessageTool?.({ cfg })?.actions).toContain("react");
+    });
+
+    it("exposes extensive model-controlled Zulip reaction guidance", () => {
+      const cfg = configuredCfg({ agentReactionGuidance: "extensive" });
+
+      expect(zulipPlugin.agentPrompt?.reactionGuidance?.({ cfg })).toEqual({
+        level: "extensive",
+        channelLabel: "Zulip",
+      });
+      expect(zulipPlugin.agentPrompt?.messageToolHints?.({ cfg })?.join("\n")).toContain(
+        "Use them for natural sentiment",
+      );
+    });
+
+    it("resolves per-account reaction guidance over the base default", () => {
+      const cfg = configuredCfg({
+        agentReactionGuidance: "extensive",
+        accounts: {
+          work: {
+            apiKey: "secret",
+            email: "bot@example.test",
+            url: "https://zulip.example.test",
+            agentReactionGuidance: "off",
+          },
+        },
+      });
+
+      expect(zulipPlugin.agentPrompt?.reactionGuidance?.({ cfg })).toEqual({
+        level: "extensive",
+        channelLabel: "Zulip",
+      });
+      expect(zulipPlugin.agentPrompt?.reactionGuidance?.({ cfg, accountId: "work" })).toBeUndefined();
+    });
+
+    it("allows per-account reaction guidance to opt in when the base default is off", () => {
+      const cfg = configuredCfg({
+        agentReactionGuidance: "off",
+        accounts: {
+          work: {
+            apiKey: "secret",
+            email: "bot@example.test",
+            url: "https://zulip.example.test",
+            agentReactionGuidance: "extensive",
+          },
+        },
+      });
+
+      expect(zulipPlugin.agentPrompt?.reactionGuidance?.({ cfg })).toBeUndefined();
+      expect(zulipPlugin.agentPrompt?.reactionGuidance?.({ cfg, accountId: "work" })).toEqual({
+        level: "extensive",
+        channelLabel: "Zulip",
+      });
+    });
+  });
 });

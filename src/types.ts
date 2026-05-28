@@ -8,6 +8,7 @@ type BlockStreamingCoalesceConfig = {
 };
 
 export type ZulipChatMode = "oncall" | "onmessage" | "onchar";
+export type ZulipAgentReactionGuidance = "off" | "minimal" | "extensive";
 
 export type ZulipAccountConfig = {
   /** Optional display name for this account (used in CLI/UI lists). */
@@ -67,6 +68,8 @@ export type ZulipAccountConfig = {
     onSuccess?: string;
     onError?: string;
   };
+  /** Model prompt guidance for agent-controlled reactions. Does not enable automatic status reactions. Default: "minimal". */
+  agentReactionGuidance?: ZulipAgentReactionGuidance;
   /** Outbound text chunk size (chars). Default: 4000. */
   textChunkLimit?: number;
   /** Chunking mode: "length" (default) splits by size; "newline" splits on every newline. */

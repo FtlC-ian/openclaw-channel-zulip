@@ -19,6 +19,7 @@ const BlockStreamingCoalesceSchema = z
   .strict();
 
 const MarkdownTableModeSchema = z.enum(["native", "codeblock", "disabled"]);
+const AgentReactionGuidanceSchema = z.enum(["off", "minimal", "extensive"]);
 
 const OptionalSecretInputSchema = buildOptionalSecretInputSchema();
 
@@ -87,6 +88,7 @@ const ZulipAccountSchemaBase = z
         onError: z.string().optional(),
       })
       .optional(),
+    agentReactionGuidance: AgentReactionGuidanceSchema.optional(),
     textChunkLimit: z.number().int().positive().optional(),
     chunkMode: z.enum(["length", "newline"]).optional(),
     blockStreaming: z.boolean().optional(),

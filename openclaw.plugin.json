@@ -75,6 +75,7 @@
                   "onError": { "type": "string" }
                 }
               },
+              "agentReactionGuidance": { "type": "string", "enum": ["off", "minimal", "extensive"] },
               "textChunkLimit": { "type": "integer", "minimum": 1 },
               "chunkMode": { "type": "string", "enum": ["length", "newline"] },
               "blockStreaming": {
@@ -137,6 +138,7 @@
               "onError": { "type": "string" }
             }
           },
+          "agentReactionGuidance": { "type": "string", "enum": ["off", "minimal", "extensive"] },
           "textChunkLimit": { "type": "integer", "minimum": 1 },
           "chunkMode": { "type": "string", "enum": ["length", "newline"] },
           "blockStreaming": { "type": "boolean" },
@@ -197,6 +199,10 @@
         },
         "reactions.enabled": {
           "label": "Reaction Indicators"
+        },
+        "agentReactionGuidance": {
+          "label": "Agent Reaction Guidance",
+          "description": "Controls model-level prompt guidance for expressive reactions; this is separate from lifecycle reaction indicators."
         }
       }
     }
@@ -241,6 +247,10 @@
     },
     "reactions.enabled": {
       "label": "Reaction Indicators"
+    },
+    "agentReactionGuidance": {
+      "label": "Agent Reaction Guidance",
+      "description": "Controls model-level prompt guidance for expressive reactions; this is separate from lifecycle reaction indicators."
     }
   }
 }

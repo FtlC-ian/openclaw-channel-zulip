@@ -14,6 +14,18 @@ describe("Zulip secret contract", () => {
     ).toBe(true);
   });
 
+  it("schema validates model-controlled reaction guidance levels", () => {
+    expect(ZulipConfigSchema.safeParse({ agentReactionGuidance: "minimal" }).success).toBe(true);
+    expect(
+      ZulipConfigSchema.safeParse({
+        accounts: {
+          work: { agentReactionGuidance: "extensive" },
+        },
+      }).success,
+    ).toBe(true);
+    expect(ZulipConfigSchema.safeParse({ agentReactionGuidance: "ack" }).success).toBe(false);
+  });
+
   it("registers apiKey targets", () => {
     expect(secretTargetRegistryEntries.map((entry) => entry.pathPattern)).toEqual([
       "channels.zulip.accounts.*.apiKey",

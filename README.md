@@ -128,6 +128,10 @@ Add the plugin id to `plugins.allow` in `~/.openclaw/openclaw.json`:
         "onError": "warning"
       },
 
+      // Model-controlled reaction prompt guidance: "off" | "minimal" | "extensive"
+      // This does not enable automatic status/progress reactions.
+      "agentReactionGuidance": "minimal",
+
       // Block streaming (real-time reply chunks)
       "blockStreaming": true,
       "blockStreamingCoalesce": {

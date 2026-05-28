@@ -10,6 +10,7 @@ import {
   createChannelMessageAdapterFromOutbound,
   type ChannelAccountSnapshot,
   type ChannelOutboundAdapter,
+  type OpenClawConfig,
   type ChannelPlugin,
   type ReplyPayload,
 } from "./sdk.js";
@@ -18,7 +19,7 @@ import { ZulipConfigSchema } from "./config-schema.js";
 import { resolveZulipGroupRequireMention } from "./group-mentions.js";
 import { looksLikeZulipTargetId, normalizeZulipMessagingTarget } from "./normalize.js";
 import { getZulipRuntime } from "./runtime.js";
-import type { ZulipAccountConfig, ZulipConfig } from "./types.js";
+import type { ZulipAccountConfig, ZulipAgentReactionGuidance, ZulipConfig } from "./types.js";
 import {
   isZulipAccountConfigured,
   listZulipAccountIds,
@@ -212,6 +213,14 @@ function formatAllowEntry(entry: string): string {
   return trimmed.replace(/^(zulip|user):/i, "").toLowerCase();
 }
 
+function resolveAgentReactionGuidance(
+  cfg: OpenClawConfig,
+  accountId?: string | null,
+): Exclude<ZulipAgentReactionGuidance, "off"> | undefined {
+  const level = resolveZulipAccount({ cfg, accountId }).config.agentReactionGuidance ?? "minimal";
+  return level === "off" ? undefined : level;
+}
+
 export const zulipPlugin = {
   id: "zulip",
   meta: {
@@ -307,6 +316,26 @@ export const zulipPlugin = {
   approvalCapability: zulipApprovalAuth,
   groups: {
     resolveRequireMention: resolveZulipGroupRequireMention,
+  },
+  agentPrompt: {
+    messageToolHints: ({ cfg, accountId }) => {
+      const level = resolveAgentReactionGuidance(cfg, accountId);
+      if (!level) {
+        return [];
+      }
+      if (level === "extensive") {
+        return [
+          "- Zulip reactions are available with `message(action=\"react\", emoji=\"...\")`. Use them for natural sentiment, acknowledgment, or personality; do not use them as progress, typing, or status indicators, and use at most one reaction per message.",
+        ];
+      }
+      return [
+        "- Zulip reactions are available with `message(action=\"react\", emoji=\"...\")`, but keep them optional and sparse. React when sentiment or acknowledgment helps and a text reply would be noisy; do not use reactions as progress, typing, or status indicators, and use at most one reaction per message.",
+      ];
+    },
+    reactionGuidance: ({ cfg, accountId }) => {
+      const level = resolveAgentReactionGuidance(cfg, accountId);
+      return level ? { level, channelLabel: "Zulip" } : undefined;
+    },
   },
   actions: zulipMessageActions,
   messaging: {

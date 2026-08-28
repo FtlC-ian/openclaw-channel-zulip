@@ -56,6 +56,11 @@ const state = vi.hoisted(() => {
     system: {
       enqueueSystemEvent: vi.fn(),
     },
+    agent: {
+      session: {
+        resolveStorePath: vi.fn((_store?: string, _options?: { agentId: string }) => "/tmp/openclaw-session-store.json"),
+      },
+    },
     channel: {
       media: {
         saveMediaBuffer: vi.fn(),
@@ -101,7 +106,6 @@ const state = vi.hoisted(() => {
         dispatchReplyFromConfig: vi.fn(async () => {}),
       },
       session: {
-        resolveStorePath: vi.fn(() => "/tmp/openclaw-session-store.json"),
         updateLastRoute: vi.fn(async () => {}),
       },
       pairing: {
@@ -569,6 +573,8 @@ describe("monitorZulipProvider", () => {
   });
 
   it("stores last-route delivery context for stream-topic messages", async () => {
+    state.core.config.session = { store: "/configured/{agentId}/sessions.json" };
+    state.core.agent.session.resolveStorePath.mockReturnValue("/resolved/debbie/session-store");
     state.pollResponses = [
       {
         result: "success",
@@ -578,8 +584,12 @@ describe("monitorZulipProvider", () => {
 
     await runMonitorOnce();
 
+    expect(state.core.agent.session.resolveStorePath).toHaveBeenCalledExactlyOnceWith(
+      "/configured/{agentId}/sessions.json",
+      { agentId: "debbie" },
+    );
     expect(state.core.channel.session.updateLastRoute).toHaveBeenCalledWith({
-      storePath: "/tmp/openclaw-session-store.json",
+      storePath: "/resolved/debbie/session-store",
       sessionKey: "agent:debbie:main",
       deliveryContext: {
         channel: "zulip",

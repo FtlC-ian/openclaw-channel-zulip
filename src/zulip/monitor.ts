@@ -838,7 +838,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     });
 
     const sessionCfg = cfg.session;
-    const storePath = core.channel.session.resolveStorePath(sessionCfg?.store, {
+      const storePath = core.agent.session.resolveStorePath(sessionCfg?.store, {
       agentId: route.agentId,
     });
     await core.channel.session.updateLastRoute({

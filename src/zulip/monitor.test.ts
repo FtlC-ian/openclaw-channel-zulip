@@ -127,6 +127,8 @@ const state = vi.hoisted(() => {
     extractedUploadUrls: [] as string[],
     editZulipMessage: vi.fn(async () => {}),
     deleteZulipMessage: vi.fn(async () => {}),
+    addZulipReaction: vi.fn(async () => {}),
+    removeZulipReaction: vi.fn(async () => {}),
     sendMessageZulip: vi.fn(async () => ({ messageId: "outbound-1", channelId: "debbie" })),
     client: { authHeader: "fake-auth" },
     addZulipReaction: vi.fn(async () => {}),
@@ -375,6 +377,8 @@ describe("monitorZulipProvider", () => {
     state.autoAbort = true;
     state.editZulipMessage.mockReset();
     state.deleteZulipMessage.mockReset();
+    state.addZulipReaction.mockReset();
+    state.removeZulipReaction.mockReset();
     state.sendMessageZulip.mockReset();
     state.sendMessageZulip.mockResolvedValue({ messageId: "outbound-1", channelId: "debbie" });
     downloadZulipUploadMock.mockClear();
@@ -824,6 +828,23 @@ describe("monitorZulipProvider", () => {
     expect(statusSink).not.toHaveBeenCalledWith(expect.objectContaining({ lastOutboundAt: expect.any(Number) }));
   });
 
+  it("adds the configured success reaction after a silent turn", async () => {
+    state.account.config.reactions = {
+      enabled: true,
+      clearOnFinish: false,
+      onStart: "",
+      onSuccess: "check",
+    };
+    state.pollResponses = [{ result: "success", events: [{ id: 1, type: "message", message: makeChannelMessage(4010) }] }];
+
+    await runMonitorOnce();
+
+    expect(state.addZulipReaction).toHaveBeenCalledExactlyOnceWith(state.client, {
+      messageId: "4010",
+      emojiName: "check",
+    });
+  });
+
   it("removes the placeholder before a presentation-only reply", async () => {
     state.account.config.thinkingPlaceholder = { enabled: true };
     state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }) => {
@@ -861,6 +882,59 @@ describe("monitorZulipProvider", () => {
 
     expect(state.editZulipMessage).toHaveBeenCalledWith(state.client, { messageId: "outbound-1", content: "Turn failed." });
     expect(state.deleteZulipMessage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      name: "media",
+      payload: { mediaUrl: "https://example.com/result.png" },
+      editFails: false,
+      messageId: 4011,
+    },
+    {
+      name: "presentation-only",
+      payload: {
+        presentation: { blocks: [{ type: "buttons", buttons: [{ label: "Confirm", action: "confirm" }] }] },
+      },
+      editFails: false,
+      messageId: 4012,
+    },
+    {
+      name: "topic-change",
+      payload: { text: "[[zulip_topic: another-topic]] actual reply" },
+      editFails: false,
+      messageId: 4013,
+    },
+    {
+      name: "text replacement fallback",
+      payload: { text: "actual reply" },
+      editFails: true,
+      messageId: 4014,
+    },
+  ])("sends configured error text when a $name send fails after placeholder cleanup", async ({ payload, editFails, messageId }) => {
+    state.account.config.thinkingPlaceholder = { enabled: true, errorText: "Turn failed." };
+    if (editFails) {
+      state.editZulipMessage.mockRejectedValueOnce(new Error("edit denied"));
+    }
+    state.sendMessageZulip
+      .mockResolvedValueOnce({ messageId: "placeholder-1", channelId: "debbie" })
+      .mockRejectedValueOnce(new Error("reply send failed"))
+      .mockResolvedValueOnce({ messageId: "error-1", channelId: "debbie" });
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }) => {
+      await dispatcherOptions.deliver(payload);
+    });
+    state.pollResponses = [{ result: "success", events: [{ id: 1, type: "message", message: makeChannelMessage(messageId) }] }];
+
+    await runMonitorOnce();
+
+    expect(state.deleteZulipMessage).toHaveBeenCalledWith(state.client, { messageId: "placeholder-1" });
+    expect(state.sendMessageZulip).toHaveBeenCalledTimes(3);
+    expect(state.sendMessageZulip).toHaveBeenNthCalledWith(
+      3,
+      "stream:debbie:zulip-plugin-pr",
+      "Turn failed.",
+      expect.objectContaining({ topic: "zulip-plugin-pr" }),
+    );
   });
 
   it("removes the placeholder when the turn is cancelled", async () => {

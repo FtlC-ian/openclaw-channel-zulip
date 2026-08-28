@@ -1174,18 +1174,24 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
 
     let replyDeliveryCommitted = false;
     let placeholderMessageId: string | undefined;
+    let placeholderRemovedForDelivery = false;
     let deliveredReply = false;
 
-    const deletePlaceholder = async () => {
+    const deletePlaceholder = async (forDelivery = false): Promise<boolean> => {
       const placeholderId = placeholderMessageId;
       if (!placeholderId) {
-        return;
+        return false;
       }
       try {
         await deleteZulipMessage(client, { messageId: placeholderId });
         placeholderMessageId = undefined;
+        if (forDelivery) {
+          placeholderRemovedForDelivery = true;
+        }
+        return true;
       } catch (err) {
         logVerboseMessage(`zulip: failed to delete thinking placeholder: ${String(err)}`);
+        return false;
       }
     };
 
@@ -1205,7 +1211,6 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         return true;
       } catch (err) {
         logVerboseMessage(`zulip: failed to replace thinking placeholder: ${String(err)}`);
-        await deletePlaceholder();
         return false;
       }
     };
@@ -1262,7 +1267,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
               continue;
             }
             if (first) {
-              await deletePlaceholder();
+              await deletePlaceholder(true);
             }
             await sendMessageZulip(to, chunk, {
               cfg,
@@ -1277,7 +1282,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
             first = false;
           }
         } else {
-          await deletePlaceholder();
+          await deletePlaceholder(true);
           let first = true;
           for (const mediaUrl of mediaUrls) {
             const isFirst = first;
@@ -1377,6 +1382,26 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         await deletePlaceholder();
       } else if (!(await replacePlaceholder(thinkingPlaceholderErrorText))) {
         await deletePlaceholder();
+      }
+    } else if (
+      dispatchError &&
+      !(dispatchError instanceof Error && dispatchError.name === "AbortError") &&
+      placeholderRemovedForDelivery
+    ) {
+      try {
+        await sendMessageZulip(to, thinkingPlaceholderErrorText, {
+          cfg,
+          accountId: account.accountId,
+          topic,
+        });
+        core.channel.activity.record({
+          channel: "zulip",
+          accountId: account.accountId,
+          direction: "outbound",
+        });
+        opts.statusSink?.({ lastOutboundAt: Date.now() });
+      } catch (err) {
+        logVerboseMessage(`zulip: failed to send thinking placeholder error: ${String(err)}`);
       }
     }
     if (terminalError) {

@@ -190,6 +190,12 @@ function requireAdminActionsEnabled(account: ReturnType<typeof resolveZulipAccou
   }
 }
 
+function requireDestructiveConfirmation(params: Record<string, unknown>): void {
+  if (params.confirm !== true) {
+    throw new Error("This destructive action requires confirm: true.");
+  }
+}
+
 async function requireZulipAdmin(client: ReturnType<typeof createZulipClient>): Promise<void> {
   const me = await fetchZulipMemberInfo(client, "me");
   if (!me.is_admin) {
@@ -552,7 +558,21 @@ export const zulipMessageActions: ChannelMessageActionAdapter = {
     // actions.add("user-reactivate" as ChannelMessageActionName);
     // actions.add("org-settings" as ChannelMessageActionName);
     // actions.add("org-settings-edit" as ChannelMessageActionName);
-    return { actions: Array.from(actions), capabilities: ["presentation"] };
+    const destructiveActions: ChannelMessageActionName[] = [
+      "channel-delete",
+      "delete",
+    ];
+    return {
+      actions: Array.from(actions),
+      capabilities: ["presentation"],
+      schema: {
+        properties: {
+          confirm: { type: "boolean", description: "Set to true to confirm destructive actions." },
+        },
+        actions: destructiveActions,
+        visibility: "current-channel",
+      },
+    };
   },
   supportsAction: ({ action }) => action !== "poll",
   extractToolSend: ({ args }) => {
@@ -722,7 +742,11 @@ export const zulipMessageActions: ChannelMessageActionAdapter = {
     }
 
     if (action === "channel-delete") {
+      requireDestructiveConfirmation(params);
       const streamIdOrName = readStreamId(params);
+      if (dryRun) {
+        return jsonResult({ ok: true, dryRun: true, action, streamId: streamIdOrName });
+      }
       // Resolve stream name to ID if necessary
       const streamId = await resolveZulipStreamId(client, streamIdOrName);
       await deleteZulipStream(client, streamId);
@@ -746,9 +770,13 @@ export const zulipMessageActions: ChannelMessageActionAdapter = {
     }
 
     if ((action as string) === "user-deactivate") {
+      requireDestructiveConfirmation(params);
       requireAdminActionsEnabled(account);
-      await requireZulipAdmin(client);
       const userId = readUserIdParam(params);
+      if (dryRun) {
+        return jsonResult({ ok: true, dryRun: true, action: "user-deactivate", userId });
+      }
+      await requireZulipAdmin(client);
       await deactivateZulipUser(client, userId);
       return jsonResult({ ok: true, userId, deactivated: true });
     }
@@ -767,9 +795,18 @@ export const zulipMessageActions: ChannelMessageActionAdapter = {
     }
 
     if ((action as string) === "org-settings-edit") {
+      requireDestructiveConfirmation(params);
       requireAdminActionsEnabled(account);
-      await requireZulipAdmin(client);
       const updates = readRealmUpdateParams(params);
+      if (dryRun) {
+        return jsonResult({
+          ok: true,
+          dryRun: true,
+          action: "org-settings-edit",
+          updated: Object.keys(updates),
+        });
+      }
+      await requireZulipAdmin(client);
       await updateZulipRealm(client, updates);
       return jsonResult({ ok: true, updated: Object.keys(updates) });
     }
@@ -902,7 +939,11 @@ export const zulipMessageActions: ChannelMessageActionAdapter = {
     }
 
     if (action === "delete") {
+      requireDestructiveConfirmation(params);
       const messageId = readMessageId(params);
+      if (dryRun) {
+        return jsonResult({ ok: true, dryRun: true, action, messageId });
+      }
       await deleteZulipMessage(client, { messageId });
       return jsonResult({ ok: true, deleted: messageId });
     }

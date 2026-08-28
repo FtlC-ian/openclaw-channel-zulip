@@ -1,6 +1,10 @@
 import type { OpenClawConfig } from "./sdk.js";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import { splitStreamTarget, zulipMessageActions } from "./actions.js";
+
+type CoreAction = Parameters<NonNullable<typeof zulipMessageActions.handleAction>>[0]["action"];
+type AnyAction = CoreAction | "user-deactivate" | "org-settings-edit";
+type FetchMock = Mock<typeof fetch>;
 
 function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -20,7 +24,7 @@ const cfg: OpenClawConfig = {
 
 async function runReactAction(
   params: Record<string, unknown>,
-  options?: { dryRun?: boolean; fetchImpl?: typeof fetch },
+  options?: { dryRun?: boolean; fetchImpl?: FetchMock },
 ) {
   const fetchImpl =
     options?.fetchImpl ??
@@ -38,6 +42,232 @@ async function runReactAction(
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+async function runAction(
+  action: AnyAction,
+  params: Record<string, unknown>,
+  options?: { dryRun?: boolean; fetchImpl?: FetchMock },
+) {
+  const fetchImpl =
+    options?.fetchImpl ??
+    vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({ result: "success", msg: "" }));
+  vi.stubGlobal("fetch", fetchImpl);
+  const result = await zulipMessageActions.handleAction?.({
+    channel: "zulip",
+    action: action as CoreAction,
+    cfg,
+    params,
+    dryRun: options?.dryRun,
+  });
+  return { result: result as { details?: unknown } | undefined, fetchImpl };
+}
+
+async function expectRejectedWithoutFetch(
+  action: AnyAction,
+  params: Record<string, unknown>,
+): Promise<void> {
+  const fetchImpl = vi.fn<typeof fetch>();
+  await expect(runAction(action, params, { fetchImpl })).rejects.toThrow("confirm: true");
+  expect(fetchImpl).not.toHaveBeenCalled();
+}
+
+describe("destructive action confirmation", () => {
+  it("rejects delete without confirm", async () => {
+    await expectRejectedWithoutFetch("delete", { messageId: "123" });
+  });
+
+  it("rejects channel-delete without confirm", async () => {
+    await expectRejectedWithoutFetch("channel-delete", { streamId: "general" });
+  });
+
+  it("rejects user-deactivate without confirm", async () => {
+    await expectRejectedWithoutFetch("user-deactivate", { userId: "42" });
+  });
+
+  it("rejects org-settings-edit without confirm", async () => {
+    await expectRejectedWithoutFetch("org-settings-edit", { settings: { name: "X" } });
+  });
+
+  it("rejects delete when confirm is false", async () => {
+    await expectRejectedWithoutFetch("delete", { messageId: "123", confirm: false });
+  });
+
+  it("rejects delete when confirm is a string", async () => {
+    await expectRejectedWithoutFetch("delete", { messageId: "123", confirm: "yes" });
+  });
+
+  it("scopes the confirmation schema to advertised destructive actions", () => {
+    expect(zulipMessageActions.describeMessageTool({ cfg })).toMatchObject({
+      schema: {
+        actions: ["channel-delete", "delete"],
+        properties: { confirm: { type: "boolean" } },
+      },
+    });
+  });
+
+  it.each([
+    ["delete", { messageId: "123", confirm: true }],
+    ["channel-delete", { streamId: "general", confirm: true }],
+  ] as const)("does not send Zulip requests for %s dry runs", async (action, params) => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const { result } = await runAction(action, params, { dryRun: true, fetchImpl });
+    expect(result?.details).toMatchObject({ ok: true, dryRun: true, action });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["user-deactivate", { userId: "42", confirm: true }],
+    ["org-settings-edit", { settings: { name: "X" }, confirm: true }],
+  ] as const)("does not send Zulip requests for hidden %s dry runs", async (action, params) => {
+    const adminCfg: OpenClawConfig = {
+      channels: {
+        zulip: {
+          apiKey: "secret",
+          email: "bot@example.test",
+          url: "https://zulip.example.test",
+          enableAdminActions: true,
+        },
+      },
+    };
+    const fetchImpl = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchImpl);
+    const result = await zulipMessageActions.handleAction?.({
+      channel: "zulip",
+      action: action as CoreAction,
+      cfg: adminCfg,
+      params,
+      dryRun: true,
+    });
+    expect(result?.details).toMatchObject({ ok: true, dryRun: true, action });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("succeeds delete when confirm is true and all other gates pass", async () => {
+    const { result, fetchImpl } = await runAction("delete", {
+      messageId: "123",
+      confirm: true,
+    });
+    expect(result?.details).toMatchObject({ ok: true, deleted: "123" });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchImpl.mock.calls[0] ?? [];
+    expect(String(url)).toContain("/messages/123");
+    expect(init?.method).toBe("DELETE");
+  });
+
+  it("succeeds channel-delete when confirm is true and all other gates pass", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockImplementation(async (input: Parameters<typeof fetch>[0]) => {
+        const url = String(input);
+        if (url.includes("/streams")) {
+          return jsonResponse({
+            result: "success",
+            streams: [{ stream_id: 7, name: "general" }],
+          });
+        }
+        return jsonResponse({ result: "success" });
+      });
+    const { result } = await runAction(
+      "channel-delete",
+      { streamId: "general", confirm: true },
+      { fetchImpl },
+    );
+    expect(result?.details).toMatchObject({ ok: true, streamId: "7" });
+  });
+
+  it("cannot bypass admin check via confirmation on user-deactivate", async () => {
+    const adminCfg: OpenClawConfig = {
+      channels: {
+        zulip: {
+          apiKey: "secret",
+          email: "bot@example.test",
+          url: "https://zulip.example.test",
+          enableAdminActions: true,
+        },
+      },
+    };
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({
+        result: "success",
+        user: { user_id: 1, is_admin: false },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchImpl);
+    await expect(
+      zulipMessageActions.handleAction?.({
+        channel: "zulip",
+        action: "user-deactivate" as CoreAction,
+        cfg: adminCfg,
+        params: { userId: "42", confirm: true },
+      }),
+    ).rejects.toThrow("admin privileges");
+  });
+
+  it("cannot bypass enableAdminActions via confirmation on org-settings-edit", async () => {
+    const lockedCfg: OpenClawConfig = {
+      channels: {
+        zulip: {
+          apiKey: "secret",
+          email: "bot@example.test",
+          url: "https://zulip.example.test",
+          enableAdminActions: false,
+        },
+      },
+    };
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({ result: "success", user: { user_id: 1, is_admin: true } }),
+    );
+    vi.stubGlobal("fetch", fetchImpl);
+    await expect(
+      zulipMessageActions.handleAction?.({
+        channel: "zulip",
+        action: "org-settings-edit" as CoreAction,
+        cfg: lockedCfg,
+        params: { settings: { name: "X" }, confirm: true },
+      }),
+    ).rejects.toThrow("enableAdminActions");
+  });
+
+  it("cannot bypass enableAdminActions via confirmation on user-deactivate", async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchImpl);
+    await expect(
+      zulipMessageActions.handleAction?.({
+        channel: "zulip",
+        action: "user-deactivate" as CoreAction,
+        cfg,
+        params: { userId: "42", confirm: true },
+      }),
+    ).rejects.toThrow("enableAdminActions");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("cannot bypass Zulip admin check via confirmation on org-settings-edit", async () => {
+    const adminCfg: OpenClawConfig = {
+      channels: {
+        zulip: {
+          apiKey: "secret",
+          email: "bot@example.test",
+          url: "https://zulip.example.test",
+          enableAdminActions: true,
+        },
+      },
+    };
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({ result: "success", user: { user_id: 1, is_admin: false } }),
+    );
+    vi.stubGlobal("fetch", fetchImpl);
+    await expect(
+      zulipMessageActions.handleAction?.({
+        channel: "zulip",
+        action: "org-settings-edit" as CoreAction,
+        cfg: adminCfg,
+        params: { settings: { name: "X" }, confirm: true },
+      }),
+    ).rejects.toThrow("admin privileges");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("splitStreamTarget", () => {

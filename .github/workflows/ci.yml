@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node:
+          - 22.19.0
+          - 24
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.23.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build
+      - run: pnpm test
+      - name: Check committed changes for whitespace errors
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          if [[ "$BASE_SHA" =~ ^0+$ ]]; then
+            git diff-tree --check --no-commit-id --root -r "$HEAD_SHA"
+          else
+            git diff --check "$BASE_SHA...$HEAD_SHA"
+          fi
+      - name: Install and import the packed artifact
+        run: |
+          pack_file=$(npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP" --silent)
+          openclaw_version=$(node -p "require('./node_modules/openclaw/package.json').version")
+          smoke_dir="$RUNNER_TEMP/package-smoke"
+          mkdir -p "$smoke_dir"
+          pnpm --dir "$smoke_dir" init
+          pnpm --dir "$smoke_dir" add "$RUNNER_TEMP/$pack_file" "openclaw@$openclaw_version" --config.minimumReleaseAge=1440
+          cd "$smoke_dir"
+          node --input-type=module --eval "await import('openclaw-channel-zulip')"

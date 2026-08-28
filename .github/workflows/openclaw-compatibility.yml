@@ -1,0 +1,74 @@
+name: OpenClaw compatibility (advisory)
+
+on:
+  schedule:
+    - cron: '27 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: openclaw-compatibility-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compatibility:
+    name: Latest eligible OpenClaw (Node 24)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.23.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Select newest OpenClaw release at least 24 hours old
+        id: openclaw
+        run: |
+          node --input-type=module <<'NODE'
+          const response = await fetch("https://registry.npmjs.org/openclaw");
+          if (!response.ok) throw new Error(`npm registry returned ${response.status}`);
+
+          const registry = await response.json();
+          const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+          const stableChannels = ["latest", "extended-stable"];
+          const version = stableChannels
+            .map((tag) => registry["dist-tags"]?.[tag])
+            .find((candidate) =>
+              typeof candidate === "string" && Date.parse(registry.time?.[candidate]) <= cutoff,
+            );
+          if (!version) throw new Error("No OpenClaw release is at least 24 hours old");
+          const { appendFile } = await import("node:fs/promises");
+          await appendFile(process.env.GITHUB_OUTPUT, `version=${version}\n`);
+          NODE
+      - name: Install against selected OpenClaw in a disposable lockfile
+        env:
+          OPENCLAW_VERSION: ${{ steps.openclaw.outputs.version }}
+        run: |
+          compat_dir="$RUNNER_TEMP/openclaw-compatibility"
+          mkdir -p "$compat_dir"
+          rsync -a --delete --exclude .git --exclude node_modules --exclude dist ./ "$compat_dir/"
+          COMPAT_DIR="$compat_dir" node --input-type=module <<'NODE'
+          import { readFile, writeFile } from "node:fs/promises";
+
+          const packagePath = `${process.env.COMPAT_DIR}/package.json`;
+          const packageJson = JSON.parse(await readFile(packagePath, "utf8"));
+          packageJson.devDependencies.openclaw = process.env.OPENCLAW_VERSION;
+          await writeFile(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+          NODE
+          cd "$compat_dir"
+          pnpm install --no-frozen-lockfile --config.minimumReleaseAge=1440
+          pnpm run build
+          pnpm test
+          pack_file=$(npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP" --silent)
+          smoke_dir="$RUNNER_TEMP/openclaw-package-smoke"
+          mkdir -p "$smoke_dir"
+          pnpm --dir "$smoke_dir" init
+          pnpm --dir "$smoke_dir" add "$RUNNER_TEMP/$pack_file" "openclaw@$OPENCLAW_VERSION" --config.minimumReleaseAge=1440
+          cd "$smoke_dir"
+          node --input-type=module --eval "await import('openclaw-channel-zulip')"

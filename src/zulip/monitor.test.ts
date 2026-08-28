@@ -753,7 +753,7 @@ describe("monitorZulipProvider", () => {
     state.core.channel.commands.shouldHandleTextCommands.mockReturnValue(true);
     state.core.channel.text.hasControlCommand.mockReturnValue(true);
     state.pollResponses = [{ result: "success", events: [{
-      id: 1, type: "message", message: { ...makeChannelMessage(paired ? 1201 : 1202), content: "/status" },
+      id: 1, type: "message", message: { ...makeChannelMessage(paired ? 2201 : 2202), content: "/status" },
     }] }];
     await runMonitorOnce();
     expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(expectedDispatches);

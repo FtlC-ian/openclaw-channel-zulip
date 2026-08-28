@@ -49,7 +49,7 @@ const requireOpenAllowFrom = (params: {
     return;
   }
   params.ctx.addIssue({
-    code: z.ZodIssueCode.custom,
+    code: "custom",
     path: params.path,
     message: params.message,
   });

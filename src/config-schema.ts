@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { buildJsonChannelConfigSchema } from "openclaw/plugin-sdk/channel-config-schema";
 import { buildOptionalSecretInputSchema } from "openclaw/plugin-sdk/secret-input";
 
 // Inlined from openclaw/plugin-sdk to avoid module resolution issues
@@ -108,7 +109,7 @@ const ZulipAccountSchema = ZulipAccountSchemaBase.superRefine((value, ctx) => {
   });
 });
 
-export const ZulipConfigSchema = ZulipAccountSchemaBase.extend({
+const ZulipConfigSchema = ZulipAccountSchemaBase.extend({
   accounts: z.record(z.string(), ZulipAccountSchema.optional()).optional(),
   defaultAccount: z.string().optional(),
 }).superRefine((value, ctx) => {
@@ -120,3 +121,22 @@ export const ZulipConfigSchema = ZulipAccountSchemaBase.extend({
     message: 'channels.zulip.dmPolicy="open" requires channels.zulip.allowFrom to include "*"',
   });
 });
+
+// Cross the SDK boundary as JSON Schema; retain this plugin's Zod refinements at runtime.
+export const zulipChannelConfigSchema: ReturnType<typeof buildJsonChannelConfigSchema> = buildJsonChannelConfigSchema(
+  ZulipConfigSchema.toJSONSchema({ target: "draft-07", unrepresentable: "any" }),
+  {
+    runtime: {
+      safeParse(value) {
+        const result = ZulipConfigSchema.safeParse(value);
+        return result.success ? result : {
+          success: false,
+          issues: result.error.issues.map((issue) => ({
+            ...issue,
+            path: issue.path.filter((part): part is string | number => typeof part !== "symbol"),
+          })),
+        };
+      },
+    },
+  },
+);

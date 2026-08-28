@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ZulipConfigSchema } from "./config-schema.js";
+import { zulipChannelConfigSchema } from "./config-schema.js";
 import { collectRuntimeConfigAssignments, secretTargetRegistryEntries } from "./secret-contract.js";
 
 describe("Zulip secret contract", () => {
@@ -18,9 +18,9 @@ describe("Zulip secret contract", () => {
   });
 
   it("schema accepts plain strings and structured SecretRefs", () => {
-    expect(ZulipConfigSchema.safeParse({ apiKey: "plain" }).success).toBe(true);
+    expect(zulipChannelConfigSchema.runtime!.safeParse({ apiKey: "plain" }).success).toBe(true);
     expect(
-      ZulipConfigSchema.safeParse({
+      zulipChannelConfigSchema.runtime!.safeParse({
         accounts: {
           default: { apiKey: { source: "env", provider: "default", id: "ZULIP_API_KEY" } },
         },
@@ -29,15 +29,25 @@ describe("Zulip secret contract", () => {
   });
 
   it("schema validates model-controlled reaction guidance levels", () => {
-    expect(ZulipConfigSchema.safeParse({ agentReactionGuidance: "minimal" }).success).toBe(true);
+    expect(zulipChannelConfigSchema.runtime!.safeParse({ agentReactionGuidance: "minimal" }).success).toBe(true);
     expect(
-      ZulipConfigSchema.safeParse({
+      zulipChannelConfigSchema.runtime!.safeParse({
         accounts: {
           work: { agentReactionGuidance: "extensive" },
         },
       }).success,
     ).toBe(true);
-    expect(ZulipConfigSchema.safeParse({ agentReactionGuidance: "ack" }).success).toBe(false);
+    expect(zulipChannelConfigSchema.runtime!.safeParse({ agentReactionGuidance: "ack" }).success).toBe(false);
+  });
+
+  it.each([
+    { value: { dmPolicy: "open" }, path: ["allowFrom"] },
+    { value: { accounts: { work: { dmPolicy: "open" } } }, path: ["accounts", "work", "allowFrom"] },
+  ])("preserves open-DM allowlist refinements through the SDK schema", ({ value, path }) => {
+    expect(zulipChannelConfigSchema.runtime!.safeParse(value)).toMatchObject({
+      success: false,
+      issues: [expect.objectContaining({ path })],
+    });
   });
 
   it("registers apiKey targets", () => {

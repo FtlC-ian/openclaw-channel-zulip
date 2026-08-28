@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { buildChannelInboundEventContext } from "openclaw/plugin-sdk/channel-inbound";
 
 const state = vi.hoisted(() => {
   const createMemoryKeyedStore = <T>(maxEntries = Number.MAX_SAFE_INTEGER) => {
@@ -94,16 +95,12 @@ const state = vi.hoisted(() => {
           mainSessionKey: "agent:debbie:main",
         })),
       },
+      inbound: {
+        buildContext: vi.fn(),
+      },
       reply: {
-        formatInboundEnvelope: vi.fn(({ body }: { body: string }) => body),
-        finalizeInboundContext: vi.fn((payload: Record<string, unknown>) => payload),
         resolveHumanDelayConfig: vi.fn(() => undefined),
-        createReplyDispatcherWithTyping: vi.fn(() => ({
-          dispatcher: {},
-          replyOptions: {},
-          markDispatchIdle: vi.fn(),
-        })),
-        dispatchReplyFromConfig: vi.fn(async () => {}),
+        dispatchReplyWithBufferedBlockDispatcher: vi.fn(async () => {}),
       },
       session: {
         updateLastRoute: vi.fn(async () => {}),
@@ -226,18 +223,21 @@ const typingCallbacksMock = vi.fn(() => ({
 }));
 
 vi.mock("../sdk.js", () => ({
-  createScopedPairingAccess: vi.fn(() => ({
+  createChannelPairingController: vi.fn(() => ({
     upsertPairingRequest: vi.fn(async () => ({ code: "123456", created: false })),
     readStoreForDmPolicy: vi.fn(async () => []),
   })),
 }));
 
-vi.mock("openclaw/plugin-sdk/channel-runtime", () => ({
+vi.mock("openclaw/plugin-sdk/channel-outbound", async (importOriginal) => ({
+  ...await importOriginal<typeof import("openclaw/plugin-sdk/channel-outbound")>(),
   createReplyPrefixOptions: vi.fn(() => ({ onModelSelected: vi.fn() })),
   createTypingCallbacks: typingCallbacksMock,
 }));
 
-vi.mock("openclaw/plugin-sdk/channel-inbound", () => ({
+vi.mock("openclaw/plugin-sdk/channel-inbound", async (importOriginal) => ({
+  ...await importOriginal<typeof import("openclaw/plugin-sdk/channel-inbound")>(),
+  formatInboundEnvelope: vi.fn(({ body }: { body: string }) => body),
   logInboundDrop: vi.fn(),
 }));
 
@@ -254,10 +254,6 @@ vi.mock("openclaw/plugin-sdk/reply-history", () => ({
 
 vi.mock("openclaw/plugin-sdk/command-auth", () => ({
   resolveControlCommandGate: vi.fn(() => ({ shouldBlock: false, commandAuthorized: true })),
-}));
-
-vi.mock("openclaw/plugin-sdk/media-runtime", () => ({
-  resolveChannelMediaMaxBytes: vi.fn(() => undefined),
 }));
 
 vi.mock("openclaw/plugin-sdk/temp-path", () => ({
@@ -336,6 +332,7 @@ function enableDurableInboundJournal() {
 describe("monitorZulipProvider", () => {
   beforeEach(() => {
     state.core = state.createCore();
+    state.core.channel.inbound.buildContext.mockImplementation(buildChannelInboundEventContext);
     state.durableStores = new Map();
     state.account.config = {
       dmPolicy: "open",
@@ -376,7 +373,7 @@ describe("monitorZulipProvider", () => {
 
     await runMonitorOnce();
 
-    const dispatcherCall = state.core.channel.reply.createReplyDispatcherWithTyping.mock.calls[0]?.[0];
+    const dispatcherCall = state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mock.calls[0]?.[0]?.dispatcherOptions;
     const typingCallbacks = typingCallbacksMock.mock.results[0]?.value;
     expect(dispatcherCall?.onReplyStart).toBe(typingCallbacks?.onReplyStart);
     expect(dispatcherCall?.onIdle).toBe(typingCallbacks?.onIdle);
@@ -392,8 +389,8 @@ describe("monitorZulipProvider", () => {
 
     await runMonitorOnce();
 
-    expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledTimes(1);
-    expect(state.core.channel.reply.dispatchReplyFromConfig).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
     expect(state.core.system.enqueueSystemEvent).not.toHaveBeenCalled();
   });
 
@@ -417,7 +414,7 @@ describe("monitorZulipProvider", () => {
 
     await runMonitorOnce();
 
-    expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledWith(
+    expect(state.core.channel.inbound.buildContext).toHaveReturnedWith(
       expect.objectContaining({
         ChatType: "channel",
         ChannelPrivacy: "private",
@@ -456,7 +453,7 @@ describe("monitorZulipProvider", () => {
 
     await runMonitorOnce();
 
-    expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledWith(
+    expect(state.core.channel.inbound.buildContext).toHaveReturnedWith(
       expect.objectContaining({
         ChatType: "channel",
         ChannelPrivacy: "public",
@@ -493,7 +490,7 @@ describe("monitorZulipProvider", () => {
     await runMonitorOnce();
 
     expect(fetchZulipStreamMock).toHaveBeenCalledWith(state.client, "404");
-    expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledWith(
+    expect(state.core.channel.inbound.buildContext).toHaveReturnedWith(
       expect.objectContaining({
         ChatType: "channel",
         ChannelPrivacy: "unknown",
@@ -501,7 +498,7 @@ describe("monitorZulipProvider", () => {
         StreamId: "404",
       }),
     );
-    expect(state.core.channel.reply.dispatchReplyFromConfig).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
   });
 
   it("falls back to temp-file media storage with a sanitized filename when runtime saveMediaBuffer is unavailable", async () => {
@@ -519,10 +516,12 @@ describe("monitorZulipProvider", () => {
 
     await runMonitorOnce();
 
-    expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledWith(
+    expect(state.core.channel.inbound.buildContext).toHaveReturnedWith(
       expect.objectContaining({
-        MediaPath: expect.stringMatching(/^\/tmp\/zulip-upload-[^/]+\/evil_name\.pdf$/),
-        MediaType: "application/pdf",
+        media: [expect.objectContaining({
+          path: expect.stringMatching(/^\/tmp\/zulip-upload-[^/]+\/evil_name\.pdf$/),
+          contentType: "application/pdf",
+        })],
       }),
     );
   });
@@ -560,14 +559,13 @@ describe("monitorZulipProvider", () => {
       5 * 1024 * 1024,
     );
     expect(state.core.channel.media.saveMediaBuffer).toHaveBeenCalledTimes(3);
-    expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledWith(
+    expect(state.core.channel.inbound.buildContext).toHaveReturnedWith(
       expect.objectContaining({
-        MediaPath: "/managed/song.mp3",
-        MediaPaths: ["/managed/song.mp3", "/managed/image.png", "/managed/report.pdf"],
-        MediaUrl: "/managed/song.mp3",
-        MediaUrls: ["/managed/song.mp3", "/managed/image.png", "/managed/report.pdf"],
-        MediaType: "audio/mpeg",
-        MediaTypes: ["audio/mpeg", "image/png", "application/pdf"],
+        media: [
+          expect.objectContaining({ path: "/managed/song.mp3", contentType: "audio/mpeg" }),
+          expect.objectContaining({ path: "/managed/image.png", contentType: "image/png" }),
+          expect.objectContaining({ path: "/managed/report.pdf", contentType: "application/pdf" }),
+        ],
       }),
     );
   });
@@ -609,7 +607,7 @@ describe("monitorZulipProvider", () => {
 
     await runMonitorOnce();
 
-    expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledWith(
+    expect(state.core.channel.inbound.buildContext).toHaveReturnedWith(
       expect.objectContaining({
         To: "user:user8@zlp.pubnerd.app",
         OriginatingTo: "user:user8@zlp.pubnerd.app",
@@ -645,7 +643,7 @@ describe("monitorZulipProvider", () => {
 
     await runMonitorOnce();
 
-    expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledWith(
+    expect(state.core.channel.inbound.buildContext).toHaveReturnedWith(
       expect.objectContaining({
         To: "user:123",
         OriginatingTo: "user:123",
@@ -676,8 +674,8 @@ describe("monitorZulipProvider", () => {
 
     await runMonitorOnce();
 
-    expect(state.core.channel.reply.finalizeInboundContext).not.toHaveBeenCalled();
-    expect(state.core.channel.reply.dispatchReplyFromConfig).not.toHaveBeenCalled();
+    expect(state.core.channel.inbound.buildContext).not.toHaveBeenCalled();
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
   });
 
   it("processes stream messages inside configured topic filters with case and whitespace normalization", async () => {
@@ -695,8 +693,8 @@ describe("monitorZulipProvider", () => {
 
     await runMonitorOnce();
 
-    expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledTimes(1);
-    expect(state.core.channel.reply.dispatchReplyFromConfig).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
   });
 
   it("drops stream messages outside a configured stream-scoped topic filter", async () => {
@@ -714,8 +712,8 @@ describe("monitorZulipProvider", () => {
 
     await runMonitorOnce();
 
-    expect(state.core.channel.reply.finalizeInboundContext).not.toHaveBeenCalled();
-    expect(state.core.channel.reply.dispatchReplyFromConfig).not.toHaveBeenCalled();
+    expect(state.core.channel.inbound.buildContext).not.toHaveBeenCalled();
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
   });
 
   it("treats empty and wildcard stream-scoped topic filters as unrestricted", async () => {
@@ -735,8 +733,8 @@ describe("monitorZulipProvider", () => {
 
     await runMonitorOnce();
 
-    expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledTimes(1);
-    expect(state.core.channel.reply.dispatchReplyFromConfig).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
   });
 
   it("ignores duplicate inbound message ids on repeat processing", async () => {
@@ -756,8 +754,8 @@ describe("monitorZulipProvider", () => {
     ];
     await runMonitorOnce();
 
-    expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledTimes(1);
-    expect(state.core.channel.reply.dispatchReplyFromConfig).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
   });
 
   it("records and completes durable inbound messages when plugin state is available", async () => {
@@ -783,7 +781,7 @@ describe("monitorZulipProvider", () => {
     expect(completedEntries?.[0]?.value).toMatchObject({
       metadata: { queueEventId: 2 },
     });
-    expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(1);
   });
 
   it("keeps durable journal store caps below the plugin state row limit", async () => {
@@ -825,8 +823,8 @@ describe("monitorZulipProvider", () => {
 
     await expect(journal.pending()).resolves.toEqual([]);
     expect(getZulipEventsWithRetryMock).toHaveBeenCalledTimes(1);
-    expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledTimes(1);
-    expect(state.core.channel.reply.dispatchReplyFromConfig).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
   });
 
   it("retries same-process durable replay after a handler failure despite volatile dedupe", async () => {
@@ -864,8 +862,8 @@ describe("monitorZulipProvider", () => {
 
     await expect(journal.pending()).resolves.toEqual([]);
     expect(state.core.channel.session.updateLastRoute).toHaveBeenCalledTimes(2);
-    expect(state.core.channel.reply.dispatchReplyFromConfig).toHaveBeenCalledTimes(1);
-    expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledTimes(2);
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(2);
   });
 
   it("re-registers the Zulip event queue after a BAD_EVENT_QUEUE_ID response and still processes the message", async () => {
@@ -884,7 +882,7 @@ describe("monitorZulipProvider", () => {
     await runMonitorOnce();
 
     expect(registerZulipQueueMock).toHaveBeenCalledTimes(2);
-    expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(1);
     expect(state.core.system.enqueueSystemEvent).not.toHaveBeenCalled();
   });
 });

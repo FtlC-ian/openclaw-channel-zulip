@@ -33,6 +33,11 @@ inbound records and deduplication tombstones retain their existing namespaces an
 retention; this update does not migrate or discard them. The newer ingress queue
 also requires host trust unavailable to ordinary third-party plugins.
 
+The stable setup adapter, session-store path resolver, human-delay resolver, and
+outbound media loader remain until supported replacements preserve their current
+contracts. The beta setup contract is not available in the pinned stable SDK;
+replacing the outbound loader must preserve host-provided file access limits.
+
 ### Via plugin manager (recommended)
 
 ```sh

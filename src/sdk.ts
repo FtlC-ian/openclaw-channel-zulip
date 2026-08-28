@@ -36,4 +36,3 @@ export { readNumberParam, readStringParam } from "openclaw/plugin-sdk/param-read
 export { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/temp-path";
 
 export { createChannelPairingController } from "openclaw/plugin-sdk/channel-pairing";
-export type { HistoryEntry } from "openclaw/plugin-sdk/reply-history";

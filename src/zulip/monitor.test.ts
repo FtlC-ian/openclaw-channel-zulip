@@ -116,6 +116,7 @@ const state = vi.hoisted(() => {
     abortController: undefined as AbortController | undefined,
     durableStores: new Map<string, ReturnType<typeof createMemoryKeyedStore>>(),
     pollResponses: [] as Array<Record<string, unknown>>,
+    pairingAllowFrom: [] as string[],
     streamSubscriptions: [] as Array<Record<string, unknown>>,
     streamLookups: new Map<string, Record<string, unknown> | Error>(),
     downloadedUploads: [] as Array<{ buffer: Buffer; contentType: string; filename: string }>,
@@ -225,7 +226,7 @@ const typingCallbacksMock = vi.fn(() => ({
 vi.mock("../sdk.js", () => ({
   createChannelPairingController: vi.fn(() => ({
     upsertPairingRequest: vi.fn(async () => ({ code: "123456", created: false })),
-    readStoreForDmPolicy: vi.fn(async () => []),
+    readStoreForDmPolicy: vi.fn(async () => state.pairingAllowFrom),
   })),
 }));
 
@@ -245,29 +246,8 @@ vi.mock("openclaw/plugin-sdk/channel-feedback", () => ({
   logTypingFailure: vi.fn(),
 }));
 
-vi.mock("openclaw/plugin-sdk/reply-history", () => ({
-  buildPendingHistoryContextFromMap: vi.fn(() => undefined),
-  clearHistoryEntriesIfEnabled: vi.fn(),
-  DEFAULT_GROUP_HISTORY_LIMIT: 20,
-  recordPendingHistoryEntryIfEnabled: vi.fn(),
-}));
-
-vi.mock("openclaw/plugin-sdk/command-auth", () => ({
-  resolveControlCommandGate: vi.fn(() => ({ shouldBlock: false, commandAuthorized: true })),
-}));
-
 vi.mock("openclaw/plugin-sdk/temp-path", () => ({
   resolvePreferredOpenClawTmpDir: vi.fn(() => "/tmp"),
-}));
-
-vi.mock("openclaw/plugin-sdk/channel-policy", () => ({
-  readStoreAllowFromForDmPolicy: vi.fn(async () => []),
-  resolveDmGroupAccessWithLists: vi.fn(
-    ({ allowFrom, groupAllowFrom }: { allowFrom: string[]; groupAllowFrom: string[] }) => ({
-      effectiveAllowFrom: allowFrom,
-      effectiveGroupAllowFrom: groupAllowFrom,
-    }),
-  ),
 }));
 
 function makeChannelMessage(id: number) {
@@ -334,6 +314,7 @@ describe("monitorZulipProvider", () => {
     state.core = state.createCore();
     state.core.channel.inbound.buildContext.mockImplementation(buildChannelInboundEventContext);
     state.durableStores = new Map();
+    state.pairingAllowFrom = [];
     state.account.config = {
       dmPolicy: "open",
       groupPolicy: "open",
@@ -516,7 +497,7 @@ describe("monitorZulipProvider", () => {
 
     await runMonitorOnce();
 
-    expect(state.core.channel.inbound.buildContext).toHaveReturnedWith(
+    expect(state.core.channel.inbound.buildContext).toHaveBeenCalledWith(
       expect.objectContaining({
         media: [expect.objectContaining({
           path: expect.stringMatching(/^\/tmp\/zulip-upload-[^/]+\/evil_name\.pdf$/),
@@ -559,7 +540,12 @@ describe("monitorZulipProvider", () => {
       5 * 1024 * 1024,
     );
     expect(state.core.channel.media.saveMediaBuffer).toHaveBeenCalledTimes(3);
-    expect(state.core.channel.inbound.buildContext).toHaveReturnedWith(
+    // The stable SDK projects canonical input facts into its older dispatch context.
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mock.calls[0]?.[0]?.ctx).toMatchObject({
+      MediaPaths: ["/managed/song.mp3", "/managed/image.png", "/managed/report.pdf"],
+      MediaTypes: ["audio/mpeg", "image/png", "application/pdf"],
+    });
+    expect(state.core.channel.inbound.buildContext).toHaveBeenCalledWith(
       expect.objectContaining({
         media: [
           expect.objectContaining({ path: "/managed/song.mp3", contentType: "audio/mpeg" }),
@@ -756,6 +742,24 @@ describe("monitorZulipProvider", () => {
 
     expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(1);
     expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { paired: true, expectedDispatches: 1 },
+    { paired: false, expectedDispatches: 0 },
+  ])("preserves paired command authorization in open streams (paired=$paired)", async ({ paired, expectedDispatches }) => {
+    state.account.config.dmPolicy = "pairing";
+    state.pairingAllowFrom = paired ? ["user8@zlp.pubnerd.app"] : [];
+    state.core.channel.commands.shouldHandleTextCommands.mockReturnValue(true);
+    state.core.channel.text.hasControlCommand.mockReturnValue(true);
+    state.pollResponses = [{ result: "success", events: [{
+      id: 1, type: "message", message: { ...makeChannelMessage(paired ? 1201 : 1202), content: "/status" },
+    }] }];
+    await runMonitorOnce();
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(expectedDispatches);
+    if (paired) {
+      expect(state.core.channel.inbound.buildContext).toHaveReturnedWith(expect.objectContaining({ CommandAuthorized: true }));
+    }
   });
 
   it("records and completes durable inbound messages when plugin state is available", async () => {

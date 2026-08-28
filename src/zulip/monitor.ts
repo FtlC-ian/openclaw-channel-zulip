@@ -6,21 +6,13 @@ import type {
   ReplyPayload,
   RuntimeEnv,
 } from "../sdk.js";
-import {
-  createChannelPairingController,
-  type HistoryEntry,
-} from "../sdk.js";
-import { resolveControlCommandGate } from "openclaw/plugin-sdk/command-auth";
+import { createChannelPairingController } from "../sdk.js";
+import { resolveControlCommandGate } from "openclaw/plugin-sdk/command-auth-native";
 import { logTypingFailure } from "openclaw/plugin-sdk/channel-feedback";
 import { formatInboundEnvelope, logInboundDrop } from "openclaw/plugin-sdk/channel-inbound";
-import { readStoreAllowFromForDmPolicy, resolveDmGroupAccessWithLists } from "openclaw/plugin-sdk/channel-policy";
+import { mergeDmAllowFromSources, resolveGroupAllowFromSources } from "openclaw/plugin-sdk/allow-from";
+import { readChannelIngressStoreAllowFromForDmPolicy } from "openclaw/plugin-sdk/channel-ingress-runtime";
 import { createReplyPrefixOptions, createTypingCallbacks } from "openclaw/plugin-sdk/channel-outbound";
-import {
-  buildPendingHistoryContextFromMap,
-  clearHistoryEntriesIfEnabled,
-  DEFAULT_GROUP_HISTORY_LIMIT,
-  recordPendingHistoryEntryIfEnabled,
-} from "openclaw/plugin-sdk/reply-history";
 import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/temp-path";
 import { getZulipRuntime } from "../runtime.js";
 import { resolveZulipRuntimeAccount } from "./accounts.js";
@@ -417,7 +409,6 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
   const defaultTopic = account.config.defaultTopic?.trim() ?? FALLBACK_TOPIC;
   const oncharPrefixes = resolveOncharPrefixes(account.oncharPrefixes);
   const oncharEnabled = account.chatmode === "onchar";
-  const channelHistories = new Map<string, HistoryEntry[]>();
 
   const mediaMaxBytes =
     (account.config.mediaMaxMb || cfg.agents?.defaults?.mediaMaxMb || 5) * 1024 * 1024;
@@ -554,29 +545,22 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     const normalizedAllowFrom = normalizeAllowList(account.config.allowFrom ?? []);
     const normalizedGroupAllowFrom = normalizeAllowList(account.config.groupAllowFrom ?? []);
     const storeAllowFrom = normalizeAllowList(
-      await readStoreAllowFromForDmPolicy({
+      await readChannelIngressStoreAllowFromForDmPolicy({
         provider: "zulip",
         accountId: account.accountId,
         dmPolicy,
         readStore: pairing.readStoreForDmPolicy,
       }),
     );
-    const accessDecision = resolveDmGroupAccessWithLists({
-      isGroup: !isDM,
+    const effectiveAllowFrom = mergeDmAllowFromSources({
       dmPolicy,
-      groupPolicy,
+      allowFrom: normalizedAllowFrom,
+      storeAllowFrom,
+    });
+    const effectiveGroupAllowFrom = resolveGroupAllowFromSources({
       allowFrom: normalizedAllowFrom,
       groupAllowFrom: normalizedGroupAllowFrom,
-      storeAllowFrom,
-      isSenderAllowed: (allowFrom) =>
-        isSenderAllowed({
-          senderId: senderIdentity,
-          senderName,
-          allowFrom,
-        }),
     });
-    const effectiveAllowFrom = accessDecision.effectiveAllowFrom;
-    const effectiveGroupAllowFrom = accessDecision.effectiveGroupAllowFrom;
 
     const allowTextCommands = core.channel.commands.shouldHandleTextCommands({
       cfg,
@@ -769,7 +753,6 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         : undefined;
 
     const sessionKey = route.sessionKey ?? `zulip:${account.accountId}:${channelId}`;
-    const historyKey = kind === "dm" ? null : sessionKey;
 
     const timestamp = message.timestamp ? message.timestamp * 1000 : undefined;
     const textWithId = `${bodyText}\n[zulip message id: ${messageId}]`;
@@ -998,14 +981,6 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       } else {
         await addReactionSafe(reactionSuccess);
       }
-    }
-
-    if (historyKey) {
-      clearHistoryEntriesIfEnabled({
-        historyMap: channelHistories,
-        historyKey,
-        limit: DEFAULT_GROUP_HISTORY_LIMIT,
-      });
     }
 
     opts.statusSink?.({ lastInboundAt: Date.now() });

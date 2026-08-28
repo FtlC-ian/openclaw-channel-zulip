@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { buildChannelInboundEventContext } from "openclaw/plugin-sdk/channel-inbound";
 
 const state = vi.hoisted(() => {
   const createMemoryKeyedStore = <T>(maxEntries = Number.MAX_SAFE_INTEGER) => {
@@ -94,16 +95,12 @@ const state = vi.hoisted(() => {
           mainSessionKey: "agent:debbie:main",
         })),
       },
+      inbound: {
+        buildContext: vi.fn(),
+      },
       reply: {
-        formatInboundEnvelope: vi.fn(({ body }: { body: string }) => body),
-        finalizeInboundContext: vi.fn((payload: Record<string, unknown>) => payload),
         resolveHumanDelayConfig: vi.fn(() => undefined),
-        createReplyDispatcherWithTyping: vi.fn(() => ({
-          dispatcher: {},
-          replyOptions: {},
-          markDispatchIdle: vi.fn(),
-        })),
-        dispatchReplyFromConfig: vi.fn(async () => {}),
+        dispatchReplyWithBufferedBlockDispatcher: vi.fn(async () => {}),
       },
       session: {
         updateLastRoute: vi.fn(async () => {}),
@@ -119,6 +116,7 @@ const state = vi.hoisted(() => {
     abortController: undefined as AbortController | undefined,
     durableStores: new Map<string, ReturnType<typeof createMemoryKeyedStore>>(),
     pollResponses: [] as Array<Record<string, unknown>>,
+    pairingAllowFrom: [] as string[],
     streamSubscriptions: [] as Array<Record<string, unknown>>,
     streamLookups: new Map<string, Record<string, unknown> | Error>(),
     downloadedUploads: [] as Array<{ buffer: Buffer; contentType: string; filename: string }>,
@@ -226,18 +224,21 @@ const typingCallbacksMock = vi.fn(() => ({
 }));
 
 vi.mock("../sdk.js", () => ({
-  createScopedPairingAccess: vi.fn(() => ({
+  createChannelPairingController: vi.fn(() => ({
     upsertPairingRequest: vi.fn(async () => ({ code: "123456", created: false })),
-    readStoreForDmPolicy: vi.fn(async () => []),
+    readStoreForDmPolicy: vi.fn(async () => state.pairingAllowFrom),
   })),
 }));
 
-vi.mock("openclaw/plugin-sdk/channel-runtime", () => ({
+vi.mock("openclaw/plugin-sdk/channel-outbound", async (importOriginal) => ({
+  ...await importOriginal<typeof import("openclaw/plugin-sdk/channel-outbound")>(),
   createReplyPrefixOptions: vi.fn(() => ({ onModelSelected: vi.fn() })),
   createTypingCallbacks: typingCallbacksMock,
 }));
 
-vi.mock("openclaw/plugin-sdk/channel-inbound", () => ({
+vi.mock("openclaw/plugin-sdk/channel-inbound", async (importOriginal) => ({
+  ...await importOriginal<typeof import("openclaw/plugin-sdk/channel-inbound")>(),
+  formatInboundEnvelope: vi.fn(({ body }: { body: string }) => body),
   logInboundDrop: vi.fn(),
 }));
 
@@ -245,33 +246,8 @@ vi.mock("openclaw/plugin-sdk/channel-feedback", () => ({
   logTypingFailure: vi.fn(),
 }));
 
-vi.mock("openclaw/plugin-sdk/reply-history", () => ({
-  buildPendingHistoryContextFromMap: vi.fn(() => undefined),
-  clearHistoryEntriesIfEnabled: vi.fn(),
-  DEFAULT_GROUP_HISTORY_LIMIT: 20,
-  recordPendingHistoryEntryIfEnabled: vi.fn(),
-}));
-
-vi.mock("openclaw/plugin-sdk/command-auth", () => ({
-  resolveControlCommandGate: vi.fn(() => ({ shouldBlock: false, commandAuthorized: true })),
-}));
-
-vi.mock("openclaw/plugin-sdk/media-runtime", () => ({
-  resolveChannelMediaMaxBytes: vi.fn(() => undefined),
-}));
-
 vi.mock("openclaw/plugin-sdk/temp-path", () => ({
   resolvePreferredOpenClawTmpDir: vi.fn(() => "/tmp"),
-}));
-
-vi.mock("openclaw/plugin-sdk/channel-policy", () => ({
-  readStoreAllowFromForDmPolicy: vi.fn(async () => []),
-  resolveDmGroupAccessWithLists: vi.fn(
-    ({ allowFrom, groupAllowFrom }: { allowFrom: string[]; groupAllowFrom: string[] }) => ({
-      effectiveAllowFrom: allowFrom,
-      effectiveGroupAllowFrom: groupAllowFrom,
-    }),
-  ),
 }));
 
 function makeChannelMessage(id: number) {
@@ -336,7 +312,9 @@ function enableDurableInboundJournal() {
 describe("monitorZulipProvider", () => {
   beforeEach(() => {
     state.core = state.createCore();
+    state.core.channel.inbound.buildContext.mockImplementation(buildChannelInboundEventContext);
     state.durableStores = new Map();
+    state.pairingAllowFrom = [];
     state.account.config = {
       dmPolicy: "open",
       groupPolicy: "open",
@@ -376,10 +354,105 @@ describe("monitorZulipProvider", () => {
 
     await runMonitorOnce();
 
-    const dispatcherCall = state.core.channel.reply.createReplyDispatcherWithTyping.mock.calls[0]?.[0];
+    const dispatcherCall = state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mock.calls[0]?.[0]?.dispatcherOptions;
     const typingCallbacks = typingCallbacksMock.mock.results[0]?.value;
     expect(dispatcherCall?.onReplyStart).toBe(typingCallbacks?.onReplyStart);
     expect(dispatcherCall?.onIdle).toBe(typingCallbacks?.onIdle);
+  });
+
+  it("forwards presentation and channel data only with the first text chunk", async () => {
+    const { sendMessageZulip } = await import("./send.js");
+    const sendMessageZulipMock = vi.mocked(sendMessageZulip);
+    sendMessageZulipMock.mockClear();
+    state.core.channel.text.chunkMarkdownTextWithMode.mockReturnValue(["first chunk", "second chunk"]);
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }) => {
+      await dispatcherOptions.deliver({
+        text: "reply text",
+        presentation: { blocks: [{ type: "buttons", buttons: [{ label: "Confirm", action: "confirm" }] }] },
+        channelData: { zulip: { widgetContent: { widget_type: "zform" } } },
+      });
+    });
+    state.pollResponses = [{ result: "success", events: [{ id: 1, type: "message", message: makeChannelMessage(1009) }] }];
+
+    await runMonitorOnce();
+
+    expect(sendMessageZulipMock).toHaveBeenCalledTimes(2);
+    expect(sendMessageZulipMock).toHaveBeenNthCalledWith(1, "stream:debbie:zulip-plugin-pr", "first chunk", expect.objectContaining({
+      presentation: expect.any(Object),
+      channelData: { zulip: { widgetContent: { widget_type: "zform" } } },
+    }));
+    expect(sendMessageZulipMock).toHaveBeenNthCalledWith(2, "stream:debbie:zulip-plugin-pr", "second chunk", expect.objectContaining({
+      presentation: undefined,
+      channelData: undefined,
+    }));
+  });
+
+  it("forwards presentation and channel data only with the first media send", async () => {
+    const { sendMessageZulip } = await import("./send.js");
+    const sendMessageZulipMock = vi.mocked(sendMessageZulip);
+    sendMessageZulipMock.mockClear();
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }) => {
+      await dispatcherOptions.deliver({
+        text: "caption",
+        mediaUrls: ["https://example.com/one.png", "https://example.com/two.png"],
+        presentation: { blocks: [{ type: "buttons", buttons: [{ label: "Confirm", action: "confirm" }] }] },
+        channelData: { zulip: { widgetContent: { widget_type: "zform" } } },
+      });
+    });
+    state.pollResponses = [{ result: "success", events: [{ id: 1, type: "message", message: makeChannelMessage(1010) }] }];
+
+    await runMonitorOnce();
+
+    expect(sendMessageZulipMock).toHaveBeenCalledTimes(2);
+    expect(sendMessageZulipMock).toHaveBeenNthCalledWith(1, "stream:debbie:zulip-plugin-pr", "caption", expect.objectContaining({
+      mediaUrl: "https://example.com/one.png",
+      presentation: expect.any(Object),
+      channelData: { zulip: { widgetContent: { widget_type: "zform" } } },
+    }));
+    expect(sendMessageZulipMock).toHaveBeenNthCalledWith(2, "stream:debbie:zulip-plugin-pr", "", expect.objectContaining({
+      mediaUrl: "https://example.com/two.png",
+      presentation: undefined,
+      channelData: undefined,
+    }));
+  });
+
+  it("sends presentation-only replies instead of treating them as delivered without an outbound send", async () => {
+    const { sendMessageZulip } = await import("./send.js");
+    const sendMessageZulipMock = vi.mocked(sendMessageZulip);
+    sendMessageZulipMock.mockClear();
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }) => {
+      await dispatcherOptions.deliver({
+        presentation: { blocks: [{ type: "buttons", buttons: [{ label: "Confirm", action: "confirm" }] }] },
+      });
+    });
+    state.pollResponses = [{ result: "success", events: [{ id: 1, type: "message", message: makeChannelMessage(1011) }] }];
+
+    await runMonitorOnce();
+
+    expect(sendMessageZulipMock).toHaveBeenCalledTimes(1);
+    expect(sendMessageZulipMock).toHaveBeenCalledWith("stream:debbie:zulip-plugin-pr", "", expect.objectContaining({
+      presentation: expect.any(Object),
+    }));
+  });
+
+  it("surfaces a send failure for channel-data-only replies", async () => {
+    const { sendMessageZulip } = await import("./send.js");
+    const sendMessageZulipMock = vi.mocked(sendMessageZulip);
+    sendMessageZulipMock.mockClear();
+    sendMessageZulipMock.mockRejectedValueOnce(new Error("Zulip message is empty"));
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }) => {
+      await expect(dispatcherOptions.deliver({
+        channelData: { execApproval: { approvalId: "approval-1" } },
+      })).rejects.toThrow("Zulip message is empty");
+    });
+    state.pollResponses = [{ result: "success", events: [{ id: 1, type: "message", message: makeChannelMessage(1012) }] }];
+
+    await runMonitorOnce();
+
+    expect(sendMessageZulipMock).toHaveBeenCalledTimes(1);
+    expect(sendMessageZulipMock).toHaveBeenCalledWith("stream:debbie:zulip-plugin-pr", "", expect.objectContaining({
+      channelData: { execApproval: { approvalId: "approval-1" } },
+    }));
   });
 
   it("processes ordinary inbound messages without enqueueing a synthetic system event", async () => {
@@ -392,8 +465,8 @@ describe("monitorZulipProvider", () => {
 
     await runMonitorOnce();
 
-    expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledTimes(1);
-    expect(state.core.channel.reply.dispatchReplyFromConfig).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
     expect(state.core.system.enqueueSystemEvent).not.toHaveBeenCalled();
   });
 
@@ -417,7 +490,7 @@ describe("monitorZulipProvider", () => {
 
     await runMonitorOnce();
 
-    expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledWith(
+    expect(state.core.channel.inbound.buildContext).toHaveReturnedWith(
       expect.objectContaining({
         ChatType: "channel",
         ChannelPrivacy: "private",
@@ -456,7 +529,7 @@ describe("monitorZulipProvider", () => {
 
     await runMonitorOnce();
 
-    expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledWith(
+    expect(state.core.channel.inbound.buildContext).toHaveReturnedWith(
       expect.objectContaining({
         ChatType: "channel",
         ChannelPrivacy: "public",
@@ -493,7 +566,7 @@ describe("monitorZulipProvider", () => {
     await runMonitorOnce();
 
     expect(fetchZulipStreamMock).toHaveBeenCalledWith(state.client, "404");
-    expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledWith(
+    expect(state.core.channel.inbound.buildContext).toHaveReturnedWith(
       expect.objectContaining({
         ChatType: "channel",
         ChannelPrivacy: "unknown",
@@ -501,7 +574,7 @@ describe("monitorZulipProvider", () => {
         StreamId: "404",
       }),
     );
-    expect(state.core.channel.reply.dispatchReplyFromConfig).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
   });
 
   it("falls back to temp-file media storage with a sanitized filename when runtime saveMediaBuffer is unavailable", async () => {
@@ -519,10 +592,12 @@ describe("monitorZulipProvider", () => {
 
     await runMonitorOnce();
 
-    expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledWith(
+    expect(state.core.channel.inbound.buildContext).toHaveBeenCalledWith(
       expect.objectContaining({
-        MediaPath: expect.stringMatching(/^\/tmp\/zulip-upload-[^/]+\/evil_name\.pdf$/),
-        MediaType: "application/pdf",
+        media: [expect.objectContaining({
+          path: expect.stringMatching(/^\/tmp\/zulip-upload-[^/]+\/evil_name\.pdf$/),
+          contentType: "application/pdf",
+        })],
       }),
     );
   });
@@ -560,14 +635,18 @@ describe("monitorZulipProvider", () => {
       5 * 1024 * 1024,
     );
     expect(state.core.channel.media.saveMediaBuffer).toHaveBeenCalledTimes(3);
-    expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledWith(
+    // The stable SDK projects canonical input facts into its older dispatch context.
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mock.calls[0]?.[0]?.ctx).toMatchObject({
+      MediaPaths: ["/managed/song.mp3", "/managed/image.png", "/managed/report.pdf"],
+      MediaTypes: ["audio/mpeg", "image/png", "application/pdf"],
+    });
+    expect(state.core.channel.inbound.buildContext).toHaveBeenCalledWith(
       expect.objectContaining({
-        MediaPath: "/managed/song.mp3",
-        MediaPaths: ["/managed/song.mp3", "/managed/image.png", "/managed/report.pdf"],
-        MediaUrl: "/managed/song.mp3",
-        MediaUrls: ["/managed/song.mp3", "/managed/image.png", "/managed/report.pdf"],
-        MediaType: "audio/mpeg",
-        MediaTypes: ["audio/mpeg", "image/png", "application/pdf"],
+        media: [
+          expect.objectContaining({ path: "/managed/song.mp3", contentType: "audio/mpeg" }),
+          expect.objectContaining({ path: "/managed/image.png", contentType: "image/png" }),
+          expect.objectContaining({ path: "/managed/report.pdf", contentType: "application/pdf" }),
+        ],
       }),
     );
   });
@@ -609,7 +688,7 @@ describe("monitorZulipProvider", () => {
 
     await runMonitorOnce();
 
-    expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledWith(
+    expect(state.core.channel.inbound.buildContext).toHaveReturnedWith(
       expect.objectContaining({
         To: "user:user8@zlp.pubnerd.app",
         OriginatingTo: "user:user8@zlp.pubnerd.app",
@@ -645,7 +724,7 @@ describe("monitorZulipProvider", () => {
 
     await runMonitorOnce();
 
-    expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledWith(
+    expect(state.core.channel.inbound.buildContext).toHaveReturnedWith(
       expect.objectContaining({
         To: "user:123",
         OriginatingTo: "user:123",
@@ -676,8 +755,8 @@ describe("monitorZulipProvider", () => {
 
     await runMonitorOnce();
 
-    expect(state.core.channel.reply.finalizeInboundContext).not.toHaveBeenCalled();
-    expect(state.core.channel.reply.dispatchReplyFromConfig).not.toHaveBeenCalled();
+    expect(state.core.channel.inbound.buildContext).not.toHaveBeenCalled();
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
   });
 
   it("processes stream messages inside configured topic filters with case and whitespace normalization", async () => {
@@ -695,8 +774,8 @@ describe("monitorZulipProvider", () => {
 
     await runMonitorOnce();
 
-    expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledTimes(1);
-    expect(state.core.channel.reply.dispatchReplyFromConfig).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
   });
 
   it("drops stream messages outside a configured stream-scoped topic filter", async () => {
@@ -714,8 +793,8 @@ describe("monitorZulipProvider", () => {
 
     await runMonitorOnce();
 
-    expect(state.core.channel.reply.finalizeInboundContext).not.toHaveBeenCalled();
-    expect(state.core.channel.reply.dispatchReplyFromConfig).not.toHaveBeenCalled();
+    expect(state.core.channel.inbound.buildContext).not.toHaveBeenCalled();
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
   });
 
   it("treats empty and wildcard stream-scoped topic filters as unrestricted", async () => {
@@ -735,8 +814,8 @@ describe("monitorZulipProvider", () => {
 
     await runMonitorOnce();
 
-    expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledTimes(1);
-    expect(state.core.channel.reply.dispatchReplyFromConfig).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
   });
 
   it("ignores duplicate inbound message ids on repeat processing", async () => {
@@ -756,8 +835,26 @@ describe("monitorZulipProvider", () => {
     ];
     await runMonitorOnce();
 
-    expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledTimes(1);
-    expect(state.core.channel.reply.dispatchReplyFromConfig).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { paired: true, expectedDispatches: 1 },
+    { paired: false, expectedDispatches: 0 },
+  ])("preserves paired command authorization in open streams (paired=$paired)", async ({ paired, expectedDispatches }) => {
+    state.account.config.dmPolicy = "pairing";
+    state.pairingAllowFrom = paired ? ["user8@zlp.pubnerd.app"] : [];
+    state.core.channel.commands.shouldHandleTextCommands.mockReturnValue(true);
+    state.core.channel.text.hasControlCommand.mockReturnValue(true);
+    state.pollResponses = [{ result: "success", events: [{
+      id: 1, type: "message", message: { ...makeChannelMessage(paired ? 2201 : 2202), content: "/status" },
+    }] }];
+    await runMonitorOnce();
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(expectedDispatches);
+    if (paired) {
+      expect(state.core.channel.inbound.buildContext).toHaveReturnedWith(expect.objectContaining({ CommandAuthorized: true }));
+    }
   });
 
   it("records and completes durable inbound messages when plugin state is available", async () => {
@@ -783,7 +880,7 @@ describe("monitorZulipProvider", () => {
     expect(completedEntries?.[0]?.value).toMatchObject({
       metadata: { queueEventId: 2 },
     });
-    expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(1);
   });
 
   it("keeps durable journal store caps below the plugin state row limit", async () => {
@@ -825,8 +922,8 @@ describe("monitorZulipProvider", () => {
 
     await expect(journal.pending()).resolves.toEqual([]);
     expect(getZulipEventsWithRetryMock).toHaveBeenCalledTimes(1);
-    expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledTimes(1);
-    expect(state.core.channel.reply.dispatchReplyFromConfig).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
   });
 
   it("retries same-process durable replay after a handler failure despite volatile dedupe", async () => {
@@ -864,8 +961,8 @@ describe("monitorZulipProvider", () => {
 
     await expect(journal.pending()).resolves.toEqual([]);
     expect(state.core.channel.session.updateLastRoute).toHaveBeenCalledTimes(2);
-    expect(state.core.channel.reply.dispatchReplyFromConfig).toHaveBeenCalledTimes(1);
-    expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledTimes(2);
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(2);
   });
 
   it("re-registers the Zulip event queue after a BAD_EVENT_QUEUE_ID response and still processes the message", async () => {
@@ -884,7 +981,7 @@ describe("monitorZulipProvider", () => {
     await runMonitorOnce();
 
     expect(registerZulipQueueMock).toHaveBeenCalledTimes(2);
-    expect(state.core.channel.reply.finalizeInboundContext).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(1);
     expect(state.core.system.enqueueSystemEvent).not.toHaveBeenCalled();
   });
 });

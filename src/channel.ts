@@ -1,6 +1,5 @@
 import {
   applyAccountNameToChannelSection,
-  buildChannelConfigSchema,
   DEFAULT_ACCOUNT_ID,
   deleteAccountFromConfigSection,
   formatPairingApproveHint,
@@ -15,11 +14,11 @@ import {
   type ReplyPayload,
 } from "./sdk.js";
 import { zulipMessageActions } from "./actions.js";
-import { ZulipConfigSchema } from "./config-schema.js";
+import { zulipChannelConfigSchema } from "./config-schema.js";
 import { resolveZulipGroupRequireMention } from "./group-mentions.js";
 import { looksLikeZulipTargetId, normalizeZulipMessagingTarget } from "./normalize.js";
 import { getZulipRuntime } from "./runtime.js";
-import type { ZulipAccountConfig, ZulipAgentReactionGuidance, ZulipConfig } from "./types.js";
+import type { ZulipAccountConfig, ZulipAgentReactionGuidance, ZulipConfig, ZulipSetupInput } from "./types.js";
 import {
   isZulipAccountConfigured,
   listZulipAccountIds,
@@ -121,7 +120,7 @@ export const zulipOutboundAdapter: ChannelOutboundAdapter = {
       accountId: ctx.accountId ?? "default",
       textLength: text.length,
       mediaCount: mediaUrls.length,
-      hasInteractive: Boolean(ctx.payload.interactive?.blocks?.length),
+      hasPresentation: Boolean(ctx.payload.presentation?.blocks?.length),
       channelDataKeys: Object.keys(ctx.payload.channelData ?? {}),
     });
     if (mediaUrls.length > 0) {
@@ -135,7 +134,7 @@ export const zulipOutboundAdapter: ChannelOutboundAdapter = {
           mediaAccess: ctx.mediaAccess,
           mediaLocalRoots: ctx.mediaLocalRoots,
           mediaReadFile: ctx.mediaReadFile,
-          interactive: i === 0 ? ctx.payload.interactive : undefined,
+          presentation: i === 0 ? ctx.payload.presentation : undefined,
           channelData: i === 0 ? (ctx.payload.channelData as ReplyPayload["channelData"] | undefined) : undefined,
         });
         results.push(result);
@@ -173,7 +172,7 @@ export const zulipOutboundAdapter: ChannelOutboundAdapter = {
       cfg: ctx.cfg,
       accountId: ctx.accountId ?? undefined,
       topic: ctx.threadId == null ? undefined : String(ctx.threadId),
-      interactive: ctx.payload.interactive,
+      presentation: ctx.payload.presentation,
       channelData: ctx.payload.channelData as ReplyPayload["channelData"] | undefined,
     });
     return { channel: "zulip", ...result };
@@ -238,13 +237,12 @@ export const zulipPlugin = {
     threads: true,
     media: true,
     polls: true,
-    interactiveReplies: true,
   },
   streaming: {
     blockStreamingCoalesceDefaults: { minChars: 1500, idleMs: 1000 },
   },
   reload: { configPrefixes: ["channels.zulip"] },
-  configSchema: buildChannelConfigSchema(ZulipConfigSchema),
+  configSchema: zulipChannelConfigSchema,
   secrets: zulipSecrets,
   config: {
     listAccountIds: (cfg) => listZulipAccountIds(cfg),
@@ -451,13 +449,13 @@ export const zulipPlugin = {
         name,
       }),
     validateInput: ({ accountId, input }) => {
-      const inputAny = input as Record<string, string | boolean | undefined>;
+      const zulipInput = input as ZulipSetupInput;
       if (input.useEnv && accountId !== DEFAULT_ACCOUNT_ID) {
         return "Zulip env vars can only be used for the default account.";
       }
-      const apiKey = (inputAny.apiKey as string | undefined) ?? input.botToken ?? input.token;
-      const email = inputAny.email as string | undefined;
-      const baseUrl = input.httpUrl;
+      const apiKey = zulipInput.apiKey ?? zulipInput.botToken ?? input.token;
+      const email = zulipInput.email;
+      const baseUrl = zulipInput.httpUrl;
       if (!input.useEnv && (!apiKey || !email || !baseUrl)) {
         return "Zulip requires --api-key, --email, and --http-url (or --use-env).";
       }
@@ -467,10 +465,10 @@ export const zulipPlugin = {
       return null;
     },
     applyAccountConfig: ({ cfg, accountId, input }) => {
-      const inputAny = input as Record<string, string | boolean | undefined>;
-      const apiKey = (inputAny.apiKey as string | undefined) ?? input.botToken ?? input.token;
-      const email = inputAny.email as string | undefined;
-      const baseUrl = input.httpUrl?.trim();
+      const zulipInput = input as ZulipSetupInput;
+      const apiKey = zulipInput.apiKey ?? zulipInput.botToken ?? input.token;
+      const email = zulipInput.email;
+      const baseUrl = zulipInput.httpUrl?.trim();
       const namedConfig = applyAccountNameToChannelSection({
         cfg,
         channelKey: "zulip",

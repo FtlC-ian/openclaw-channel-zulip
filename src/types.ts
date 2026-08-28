@@ -1,5 +1,12 @@
-import type { DmPolicy, GroupPolicy } from "./sdk.js";
+import type { ChannelSetupInput, DmPolicy, GroupPolicy } from "./sdk.js";
 import type { SecretInput } from "openclaw/plugin-sdk/secret-input";
+
+export type ZulipSetupInput = ChannelSetupInput & {
+  apiKey?: string;
+  email?: string;
+  botToken?: string;
+  httpUrl?: string;
+};
 
 type BlockStreamingCoalesceConfig = {
   minChars?: number;

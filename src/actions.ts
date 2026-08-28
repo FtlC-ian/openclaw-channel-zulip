@@ -3,7 +3,7 @@ import type {
   ChannelMessageActionName,
   OpenClawConfig,
 } from "./sdk.js";
-import { jsonResult, readNumberParam, readStringParam } from "./sdk.js";
+import { jsonResult, normalizeMessagePresentation, readNumberParam, readStringParam } from "./sdk.js";
 import {
   isZulipAccountConfigured,
   resolveZulipAccount,
@@ -37,7 +37,7 @@ import {
   updateZulipRealm,
   updateZulipStream,
 } from "./zulip/client.js";
-import { interactiveToZulipWidgetContent } from "./zulip/send.js";
+import { presentationToZulipWidgetContent } from "./zulip/send.js";
 
 const providerId = "zulip";
 const MAX_STRING_LENGTH = 10000;
@@ -552,7 +552,7 @@ export const zulipMessageActions: ChannelMessageActionAdapter = {
     // actions.add("user-reactivate" as ChannelMessageActionName);
     // actions.add("org-settings" as ChannelMessageActionName);
     // actions.add("org-settings-edit" as ChannelMessageActionName);
-    return { actions: Array.from(actions) };
+    return { actions: Array.from(actions), capabilities: ["presentation"] };
   },
   supportsAction: ({ action }) => action !== "poll",
   extractToolSend: ({ args }) => {
@@ -575,17 +575,16 @@ export const zulipMessageActions: ChannelMessageActionAdapter = {
       const to = readStringParam(params, "to", { required: true });
       const content = readSendMessageContent(params);
       const target = parseSendTarget(to);
-      const interactive =
-        params.interactive && typeof params.interactive === "object"
-          ? interactiveToZulipWidgetContent(params.interactive as any)
-          : undefined;
+      const widgetContent = presentationToZulipWidgetContent(
+        normalizeMessagePresentation(params.presentation),
+      );
 
       if (target.kind === "stream") {
         const result = await sendZulipStreamMessage(client, {
           stream: target.stream,
           topic: target.topic,
           content,
-          widgetContent: interactive,
+          widgetContent,
         });
         return jsonResult({ success: true, messageId: result.id });
       }
@@ -593,7 +592,7 @@ export const zulipMessageActions: ChannelMessageActionAdapter = {
       const result = await sendZulipPrivateMessage(client, {
         to: [target.email],
         content,
-        widgetContent: interactive,
+        widgetContent,
       });
       return jsonResult({ success: true, messageId: result.id });
     }

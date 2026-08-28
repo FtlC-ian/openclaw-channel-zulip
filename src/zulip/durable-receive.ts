@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { createDurableInboundReceiveJournal } from "openclaw/plugin-sdk/channel-message";
+import { createDurableInboundReceiveJournal } from "openclaw/plugin-sdk/channel-outbound";
 import type { PluginJsonValue } from "openclaw/plugin-sdk/plugin-entry";
 
 import { getZulipRuntime } from "../runtime.js";

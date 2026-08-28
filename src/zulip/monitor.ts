@@ -6,22 +6,13 @@ import type {
   ReplyPayload,
   RuntimeEnv,
 } from "../sdk.js";
-import {
-  createScopedPairingAccess,
-  type HistoryEntry,
-} from "../sdk.js";
-import { resolveControlCommandGate } from "openclaw/plugin-sdk/command-auth";
+import { createChannelPairingController } from "../sdk.js";
+import { resolveControlCommandGate } from "openclaw/plugin-sdk/command-auth-native";
 import { logTypingFailure } from "openclaw/plugin-sdk/channel-feedback";
-import { logInboundDrop } from "openclaw/plugin-sdk/channel-inbound";
-import { readStoreAllowFromForDmPolicy, resolveDmGroupAccessWithLists } from "openclaw/plugin-sdk/channel-policy";
-import { createReplyPrefixOptions, createTypingCallbacks } from "openclaw/plugin-sdk/channel-runtime";
-import { resolveChannelMediaMaxBytes } from "openclaw/plugin-sdk/media-runtime";
-import {
-  buildPendingHistoryContextFromMap,
-  clearHistoryEntriesIfEnabled,
-  DEFAULT_GROUP_HISTORY_LIMIT,
-  recordPendingHistoryEntryIfEnabled,
-} from "openclaw/plugin-sdk/reply-history";
+import { formatInboundEnvelope, logInboundDrop } from "openclaw/plugin-sdk/channel-inbound";
+import { mergeDmAllowFromSources, resolveGroupAllowFromSources } from "openclaw/plugin-sdk/allow-from";
+import { readChannelIngressStoreAllowFromForDmPolicy } from "openclaw/plugin-sdk/channel-ingress-runtime";
+import { createReplyPrefixOptions, createTypingCallbacks } from "openclaw/plugin-sdk/channel-outbound";
 import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/temp-path";
 import { getZulipRuntime } from "../runtime.js";
 import { resolveZulipRuntimeAccount } from "./accounts.js";
@@ -418,21 +409,9 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
   const defaultTopic = account.config.defaultTopic?.trim() ?? FALLBACK_TOPIC;
   const oncharPrefixes = resolveOncharPrefixes(account.oncharPrefixes);
   const oncharEnabled = account.chatmode === "onchar";
-  const channelHistories = new Map<string, HistoryEntry[]>();
 
   const mediaMaxBytes =
-    resolveChannelMediaMaxBytes({
-      cfg,
-      accountId: account.accountId,
-      resolveChannelLimitMb: ({ cfg, accountId }) =>
-        (
-          cfg.channels?.zulip as {
-            mediaMaxMb?: number;
-            accounts?: Record<string, { mediaMaxMb?: number }>;
-          }
-        )?.accounts?.[accountId]?.mediaMaxMb ??
-        (cfg.channels?.zulip as { mediaMaxMb?: number })?.mediaMaxMb,
-    }) ?? 5 * 1024 * 1024;
+    (account.config.mediaMaxMb || cfg.agents?.defaults?.mediaMaxMb || 5) * 1024 * 1024;
 
   const reactionConfig = account.config.reactions ?? {};
   const reactionsEnabled = reactionConfig.enabled !== false;
@@ -441,7 +420,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
   const reactionSuccess = normalizeZulipEmojiName(reactionConfig.onSuccess ?? "");
   const reactionError = normalizeZulipEmojiName(reactionConfig.onError ?? "warning");
 
-  const pairing = createScopedPairingAccess({
+  const pairing = createChannelPairingController({
     core,
     channel: "zulip",
     accountId: account.accountId,
@@ -566,29 +545,22 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     const normalizedAllowFrom = normalizeAllowList(account.config.allowFrom ?? []);
     const normalizedGroupAllowFrom = normalizeAllowList(account.config.groupAllowFrom ?? []);
     const storeAllowFrom = normalizeAllowList(
-      await readStoreAllowFromForDmPolicy({
+      await readChannelIngressStoreAllowFromForDmPolicy({
         provider: "zulip",
         accountId: account.accountId,
         dmPolicy,
         readStore: pairing.readStoreForDmPolicy,
       }),
     );
-    const accessDecision = resolveDmGroupAccessWithLists({
-      isGroup: !isDM,
+    const effectiveAllowFrom = mergeDmAllowFromSources({
       dmPolicy,
-      groupPolicy,
+      allowFrom: normalizedAllowFrom,
+      storeAllowFrom,
+    });
+    const effectiveGroupAllowFrom = resolveGroupAllowFromSources({
       allowFrom: normalizedAllowFrom,
       groupAllowFrom: normalizedGroupAllowFrom,
-      storeAllowFrom,
-      isSenderAllowed: (allowFrom) =>
-        isSenderAllowed({
-          senderId: senderIdentity,
-          senderName,
-          allowFrom,
-        }),
     });
-    const effectiveAllowFrom = accessDecision.effectiveAllowFrom;
-    const effectiveGroupAllowFrom = accessDecision.effectiveGroupAllowFrom;
 
     const allowTextCommands = core.channel.commands.shouldHandleTextCommands({
       cfg,
@@ -781,11 +753,10 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         : undefined;
 
     const sessionKey = route.sessionKey ?? `zulip:${account.accountId}:${channelId}`;
-    const historyKey = kind === "dm" ? null : sessionKey;
 
     const timestamp = message.timestamp ? message.timestamp * 1000 : undefined;
     const textWithId = `${bodyText}\n[zulip message id: ${messageId}]`;
-    const body = core.channel.reply.formatInboundEnvelope({
+    const body = formatInboundEnvelope({
       channel: "Zulip",
       from: fromLabel,
       timestamp,
@@ -796,45 +767,54 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
 
     const to =
       kind === "dm" ? `user:${dmTargetIdentity}` : `stream:${streamName || streamId}:${topic}`;
-    const ctxPayload = core.channel.reply.finalizeInboundContext({
-      Body: body,
-      RawBody: bodyText,
-      CommandBody: bodyText,
-      From: kind === "dm" ? `zulip:${senderIdentity}` : `zulip:channel:${channelId}`,
-      To: to,
-      SessionKey: sessionKey,
-      ParentSessionKey: parentSessionKey,
-      AccountId: route.accountId,
-      ChatType: chatType,
-      ChannelPrivacy: channelPrivacy,
-      IsPrivateChannel:
-        kind !== "dm" && channelPrivacy !== "unknown" ? channelPrivacy === "private" : undefined,
-      InviteOnly: streamMetadata?.inviteOnly,
-      IsWebPublic: streamMetadata?.isWebPublic,
-      HistoryPublicToSubscribers: streamMetadata?.historyPublicToSubscribers,
-      SubscriberCount: streamMetadata?.subscriberCount,
-      StreamId: kind !== "dm" ? streamId : undefined,
-      ConversationLabel: fromLabel,
-      GroupSubject: kind !== "dm" ? roomLabel : undefined,
-      GroupChannel: streamName ? `#${streamName}` : undefined,
-      SenderName: senderName,
-      SenderId: senderIdentity,
-      Provider: "zulip" as const,
-      Surface: "zulip" as const,
-      MessageSid: messageId,
-      ReplyToId: topic ? topic : undefined,
-      MessageThreadId: streamConversation?.threadId,
-      Timestamp: timestamp,
-      WasMentioned: kind !== "dm" ? effectiveWasMentioned : undefined,
-      CommandAuthorized: commandAuthorized,
-      OriginatingChannel: "zulip" as const,
-      OriginatingTo: to,
-      MediaPath: mediaPaths[0],
-      MediaPaths: mediaPaths.length > 0 ? mediaPaths : undefined,
-      MediaUrl: mediaUrls[0],
-      MediaUrls: mediaUrls.length > 0 ? mediaUrls : undefined,
-      MediaType: mediaTypes[0],
-      MediaTypes: mediaTypes.length > 0 ? mediaTypes : undefined,
+    const ctxPayload = core.channel.inbound.buildContext({
+      channel: "zulip",
+      accountId: route.accountId,
+      messageId,
+      timestamp,
+      from: kind === "dm" ? `zulip:${senderIdentity}` : `zulip:channel:${channelId}`,
+      sender: { name: senderName, id: senderIdentity },
+      conversation: {
+        kind: chatType,
+        id: isDM ? dmTargetIdentity : (streamConversation?.conversationId ?? channelId),
+        label: fromLabel,
+        threadId: streamConversation?.threadId,
+      },
+      route: {
+        agentId: route.agentId,
+        accountId: route.accountId,
+        routeSessionKey: sessionKey,
+        parentSessionKey,
+      },
+      reply: {
+        to,
+        replyToId: topic || undefined,
+        messageThreadId: streamConversation?.threadId,
+      },
+      message: { body, rawBody: bodyText, commandBody: bodyText },
+      access: {
+        commands: { authorized: commandAuthorized },
+        ...(kind !== "dm" ? {
+          mentions: { canDetectMention, wasMentioned: effectiveWasMentioned },
+        } : {}),
+      },
+      media: mediaPaths.map((mediaPath, index) => ({
+        path: mediaPath,
+        url: mediaUrls[index],
+        contentType: mediaTypes[index],
+      })),
+      extra: {
+        ChannelPrivacy: channelPrivacy,
+        IsPrivateChannel:
+          kind !== "dm" && channelPrivacy !== "unknown" ? channelPrivacy === "private" : undefined,
+        InviteOnly: streamMetadata?.inviteOnly,
+        IsWebPublic: streamMetadata?.isWebPublic,
+        HistoryPublicToSubscribers: streamMetadata?.historyPublicToSubscribers,
+        SubscriberCount: streamMetadata?.subscriberCount,
+        StreamId: kind !== "dm" ? streamId : undefined,
+        GroupSubject: kind !== "dm" ? roomLabel : undefined,
+        GroupChannel: streamName ? `#${streamName}` : undefined,
+      },
     });
 
     const sessionCfg = cfg.session;
@@ -932,58 +912,64 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       },
     });
 
-    const { dispatcher, replyOptions, markDispatchIdle } =
-      core.channel.reply.createReplyDispatcherWithTyping({
-        ...prefixOptions,
-        humanDelay: core.channel.reply.resolveHumanDelayConfig(cfg, route.agentId),
-        onReplyStart: typingCallbacks.onReplyStart,
-        onIdle: typingCallbacks.onIdle,
-        deliver: async (payload: ReplyPayload) => {
-          const mediaUrls = payload.mediaUrls ?? (payload.mediaUrl ? [payload.mediaUrl] : []);
-          const rawText = core.channel.text.convertMarkdownTables(payload.text ?? "", tableMode);
-          const { text, topic: topicOverride } = extractZulipTopicDirective(rawText);
-          const resolvedTopic = topicOverride ? topicOverride.slice(0, 60) : topic;
-          if (mediaUrls.length === 0) {
-            const chunkMode = core.channel.text.resolveChunkMode(cfg, "zulip", account.accountId);
-            const chunks = core.channel.text.chunkMarkdownTextWithMode(text, textLimit, chunkMode);
-            for (const chunk of chunks.length > 0 ? chunks : [text]) {
-              if (!chunk) {
-                continue;
-              }
-              await sendMessageZulip(to, chunk, {
-                cfg,
-                accountId: account.accountId,
-                topic: resolvedTopic,
-              });
+    const dispatcherOptions = {
+      ...prefixOptions,
+      humanDelay: core.channel.reply.resolveHumanDelayConfig(cfg, route.agentId),
+      onReplyStart: typingCallbacks.onReplyStart,
+      onIdle: typingCallbacks.onIdle,
+      deliver: async (payload: ReplyPayload) => {
+        const mediaUrls = payload.mediaUrls ?? (payload.mediaUrl ? [payload.mediaUrl] : []);
+        const hasOutboundMetadata = Boolean(payload.presentation || payload.channelData);
+        const rawText = core.channel.text.convertMarkdownTables(payload.text ?? "", tableMode);
+        const { text, topic: topicOverride } = extractZulipTopicDirective(rawText);
+        const resolvedTopic = topicOverride ? topicOverride.slice(0, 60) : topic;
+        if (mediaUrls.length === 0) {
+          const chunkMode = core.channel.text.resolveChunkMode(cfg, "zulip", account.accountId);
+          const chunks = core.channel.text.chunkMarkdownTextWithMode(text, textLimit, chunkMode);
+          let first = true;
+          for (const chunk of chunks.length > 0 ? chunks : [text]) {
+            if (!chunk && !(first && hasOutboundMetadata)) {
+              continue;
             }
-          } else {
-            let first = true;
-            for (const mediaUrl of mediaUrls) {
-              const caption = first ? text : "";
-              first = false;
-              await sendMessageZulip(to, caption, {
-                cfg,
-                accountId: account.accountId,
-                mediaUrl,
-                topic: resolvedTopic,
-              });
-            }
+            await sendMessageZulip(to, chunk, {
+              cfg,
+              accountId: account.accountId,
+              topic: resolvedTopic,
+              presentation: first ? payload.presentation : undefined,
+              channelData: first ? payload.channelData : undefined,
+            });
+            first = false;
           }
-          opts.statusSink?.({ lastOutboundAt: Date.now() });
-        },
-        onError: (err: unknown) => {
-          runtime.error?.(`zulip reply failed: ${String(err)}`);
-        },
-      });
+        } else {
+          let first = true;
+          for (const mediaUrl of mediaUrls) {
+            const isFirst = first;
+            const caption = isFirst ? text : "";
+            await sendMessageZulip(to, caption, {
+              cfg,
+              accountId: account.accountId,
+              mediaUrl,
+              topic: resolvedTopic,
+              presentation: isFirst ? payload.presentation : undefined,
+              channelData: isFirst ? payload.channelData : undefined,
+            });
+            first = false;
+          }
+        }
+        opts.statusSink?.({ lastOutboundAt: Date.now() });
+      },
+      onError: (err: unknown) => {
+        runtime.error?.(`zulip reply failed: ${String(err)}`);
+      },
+    };
 
     let dispatchError: unknown;
     try {
-      await core.channel.reply.dispatchReplyFromConfig({
+      await core.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
         ctx: ctxPayload,
         cfg,
-        dispatcher,
+        dispatcherOptions,
         replyOptions: {
-          ...replyOptions,
           disableBlockStreaming:
             typeof account.blockStreaming === "boolean" ? !account.blockStreaming : undefined,
           onModelSelected,
@@ -992,8 +978,6 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     } catch (err) {
       dispatchError = err;
       runtime.error?.(`zulip reply failed: ${String(err)}`);
-    } finally {
-      markDispatchIdle();
     }
 
     if (reactionsEnabled) {
@@ -1005,14 +989,6 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       } else {
         await addReactionSafe(reactionSuccess);
       }
-    }
-
-    if (historyKey) {
-      clearHistoryEntriesIfEnabled({
-        historyMap: channelHistories,
-        historyKey,
-        limit: DEFAULT_GROUP_HISTORY_LIMIT,
-      });
     }
 
     opts.statusSink?.({ lastInboundAt: Date.now() });

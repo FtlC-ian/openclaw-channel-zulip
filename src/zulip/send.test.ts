@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  interactiveToZulipWidgetContent,
+  presentationToZulipWidgetContent,
   normalizeLegacyZulipTarget,
   pollToZulipWidgetContent,
   resolveZulipWidgetContent,
@@ -8,17 +8,17 @@ import {
   sendPollZulip,
 } from "./send.js";
 
-describe("interactiveToZulipWidgetContent", () => {
+describe("presentationToZulipWidgetContent", () => {
   it("maps shared button payloads to Zulip zform widgets", () => {
     expect(
-      interactiveToZulipWidgetContent({
+      presentationToZulipWidgetContent({
         blocks: [
           { type: "text", text: "Approval Request" },
           {
             type: "buttons",
             buttons: [
-              { label: "Allow Once", value: "/approve req-1 allow-once", style: "success" },
-              { label: "Deny", value: "/approve req-1 deny", style: "danger" },
+              { label: "Allow Once", action: { type: "command", command: "/approve req-1 allow-once" }, style: "success" },
+              { label: "Deny", action: { type: "command", command: "/approve req-1 deny" }, style: "danger" },
             ],
           },
         ],
@@ -48,15 +48,15 @@ describe("interactiveToZulipWidgetContent", () => {
 
   it("skips URL-only or missing-value buttons", () => {
     expect(
-      interactiveToZulipWidgetContent({
+      presentationToZulipWidgetContent({
         blocks: [
           { type: "text", text: "Approval Request" },
           {
             type: "buttons",
             buttons: [
-              { label: "Docs", url: "https://example.test/docs" },
-              { label: "Blank", value: "   " },
-              { label: "Allow Once", value: "/approve req-1 allow-once" },
+              { label: "Docs", action: { type: "url", url: "https://example.test/docs" } },
+              { label: "Blank", action: { type: "callback", value: "   " } },
+              { label: "Allow Once", action: { type: "command", command: "/approve req-1 allow-once" } },
             ],
           },
         ],
@@ -78,8 +78,20 @@ describe("interactiveToZulipWidgetContent", () => {
     });
   });
 
+  it("preserves callback values and the presentation heading", () => {
+    expect(presentationToZulipWidgetContent({
+      title: "Pick a topic",
+      blocks: [{ type: "buttons", buttons: [
+        { label: "Support", action: { type: "callback", value: "topic:support" } },
+      ] }],
+    })).toMatchObject({ extra_data: {
+      heading: "Pick a topic",
+      choices: [{ reply: "topic:support" }],
+    } });
+  });
+
   it("returns undefined when there are no buttons", () => {
-    expect(interactiveToZulipWidgetContent({ blocks: [{ type: "text", text: "hi" }] })).toBeUndefined();
+    expect(presentationToZulipWidgetContent({ blocks: [{ type: "text", text: "hi" }] })).toBeUndefined();
   });
 });
 
@@ -151,7 +163,7 @@ const sendState = vi.hoisted(() => {
       },
       channel: {
         media: {
-          fetchRemoteMedia: vi.fn(),
+          readRemoteMediaBuffer: vi.fn(),
           saveMediaBuffer: vi.fn(),
         },
         text: {
@@ -188,8 +200,39 @@ vi.mock("./client.js", () => ({
   normalizeZulipBaseUrl: vi.fn((url?: string) => url ?? ""),
   sendZulipPrivateMessage: sendState.sendZulipPrivateMessage,
   sendZulipStreamMessage: sendState.sendZulipStreamMessage,
-  uploadZulipFile: vi.fn(),
+  uploadZulipFile: vi.fn(async () => ({ url: "/user_uploads/test/report.pdf" })),
 }));
+
+describe("sendMessageZulip media and presentation", () => {
+  it("uploads remote media through the bounded runtime buffer reader", async () => {
+    sendState.runtime.channel.media.readRemoteMediaBuffer.mockResolvedValueOnce({
+      buffer: Buffer.from("report"), contentType: "application/pdf",
+    });
+    sendState.runtime.channel.media.saveMediaBuffer.mockResolvedValueOnce({ path: "/managed/report.pdf" });
+    await sendMessageZulip("stream:general:reports", "Report", {
+      cfg: { agents: { defaults: { mediaMaxMb: 2 } } },
+      mediaUrl: "https://files.example.test/report.pdf",
+    });
+    expect(sendState.runtime.channel.media.readRemoteMediaBuffer).toHaveBeenCalledWith({
+      url: "https://files.example.test/report.pdf", maxBytes: 2 * 1024 * 1024,
+    });
+    expect(sendState.sendZulipStreamMessage).toHaveBeenLastCalledWith(expect.anything(),
+      expect.objectContaining({ content: "Report\n/user_uploads/test/report.pdf" }));
+  });
+
+  it("sends canonical command presentation controls to Zulip", async () => {
+    await sendMessageZulip("user:alice@example.test", "Approval", {
+      cfg: {},
+      presentation: { blocks: [{ type: "buttons", buttons: [
+        { label: "Deny", action: { type: "command", command: "/approve req-1 deny" } },
+      ] }] },
+    });
+    expect(sendState.sendZulipPrivateMessage).toHaveBeenLastCalledWith(expect.anything(),
+      expect.objectContaining({ widgetContent: expect.objectContaining({ extra_data: expect.objectContaining({
+        choices: [{ type: "multiple_choice", short_name: "Deny", long_name: "Deny", reply: "/approve req-1 deny" }],
+      }) }) }));
+  });
+});
 
 describe("sendMessageZulip target parsing hardening", () => {
   it("rejects malformed dm-like targets instead of silently auto-correcting", async () => {
@@ -250,15 +293,15 @@ describe("sendPollZulip", () => {
 });
 
 describe("resolveZulipWidgetContent", () => {
-  it("prefers shared interactive payloads when present", () => {
+  it("prefers shared presentation payloads when present", () => {
     expect(
       resolveZulipWidgetContent({
-        interactive: {
+        presentation: {
           blocks: [
             { type: "text", text: "Approval Request" },
             {
               type: "buttons",
-              buttons: [{ label: "Allow Once", value: "/approve req-1 allow-once" }],
+              buttons: [{ label: "Allow Once", action: { type: "command", command: "/approve req-1 allow-once" } }],
             },
           ],
         },
@@ -288,7 +331,7 @@ describe("resolveZulipWidgetContent", () => {
     });
   });
 
-  it("falls back to channelData.zulip.widgetContent when interactive is absent", () => {
+  it("falls back to channelData.zulip.widgetContent when presentation is absent", () => {
     expect(
       resolveZulipWidgetContent({
         channelData: {

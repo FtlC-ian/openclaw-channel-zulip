@@ -4,9 +4,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   loadOutboundMediaFromUrl,
+  resolveMessagePresentationActionValue,
   resolvePreferredOpenClawTmpDir,
 } from "../sdk.js";
-import type { InteractiveReply, OpenClawConfig } from "../sdk.js";
+import type { MessagePresentation, OpenClawConfig } from "../sdk.js";
 import { getZulipRuntime } from "../runtime.js";
 import { resolveZulipRuntimeAccount } from "./accounts.js";
 import {
@@ -17,7 +18,6 @@ import {
   uploadZulipFile,
 } from "./client.js";
 
-type InteractivePayload = InteractiveReply;
 type ZulipChannelData = {
   zulip?: {
     widgetContent?: unknown;
@@ -71,7 +71,7 @@ export type ZulipSendOpts = {
   mediaLocalRoots?: readonly string[];
   mediaReadFile?: (filePath: string) => Promise<Buffer>;
   topic?: string;
-  interactive?: InteractivePayload;
+  presentation?: MessagePresentation;
   channelData?: ZulipChannelData;
 };
 
@@ -88,17 +88,17 @@ const DEFAULT_TOPIC = "general";
 
 const getCore = () => getZulipRuntime();
 
-function interactiveToZulipWidgetContent(
-  interactive?: InteractivePayload,
+function presentationToZulipWidgetContent(
+  presentation?: MessagePresentation,
 ): ZulipWidgetContent | undefined {
   const choices: ZulipWidgetChoice[] = [];
-  for (const block of interactive?.blocks ?? []) {
+  for (const block of presentation?.blocks ?? []) {
     if (block.type !== "buttons") {
       continue;
     }
     for (const button of block.buttons ?? []) {
       const label = button.label?.trim();
-      const reply = button.value?.trim();
+      const reply = resolveMessagePresentationActionValue(button.action)?.trim();
       if (!label || !reply) {
         continue;
       }
@@ -114,7 +114,8 @@ function interactiveToZulipWidgetContent(
     return undefined;
   }
   const heading =
-    interactive?.blocks?.find((block) => block.type === "text")?.text?.trim() || "Choose an action";
+    presentation?.title?.trim() ||
+    presentation?.blocks.find((block) => block.type === "text")?.text?.trim() || "Choose an action";
   return {
     widget_type: "zform",
     extra_data: {
@@ -125,7 +126,7 @@ function interactiveToZulipWidgetContent(
   };
 }
 
-export { interactiveToZulipWidgetContent };
+export { presentationToZulipWidgetContent };
 
 export function pollToZulipWidgetContent(poll: PollInput): ZulipWidgetContent {
   const heading = poll.question.trim();
@@ -154,12 +155,12 @@ export function pollToZulipWidgetContent(poll: PollInput): ZulipWidgetContent {
 }
 
 export function resolveZulipWidgetContent(params: {
-  interactive?: InteractivePayload;
+  presentation?: MessagePresentation;
   channelData?: ZulipChannelData;
 }): unknown {
-  const interactiveWidget = interactiveToZulipWidgetContent(params.interactive);
-  if (interactiveWidget) {
-    return interactiveWidget;
+  const presentationWidget = presentationToZulipWidgetContent(params.presentation);
+  if (presentationWidget) {
+    return presentationWidget;
   }
   const explicitWidget = params.channelData?.zulip?.widgetContent;
   if (explicitWidget && typeof explicitWidget === "object" && !Array.isArray(explicitWidget)) {
@@ -379,7 +380,7 @@ export async function sendMessageZulip(
       mediaUrl = upload.url;
     } else if (isHttpUrl(mediaUrl) && !isZulipHosted) {
       const maxBytes = (opts.cfg.agents?.defaults?.mediaMaxMb ?? 5) * 1024 * 1024;
-      const fetched = await core.channel.media.fetchRemoteMedia({
+      const fetched = await core.channel.media.readRemoteMediaBuffer({
         url: mediaUrl,
         maxBytes,
       });
@@ -437,9 +438,9 @@ export async function sendMessageZulip(
     };
   })();
 
-  const interactiveWidget = interactiveToZulipWidgetContent(opts.interactive);
-  const widgetContent = interactiveWidget ?? resolveZulipWidgetContent({
-    interactive: undefined,
+  const presentationWidget = presentationToZulipWidgetContent(opts.presentation);
+  const widgetContent = presentationWidget ?? resolveZulipWidgetContent({
+    presentation: undefined,
     channelData: opts.channelData,
   });
 
@@ -447,8 +448,8 @@ export async function sendMessageZulip(
     throw new Error("Zulip message is empty");
   }
 
-  const widgetContentSource = interactiveWidget
-    ? "interactive"
+  const widgetContentSource = presentationWidget
+    ? "presentation"
     : opts.channelData?.zulip?.widgetContent
       ? "channelData"
       : "none";
@@ -456,7 +457,7 @@ export async function sendMessageZulip(
     ...preflightTargetSummary,
     accountId: account.accountId,
     hasMedia: Boolean(rawMediaUrl),
-    hasInteractive: Boolean(opts.interactive?.blocks?.length),
+    hasPresentation: Boolean(opts.presentation?.blocks?.length),
     channelDataKeys: Object.keys(opts.channelData ?? {}),
     hasExecApprovalChannelData: Boolean(opts.channelData?.execApproval),
     hasExplicitWidgetContent: Boolean(opts.channelData?.zulip?.widgetContent),
@@ -514,7 +515,7 @@ export async function sendMessageZulip(
 export async function sendPollZulip(
   to: string,
   poll: PollInput,
-  opts: Omit<ZulipSendOpts, "interactive" | "channelData">,
+  opts: Omit<ZulipSendOpts, "presentation" | "channelData">,
 ): Promise<ZulipSendResult> {
   return await sendMessageZulip(to, poll.question, {
     ...opts,

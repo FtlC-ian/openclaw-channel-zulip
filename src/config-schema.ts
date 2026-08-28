@@ -94,6 +94,14 @@ const ZulipStreamOverridesSchema = z
     }
   });
 
+const ThinkingPlaceholderSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    text: z.string().min(1).optional(),
+    errorText: z.string().min(1).optional(),
+  })
+  .strict();
+
 const OptionalSecretInputSchema = buildOptionalSecretInputSchema();
 
 const MarkdownConfigSchema = z
@@ -166,6 +174,7 @@ const ZulipAccountSchemaBase = z
       })
       .strict()
       .optional(),
+    thinkingPlaceholder: ThinkingPlaceholderSchema.optional(),
     agentReactionGuidance: AgentReactionGuidanceSchema.optional(),
     textChunkLimit: z.number().int().positive().optional(),
     chunkMode: z.enum(["length", "newline"]).optional(),

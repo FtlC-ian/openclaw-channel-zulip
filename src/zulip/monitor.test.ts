@@ -125,6 +125,9 @@ const state = vi.hoisted(() => {
     streamLookups: new Map<string, Record<string, unknown> | Error>(),
     downloadedUploads: [] as Array<{ buffer: Buffer; contentType: string; filename: string }>,
     extractedUploadUrls: [] as string[],
+    editZulipMessage: vi.fn(async () => {}),
+    deleteZulipMessage: vi.fn(async () => {}),
+    sendMessageZulip: vi.fn(async () => ({ messageId: "outbound-1", channelId: "debbie" })),
     client: { authHeader: "fake-auth" },
     addZulipReaction: vi.fn(async () => {}),
     removeZulipReaction: vi.fn(async () => {}),
@@ -196,6 +199,8 @@ vi.mock("./client.js", () => ({
   sendZulipTyping: vi.fn(async () => {}),
   addZulipReaction: state.addZulipReaction,
   removeZulipReaction: state.removeZulipReaction,
+  editZulipMessage: state.editZulipMessage,
+  deleteZulipMessage: state.deleteZulipMessage,
 }));
 
 vi.mock("./accounts.js", () => ({
@@ -203,7 +208,7 @@ vi.mock("./accounts.js", () => ({
 }));
 
 vi.mock("./send.js", () => ({
-  sendMessageZulip: vi.fn(async () => {}),
+  sendMessageZulip: state.sendMessageZulip,
 }));
 
 const downloadZulipUploadMock = vi.fn(async () => {
@@ -302,6 +307,7 @@ function makePrivateMessage(id: number, senderEmail = "user8@zlp.pubnerd.app") {
 async function runMonitorOnce(
   controller = new AbortController(),
   runtime?: RuntimeEnv,
+  options: { statusSink?: (patch: Record<string, unknown>) => void } = {},
 ) {
   const { monitorZulipProvider } = await import("./monitor.js");
   state.abortController = controller;
@@ -309,6 +315,7 @@ async function runMonitorOnce(
     config: state.core.config,
     runtime,
     abortSignal: state.abortController.signal,
+    statusSink: options.statusSink,
   });
 }
 
@@ -366,6 +373,10 @@ describe("monitorZulipProvider", () => {
     state.extractedUploadUrls = [];
     state.abortController = undefined;
     state.autoAbort = true;
+    state.editZulipMessage.mockReset();
+    state.deleteZulipMessage.mockReset();
+    state.sendMessageZulip.mockReset();
+    state.sendMessageZulip.mockResolvedValue({ messageId: "outbound-1", channelId: "debbie" });
     downloadZulipUploadMock.mockClear();
     extractZulipUploadUrlsMock.mockClear();
     registerZulipQueueMock.mockClear();
@@ -782,6 +793,119 @@ describe("monitorZulipProvider", () => {
       state.client,
       expect.objectContaining({ messageId: "1096", emojiName: "eyes" }),
     );
+  });
+
+  it("replaces a stream thinking placeholder with the first text chunk", async () => {
+    state.account.config.thinkingPlaceholder = { enabled: true, text: "Thinking…" };
+    state.core.channel.text.chunkMarkdownTextWithMode.mockReturnValue(["first chunk", "second chunk"]);
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }) => {
+      await dispatcherOptions.deliver({ text: "reply text" });
+    });
+    state.pollResponses = [{ result: "success", events: [{ id: 1, type: "message", message: makeChannelMessage(4001) }] }];
+
+    await runMonitorOnce();
+
+    expect(state.sendMessageZulip).toHaveBeenNthCalledWith(1, "stream:debbie:zulip-plugin-pr", "Thinking…", expect.objectContaining({ topic: "zulip-plugin-pr" }));
+    expect(state.editZulipMessage).toHaveBeenCalledWith(state.client, { messageId: "outbound-1", content: "first chunk" });
+    expect(state.sendMessageZulip).toHaveBeenNthCalledWith(2, "stream:debbie:zulip-plugin-pr", "second chunk", expect.any(Object));
+    expect(state.deleteZulipMessage).not.toHaveBeenCalled();
+  });
+
+  it("removes a DM thinking placeholder after a silent turn", async () => {
+    state.account.config.thinkingPlaceholder = { enabled: true };
+    const statusSink = vi.fn();
+    state.pollResponses = [{ result: "success", events: [{ id: 1, type: "message", message: makePrivateMessage(4002) }] }];
+
+    await runMonitorOnce(new AbortController(), undefined, { statusSink });
+
+    expect(state.sendMessageZulip).toHaveBeenCalledWith("user:user8@zlp.pubnerd.app", "Thinking…", expect.any(Object));
+    expect(state.deleteZulipMessage).toHaveBeenCalledWith(state.client, { messageId: "outbound-1" });
+    expect(state.editZulipMessage).not.toHaveBeenCalled();
+    expect(statusSink).not.toHaveBeenCalledWith(expect.objectContaining({ lastOutboundAt: expect.any(Number) }));
+  });
+
+  it("removes the placeholder before a presentation-only reply", async () => {
+    state.account.config.thinkingPlaceholder = { enabled: true };
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }) => {
+      await dispatcherOptions.deliver({
+        presentation: { blocks: [{ type: "buttons", buttons: [{ label: "Confirm", action: "confirm" }] }] },
+      });
+    });
+    state.pollResponses = [{ result: "success", events: [{ id: 1, type: "message", message: makeChannelMessage(4003) }] }];
+
+    await runMonitorOnce();
+
+    expect(state.deleteZulipMessage).toHaveBeenCalledWith(state.client, { messageId: "outbound-1" });
+    expect(state.sendMessageZulip).toHaveBeenNthCalledWith(2, "stream:debbie:zulip-plugin-pr", "", expect.objectContaining({ presentation: expect.any(Object) }));
+  });
+
+  it("removes the placeholder before a media-only reply", async () => {
+    state.account.config.thinkingPlaceholder = { enabled: true };
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }) => {
+      await dispatcherOptions.deliver({ mediaUrl: "https://example.com/result.png" });
+    });
+    state.pollResponses = [{ result: "success", events: [{ id: 1, type: "message", message: makePrivateMessage(4006) }] }];
+
+    await runMonitorOnce();
+
+    expect(state.deleteZulipMessage).toHaveBeenCalledWith(state.client, { messageId: "outbound-1" });
+    expect(state.sendMessageZulip).toHaveBeenNthCalledWith(2, "user:user8@zlp.pubnerd.app", "", expect.objectContaining({ mediaUrl: "https://example.com/result.png" }));
+  });
+
+  it("converts the placeholder to an error when dispatch fails before delivery", async () => {
+    state.account.config.thinkingPlaceholder = { enabled: true, errorText: "Turn failed." };
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockRejectedValue(new Error("model failed"));
+    state.pollResponses = [{ result: "success", events: [{ id: 1, type: "message", message: makeChannelMessage(4004) }] }];
+
+    await runMonitorOnce();
+
+    expect(state.editZulipMessage).toHaveBeenCalledWith(state.client, { messageId: "outbound-1", content: "Turn failed." });
+    expect(state.deleteZulipMessage).not.toHaveBeenCalled();
+  });
+
+  it("removes the placeholder when the turn is cancelled", async () => {
+    state.account.config.thinkingPlaceholder = { enabled: true };
+    const cancelled = new Error("cancelled");
+    cancelled.name = "AbortError";
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockRejectedValue(cancelled);
+    state.pollResponses = [{ result: "success", events: [{ id: 1, type: "message", message: makeChannelMessage(4007) }] }];
+
+    await runMonitorOnce();
+
+    expect(state.deleteZulipMessage).toHaveBeenCalledWith(state.client, { messageId: "outbound-1" });
+    expect(state.editZulipMessage).not.toHaveBeenCalled();
+  });
+
+  it("continues normally when placeholder creation fails", async () => {
+    state.account.config.thinkingPlaceholder = { enabled: true };
+    state.sendMessageZulip
+      .mockRejectedValueOnce(new Error("placeholder rejected"))
+      .mockResolvedValueOnce({ messageId: "reply-1", channelId: "debbie" });
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }) => {
+      await dispatcherOptions.deliver({ text: "actual reply" });
+    });
+    state.pollResponses = [{ result: "success", events: [{ id: 1, type: "message", message: makeChannelMessage(4008) }] }];
+
+    await runMonitorOnce();
+
+    expect(state.sendMessageZulip).toHaveBeenCalledTimes(2);
+    expect(state.sendMessageZulip).toHaveBeenNthCalledWith(2, "stream:debbie:zulip-plugin-pr", "actual reply", expect.any(Object));
+    expect(state.editZulipMessage).not.toHaveBeenCalled();
+    expect(state.deleteZulipMessage).not.toHaveBeenCalled();
+  });
+
+  it("falls back to a normal send when replacing the placeholder fails", async () => {
+    state.account.config.thinkingPlaceholder = { enabled: true };
+    state.editZulipMessage.mockRejectedValueOnce(new Error("edit denied"));
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }) => {
+      await dispatcherOptions.deliver({ text: "actual reply" });
+    });
+    state.pollResponses = [{ result: "success", events: [{ id: 1, type: "message", message: makeChannelMessage(4005) }] }];
+
+    await runMonitorOnce();
+
+    expect(state.deleteZulipMessage).toHaveBeenCalledWith(state.client, { messageId: "outbound-1" });
+    expect(state.sendMessageZulip).toHaveBeenNthCalledWith(2, "stream:debbie:zulip-plugin-pr", "actual reply", expect.any(Object));
   });
 
   it("forwards presentation and channel data only with the first text chunk", async () => {

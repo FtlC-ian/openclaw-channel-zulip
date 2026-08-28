@@ -167,6 +167,16 @@ Add the plugin id to `plugins.allow` in `~/.openclaw/openclaw.json`:
         }
       },
 
+      // Optional edit-in-place progress feedback (disabled by default).
+      // Text-only replies replace this message. Media and interactive replies
+      // remove it before sending normally; silent or cancelled turns remove it.
+      // Failed turns keep the placeholder and replace it with errorText.
+      "thinkingPlaceholder": {
+        "enabled": false,
+        "text": "Thinking…",
+        "errorText": "I couldn't complete that response."
+      },
+
       // Model-controlled reaction prompt guidance: "off" | "minimal" | "extensive"
       // This does not enable automatic status/progress reactions.
       "agentReactionGuidance": "minimal",

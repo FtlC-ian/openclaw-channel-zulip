@@ -5,6 +5,9 @@
   "type": "module",
   "author": "FtlC-ian",
   "license": "MIT",
+  "engines": {
+    "node": "^22.19.0 || ^24.0.0"
+  },
   "keywords": [
     "openclaw",
     "openclaw-plugin",

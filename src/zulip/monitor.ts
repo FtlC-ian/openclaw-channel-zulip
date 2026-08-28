@@ -1231,6 +1231,8 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         logVerboseMessage(`zulip: failed to create thinking placeholder: ${String(err)}`);
       }
     }
+    let deliveryError: unknown;
+    let hasDeliveryError = false;
     const dispatcherOptions = {
       ...prefixOptions,
       humanDelay: core.channel.reply.resolveHumanDelayConfig(cfg, route.agentId),
@@ -1306,6 +1308,10 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         }
       },
       onError: (err: unknown) => {
+        if (!hasDeliveryError) {
+          deliveryError = err;
+          hasDeliveryError = true;
+        }
         runtime.error?.(`zulip reply failed: ${String(err)}`);
       },
     };
@@ -1350,6 +1356,9 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     } catch (err) {
       dispatchError = err;
       runtime.error?.(`zulip reply failed: ${String(err)}`);
+    }
+    if (dispatchError === undefined && hasDeliveryError) {
+      dispatchError = deliveryError;
     }
 
     const successfulReplyCount =

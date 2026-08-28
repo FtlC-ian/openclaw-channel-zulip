@@ -913,6 +913,13 @@ describe("monitorZulipProvider", () => {
     },
   ])("sends configured error text when a $name send fails after placeholder cleanup", async ({ payload, editFails, messageId }) => {
     state.account.config.thinkingPlaceholder = { enabled: true, errorText: "Turn failed." };
+    state.account.config.reactions = {
+      enabled: true,
+      clearOnFinish: false,
+      onStart: "",
+      onSuccess: "check",
+      onError: "warning",
+    };
     if (editFails) {
       state.editZulipMessage.mockRejectedValueOnce(new Error("edit denied"));
     }
@@ -921,7 +928,11 @@ describe("monitorZulipProvider", () => {
       .mockRejectedValueOnce(new Error("reply send failed"))
       .mockResolvedValueOnce({ messageId: "error-1", channelId: "debbie" });
     state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }) => {
-      await dispatcherOptions.deliver(payload);
+      try {
+        await dispatcherOptions.deliver(payload);
+      } catch (err) {
+        dispatcherOptions.onError(err);
+      }
     });
     state.pollResponses = [{ result: "success", events: [{ id: 1, type: "message", message: makeChannelMessage(messageId) }] }];
 
@@ -934,6 +945,14 @@ describe("monitorZulipProvider", () => {
       "stream:debbie:zulip-plugin-pr",
       "Turn failed.",
       expect.objectContaining({ topic: "zulip-plugin-pr" }),
+    );
+    expect(state.addZulipReaction).toHaveBeenCalledExactlyOnceWith(state.client, {
+      messageId: String(messageId),
+      emojiName: "warning",
+    });
+    expect(state.addZulipReaction).not.toHaveBeenCalledWith(
+      state.client,
+      expect.objectContaining({ emojiName: "check" }),
     );
   });
 

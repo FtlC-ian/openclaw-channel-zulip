@@ -919,33 +919,41 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       onIdle: typingCallbacks.onIdle,
       deliver: async (payload: ReplyPayload) => {
         const mediaUrls = payload.mediaUrls ?? (payload.mediaUrl ? [payload.mediaUrl] : []);
+        const hasOutboundMetadata = Boolean(payload.presentation || payload.channelData);
         const rawText = core.channel.text.convertMarkdownTables(payload.text ?? "", tableMode);
         const { text, topic: topicOverride } = extractZulipTopicDirective(rawText);
         const resolvedTopic = topicOverride ? topicOverride.slice(0, 60) : topic;
         if (mediaUrls.length === 0) {
           const chunkMode = core.channel.text.resolveChunkMode(cfg, "zulip", account.accountId);
           const chunks = core.channel.text.chunkMarkdownTextWithMode(text, textLimit, chunkMode);
+          let first = true;
           for (const chunk of chunks.length > 0 ? chunks : [text]) {
-            if (!chunk) {
+            if (!chunk && !(first && hasOutboundMetadata)) {
               continue;
             }
             await sendMessageZulip(to, chunk, {
               cfg,
               accountId: account.accountId,
               topic: resolvedTopic,
+              presentation: first ? payload.presentation : undefined,
+              channelData: first ? payload.channelData : undefined,
             });
+            first = false;
           }
         } else {
           let first = true;
           for (const mediaUrl of mediaUrls) {
-            const caption = first ? text : "";
-            first = false;
+            const isFirst = first;
+            const caption = isFirst ? text : "";
             await sendMessageZulip(to, caption, {
               cfg,
               accountId: account.accountId,
               mediaUrl,
               topic: resolvedTopic,
+              presentation: isFirst ? payload.presentation : undefined,
+              channelData: isFirst ? payload.channelData : undefined,
             });
+            first = false;
           }
         }
         opts.statusSink?.({ lastOutboundAt: Date.now() });

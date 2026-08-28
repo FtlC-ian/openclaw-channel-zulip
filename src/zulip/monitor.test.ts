@@ -360,6 +360,101 @@ describe("monitorZulipProvider", () => {
     expect(dispatcherCall?.onIdle).toBe(typingCallbacks?.onIdle);
   });
 
+  it("forwards presentation and channel data only with the first text chunk", async () => {
+    const { sendMessageZulip } = await import("./send.js");
+    const sendMessageZulipMock = vi.mocked(sendMessageZulip);
+    sendMessageZulipMock.mockClear();
+    state.core.channel.text.chunkMarkdownTextWithMode.mockReturnValue(["first chunk", "second chunk"]);
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }) => {
+      await dispatcherOptions.deliver({
+        text: "reply text",
+        presentation: { blocks: [{ type: "buttons", buttons: [{ label: "Confirm", action: "confirm" }] }] },
+        channelData: { zulip: { widgetContent: { widget_type: "zform" } } },
+      });
+    });
+    state.pollResponses = [{ result: "success", events: [{ id: 1, type: "message", message: makeChannelMessage(1009) }] }];
+
+    await runMonitorOnce();
+
+    expect(sendMessageZulipMock).toHaveBeenCalledTimes(2);
+    expect(sendMessageZulipMock).toHaveBeenNthCalledWith(1, "stream:debbie:zulip-plugin-pr", "first chunk", expect.objectContaining({
+      presentation: expect.any(Object),
+      channelData: { zulip: { widgetContent: { widget_type: "zform" } } },
+    }));
+    expect(sendMessageZulipMock).toHaveBeenNthCalledWith(2, "stream:debbie:zulip-plugin-pr", "second chunk", expect.objectContaining({
+      presentation: undefined,
+      channelData: undefined,
+    }));
+  });
+
+  it("forwards presentation and channel data only with the first media send", async () => {
+    const { sendMessageZulip } = await import("./send.js");
+    const sendMessageZulipMock = vi.mocked(sendMessageZulip);
+    sendMessageZulipMock.mockClear();
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }) => {
+      await dispatcherOptions.deliver({
+        text: "caption",
+        mediaUrls: ["https://example.com/one.png", "https://example.com/two.png"],
+        presentation: { blocks: [{ type: "buttons", buttons: [{ label: "Confirm", action: "confirm" }] }] },
+        channelData: { zulip: { widgetContent: { widget_type: "zform" } } },
+      });
+    });
+    state.pollResponses = [{ result: "success", events: [{ id: 1, type: "message", message: makeChannelMessage(1010) }] }];
+
+    await runMonitorOnce();
+
+    expect(sendMessageZulipMock).toHaveBeenCalledTimes(2);
+    expect(sendMessageZulipMock).toHaveBeenNthCalledWith(1, "stream:debbie:zulip-plugin-pr", "caption", expect.objectContaining({
+      mediaUrl: "https://example.com/one.png",
+      presentation: expect.any(Object),
+      channelData: { zulip: { widgetContent: { widget_type: "zform" } } },
+    }));
+    expect(sendMessageZulipMock).toHaveBeenNthCalledWith(2, "stream:debbie:zulip-plugin-pr", "", expect.objectContaining({
+      mediaUrl: "https://example.com/two.png",
+      presentation: undefined,
+      channelData: undefined,
+    }));
+  });
+
+  it("sends presentation-only replies instead of treating them as delivered without an outbound send", async () => {
+    const { sendMessageZulip } = await import("./send.js");
+    const sendMessageZulipMock = vi.mocked(sendMessageZulip);
+    sendMessageZulipMock.mockClear();
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }) => {
+      await dispatcherOptions.deliver({
+        presentation: { blocks: [{ type: "buttons", buttons: [{ label: "Confirm", action: "confirm" }] }] },
+      });
+    });
+    state.pollResponses = [{ result: "success", events: [{ id: 1, type: "message", message: makeChannelMessage(1011) }] }];
+
+    await runMonitorOnce();
+
+    expect(sendMessageZulipMock).toHaveBeenCalledTimes(1);
+    expect(sendMessageZulipMock).toHaveBeenCalledWith("stream:debbie:zulip-plugin-pr", "", expect.objectContaining({
+      presentation: expect.any(Object),
+    }));
+  });
+
+  it("surfaces a send failure for channel-data-only replies", async () => {
+    const { sendMessageZulip } = await import("./send.js");
+    const sendMessageZulipMock = vi.mocked(sendMessageZulip);
+    sendMessageZulipMock.mockClear();
+    sendMessageZulipMock.mockRejectedValueOnce(new Error("Zulip message is empty"));
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }) => {
+      await expect(dispatcherOptions.deliver({
+        channelData: { execApproval: { approvalId: "approval-1" } },
+      })).rejects.toThrow("Zulip message is empty");
+    });
+    state.pollResponses = [{ result: "success", events: [{ id: 1, type: "message", message: makeChannelMessage(1012) }] }];
+
+    await runMonitorOnce();
+
+    expect(sendMessageZulipMock).toHaveBeenCalledTimes(1);
+    expect(sendMessageZulipMock).toHaveBeenCalledWith("stream:debbie:zulip-plugin-pr", "", expect.objectContaining({
+      channelData: { execApproval: { approvalId: "approval-1" } },
+    }));
+  });
+
   it("processes ordinary inbound messages without enqueueing a synthetic system event", async () => {
     state.pollResponses = [
       {

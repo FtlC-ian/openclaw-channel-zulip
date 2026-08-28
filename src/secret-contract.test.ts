@@ -10,10 +10,10 @@ describe("Zulip secret contract", () => {
       path: ["accounts", "work", "allowFrom"],
     },
   ])("rejects open DM policy without a wildcard at $path", ({ input, path }) => {
-    const result = ZulipConfigSchema.safeParse(input);
+    const result = zulipChannelConfigSchema.runtime!.safeParse(input);
     expect(result.success).toBe(false);
     if (!result.success) {
-      expect(result.error.issues).toContainEqual(expect.objectContaining({ code: "custom", path }));
+      expect(result.issues).toContainEqual(expect.objectContaining({ code: "custom", path }));
     }
   });
 

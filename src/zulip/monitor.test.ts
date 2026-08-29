@@ -131,8 +131,6 @@ const state = vi.hoisted(() => {
     removeZulipReaction: vi.fn(async () => {}),
     sendMessageZulip: vi.fn(async () => ({ messageId: "outbound-1", channelId: "debbie" })),
     client: { authHeader: "fake-auth" },
-    addZulipReaction: vi.fn(async () => {}),
-    removeZulipReaction: vi.fn(async () => {}),
     botUser: {
       id: 999,
       email: "debbie-bot@zlp.pubnerd.app",
@@ -953,6 +951,72 @@ describe("monitorZulipProvider", () => {
     expect(state.addZulipReaction).not.toHaveBeenCalledWith(
       state.client,
       expect.objectContaining({ emojiName: "check" }),
+    );
+  });
+
+  it.each([
+    {
+      name: "text chunk",
+      payload: { text: "reply text", channelData: { test: true } },
+      chunks: ["first chunk", "second chunk"],
+      expectedFirstReply: "first chunk",
+      expectedFirstReplyOptions: { channelData: { test: true } },
+      messageId: 4015,
+    },
+    {
+      name: "media item",
+      payload: {
+        text: "caption",
+        mediaUrls: ["https://example.com/first.png", "https://example.com/second.png"],
+      },
+      chunks: undefined,
+      expectedFirstReply: "caption",
+      expectedFirstReplyOptions: { mediaUrl: "https://example.com/first.png" },
+      messageId: 4016,
+    },
+  ])("does not append error text after partial $name delivery", async ({
+    payload,
+    chunks,
+    expectedFirstReply,
+    expectedFirstReplyOptions,
+    messageId,
+  }) => {
+    state.account.config.thinkingPlaceholder = { enabled: true, errorText: "Turn failed." };
+    if (chunks) {
+      state.core.channel.text.chunkMarkdownTextWithMode.mockReturnValue(chunks);
+    }
+    state.sendMessageZulip
+      .mockResolvedValueOnce({ messageId: "placeholder-1", channelId: "debbie" })
+      .mockResolvedValueOnce({ messageId: "reply-1", channelId: "debbie" })
+      .mockRejectedValueOnce(new Error("later reply send failed"));
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }) => {
+      try {
+        await dispatcherOptions.deliver(payload);
+      } catch (err) {
+        dispatcherOptions.onError(err);
+      }
+    });
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 1, type: "message", message: makeChannelMessage(messageId) }],
+    }];
+
+    await runMonitorOnce();
+
+    expect(state.deleteZulipMessage).toHaveBeenCalledWith(state.client, {
+      messageId: "placeholder-1",
+    });
+    expect(state.sendMessageZulip).toHaveBeenNthCalledWith(
+      2,
+      "stream:debbie:zulip-plugin-pr",
+      expectedFirstReply,
+      expect.objectContaining(expectedFirstReplyOptions),
+    );
+    expect(state.sendMessageZulip).toHaveBeenCalledTimes(3);
+    expect(state.sendMessageZulip).not.toHaveBeenCalledWith(
+      "stream:debbie:zulip-plugin-pr",
+      "Turn failed.",
+      expect.any(Object),
     );
   });
 

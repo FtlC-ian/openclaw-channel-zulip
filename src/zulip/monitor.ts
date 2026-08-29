@@ -1263,6 +1263,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
               resolvedTopic === topic &&
               (await replacePlaceholder(chunk));
             if (replacedPlaceholder) {
+              replyDeliveryCommitted = true;
               deliveredReply = true;
               deliveredThisPayload = true;
               first = false;
@@ -1387,7 +1388,8 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     const terminalError = Boolean(dispatchError) || finalDeliveryFailed;
     const retryableNoDelivery = terminalError && !replyDeliveryCommitted;
     if (placeholderMessageId) {
-      if (!terminalError || deliveredReply) {
+      const cancelled = dispatchError instanceof Error && dispatchError.name === "AbortError";
+      if (!terminalError || cancelled || deliveredReply) {
         await deletePlaceholder();
       } else if (!(await replacePlaceholder(thinkingPlaceholderErrorText))) {
         await deletePlaceholder();
@@ -1395,7 +1397,8 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     } else if (
       dispatchError &&
       !(dispatchError instanceof Error && dispatchError.name === "AbortError") &&
-      placeholderRemovedForDelivery
+      placeholderRemovedForDelivery &&
+      !deliveredReply
     ) {
       try {
         await sendMessageZulip(to, thinkingPlaceholderErrorText, {

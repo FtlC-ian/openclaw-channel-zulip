@@ -250,7 +250,7 @@
         },
         "reactions.subagent": {
           "label": "Active Subagent Reaction",
-          "placeholder": "robot_face"
+          "placeholder": "🤖"
         },
         "agentReactionGuidance": {
           "label": "Agent Reaction Guidance",
@@ -302,7 +302,7 @@
     },
     "reactions.subagent": {
       "label": "Active Subagent Reaction",
-      "placeholder": "robot_face"
+      "placeholder": "🤖"
     },
     "agentReactionGuidance": {
       "label": "Agent Reaction Guidance",

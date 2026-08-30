@@ -23,14 +23,14 @@ describe("Zulip status reaction configuration", () => {
           onError: "error_custom",
           emojis: { tool: "tool_custom" },
           timing: { debounceMs: 25 },
-          subagent: ":robot_face:",
+          subagent: ":custom_child:",
         },
       },
     });
 
     expect(result).toMatchObject({
       enabled: true,
-      subagent: "robot_face",
+      subagent: "custom_child",
       emojis: {
         queued: "queued_custom",
         thinking: "thinking",
@@ -56,7 +56,7 @@ describe("Zulip status reaction configuration", () => {
     await adapter.removeReaction?.("🤖");
 
     const expected = {
-      emojiName: "robot_face",
+      emojiName: "robot",
       emojiCode: "1f916",
       reactionType: "unicode_emoji",
     };
@@ -64,17 +64,39 @@ describe("Zulip status reaction configuration", () => {
     expect(remove).toHaveBeenCalledWith(expected);
   });
 
-  it("uses fully specified Unicode reactions for every built-in lifecycle default", () => {
-    for (const emoji of Object.values(ZULIP_STATUS_REACTION_DEFAULTS)) {
-      expect(resolveZulipReactionSpec(emoji)).toMatchObject({
-        emojiCode: expect.any(String),
+  it("uses Zulip's canonical name and complete metadata for every built-in Unicode value", () => {
+    const expected = new Map([
+      ["👀", ["eyes", "1f440"]],
+      ["🧠", ["brain", "1f9e0"]],
+      ["🛠️", ["working_on_it", "1f6e0"]],
+      ["💻", ["computer", "1f4bb"]],
+      ["🌐", ["www", "1f310"]],
+      ["🛫", ["airplane_departure", "1f6eb"]],
+      ["🏗️", ["construction", "1f3d7"]],
+      ["💁", ["information_desk_person", "1f481"]],
+      ["✅", ["check", "2705"]],
+      ["❌", ["cross_mark", "274c"]],
+      ["⏳", ["time_ticking", "23f3"]],
+      ["⚠️", ["warning", "26a0"]],
+      ["🗜️", ["compression", "1f5dc"]],
+      ["🤖", ["robot", "1f916"]],
+    ]);
+
+    for (const [emoji, [emojiName, emojiCode]] of expected) {
+      expect(resolveZulipReactionSpec(emoji)).toEqual({
+        emojiName,
+        emojiCode,
         reactionType: "unicode_emoji",
       });
     }
 
+    expect(new Set(Object.values(ZULIP_STATUS_REACTION_DEFAULTS))).toEqual(
+      new Set(Array.from(expected.keys()).filter((emoji) => emoji !== "🤖")),
+    );
+
     const result = resolveZulipStatusReactionConfig({ accountConfig: {} });
-    expect(resolveZulipReactionSpec(result.subagent)).toMatchObject({
-      emojiName: "robot_face",
+    expect(resolveZulipReactionSpec(result.subagent)).toEqual({
+      emojiName: "robot",
       emojiCode: "1f916",
       reactionType: "unicode_emoji",
     });

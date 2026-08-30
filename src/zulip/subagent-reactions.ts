@@ -15,7 +15,8 @@ type ReactionContext = {
 };
 
 const currentContextBySession = new Map<string, ReactionContext>();
-const contextByRunId = new Map<string, ReactionContext>();
+const bindingByRunId = new Map<string, { context: ReactionContext; childSessionKey: string }>();
+const bindingsByChildSessionKey = new Map<string, Map<string, ReactionContext>>();
 const activeContexts = new Set<ReactionContext>();
 const reactionContextStorage = new AsyncLocalStorage<ReactionContext>();
 
@@ -39,6 +40,35 @@ function updateIndicator(context: ReactionContext, visible: boolean): Promise<vo
 
 function resolveRunId(event: { runId?: string }, ctx: { runId?: string }): string {
   return event.runId?.trim() || ctx.runId?.trim() || "";
+}
+
+function resolveChildSessionKey(
+  event: { childSessionKey?: string; targetSessionKey?: string },
+  ctx: { childSessionKey?: string },
+): string {
+  return (
+    event.childSessionKey?.trim() ||
+    event.targetSessionKey?.trim() ||
+    ctx.childSessionKey?.trim() ||
+    ""
+  );
+}
+
+function removeRunBinding(runId: string): ReactionContext | undefined {
+  const binding = bindingByRunId.get(runId);
+  if (!binding) {
+    return undefined;
+  }
+  bindingByRunId.delete(runId);
+  binding.context.activeRunIds.delete(runId);
+  if (binding.childSessionKey) {
+    const childBindings = bindingsByChildSessionKey.get(binding.childSessionKey);
+    childBindings?.delete(runId);
+    if (childBindings?.size === 0) {
+      bindingsByChildSessionKey.delete(binding.childSessionKey);
+    }
+  }
+  return binding.context;
 }
 
 function closeContext(context: ReactionContext): void {
@@ -100,12 +130,11 @@ export function registerZulipSubagentReactionContext(params: {
       if (currentContextBySession.get(context.requesterSessionKey) === context) {
         currentContextBySession.delete(context.requesterSessionKey);
       }
-      for (const runId of context.activeRunIds) {
-        if (contextByRunId.get(runId) === context) {
-          contextByRunId.delete(runId);
+      for (const runId of Array.from(context.activeRunIds)) {
+        if (bindingByRunId.get(runId)?.context === context) {
+          removeRunBinding(runId);
         }
       }
-      context.activeRunIds.clear();
       await updateIndicator(context, false);
       closeContext(context);
     },
@@ -113,15 +142,16 @@ export function registerZulipSubagentReactionContext(params: {
 }
 
 export async function handleZulipSubagentSpawned(
-  event: { runId: string; requester?: { channel?: string } },
-  ctx: { runId?: string; requesterSessionKey?: string },
+  event: { runId: string; childSessionKey?: string; requester?: { channel?: string } },
+  ctx: { runId?: string; childSessionKey?: string; requesterSessionKey?: string },
 ): Promise<void> {
   if (event.requester?.channel && event.requester.channel !== "zulip") {
     return;
   }
   const runId = resolveRunId(event, ctx);
+  const childSessionKey = resolveChildSessionKey(event, ctx);
   const requesterSessionKey = ctx.requesterSessionKey?.trim() ?? "";
-  if (!runId || !requesterSessionKey || contextByRunId.has(runId)) {
+  if (!runId || !requesterSessionKey || bindingByRunId.has(runId)) {
     return;
   }
   const asyncContext = reactionContextStorage.getStore();
@@ -132,7 +162,12 @@ export async function handleZulipSubagentSpawned(
   if (!context || context.terminal) {
     return;
   }
-  contextByRunId.set(runId, context);
+  bindingByRunId.set(runId, { context, childSessionKey });
+  if (childSessionKey) {
+    const childBindings = bindingsByChildSessionKey.get(childSessionKey) ?? new Map();
+    childBindings.set(runId, context);
+    bindingsByChildSessionKey.set(childSessionKey, childBindings);
+  }
   context.activeRunIds.add(runId);
   if (context.activeRunIds.size === 1) {
     await updateIndicator(context, true);
@@ -140,23 +175,41 @@ export async function handleZulipSubagentSpawned(
 }
 
 export async function handleZulipSubagentEnded(
-  event: { runId?: string },
-  ctx: { runId?: string },
+  event: { runId?: string; targetSessionKey?: string },
+  ctx: { runId?: string; childSessionKey?: string },
 ): Promise<void> {
   const runId = resolveRunId(event, ctx);
-  if (!runId) {
+  if (runId) {
+    const context = removeRunBinding(runId);
+    if (!context) {
+      return;
+    }
+    if (context.activeRunIds.size === 0) {
+      await updateIndicator(context, false);
+      if (context.terminal) {
+        closeContext(context);
+      }
+    }
     return;
   }
-  const context = contextByRunId.get(runId);
-  if (!context) {
+  const childSessionKey = resolveChildSessionKey(event, ctx);
+  const childBindings = bindingsByChildSessionKey.get(childSessionKey);
+  if (!childSessionKey || !childBindings) {
     return;
   }
-  contextByRunId.delete(runId);
-  context.activeRunIds.delete(runId);
-  if (context.activeRunIds.size === 0) {
-    await updateIndicator(context, false);
-    if (context.terminal) {
-      closeContext(context);
+  const affectedContexts = new Set<ReactionContext>();
+  for (const childRunId of Array.from(childBindings.keys())) {
+    const context = removeRunBinding(childRunId);
+    if (context) {
+      affectedContexts.add(context);
+    }
+  }
+  for (const context of affectedContexts) {
+    if (context.activeRunIds.size === 0) {
+      await updateIndicator(context, false);
+      if (context.terminal) {
+        closeContext(context);
+      }
     }
   }
 }
@@ -164,7 +217,8 @@ export async function handleZulipSubagentEnded(
 export async function clearZulipSubagentReactionContexts(): Promise<void> {
   const contexts = Array.from(activeContexts);
   currentContextBySession.clear();
-  contextByRunId.clear();
+  bindingByRunId.clear();
+  bindingsByChildSessionKey.clear();
   activeContexts.clear();
   for (const context of contexts) {
     context.terminal = true;

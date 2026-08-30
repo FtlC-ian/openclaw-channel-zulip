@@ -348,8 +348,8 @@ describe("monitorZulipProvider", () => {
     deleteZulipQueueMock.mockClear();
     fetchZulipSubscriptionsMock.mockClear();
     fetchZulipStreamMock.mockClear();
-    state.addZulipReaction.mockClear();
-    state.removeZulipReaction.mockClear();
+    state.addZulipReaction.mockReset().mockResolvedValue(undefined);
+    state.removeZulipReaction.mockReset().mockResolvedValue(undefined);
   });
 
   it("wires typing idle cleanup into the reply dispatcher", async () => {
@@ -369,7 +369,7 @@ describe("monitorZulipProvider", () => {
     expect(dispatcherCall?.onIdle).toBe(typingCallbacks?.onIdle);
   });
 
-  it("reports real model, tool, compaction, and terminal lifecycle states", async () => {
+  it("reports real lifecycle states and cancels an existing terminal hold on stop", async () => {
     state.autoAbort = false;
     state.account.config.reactions = {
       enabled: true,
@@ -377,7 +377,7 @@ describe("monitorZulipProvider", () => {
         debounceMs: 0,
         stallSoftMs: 60_000,
         stallHardMs: 120_000,
-        doneHoldMs: 500,
+        doneHoldMs: 40,
       },
     };
     state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
@@ -427,6 +427,12 @@ describe("monitorZulipProvider", () => {
       state.client,
       expect.objectContaining({ messageId: "1098", emojiName: "check" }),
     );
+    const reactionCallCount =
+      state.addZulipReaction.mock.calls.length + state.removeZulipReaction.mock.calls.length;
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(
+      state.addZulipReaction.mock.calls.length + state.removeZulipReaction.mock.calls.length,
+    ).toBe(reactionCallCount);
   });
 
   it("uses the terminal error state when reply dispatch throws", async () => {
@@ -520,6 +526,112 @@ describe("monitorZulipProvider", () => {
       state.client,
       expect.objectContaining({ messageId: "1094", emojiName: "cross_mark" }),
     );
+  });
+
+  it("does not add a terminal reaction when abort races subagent settlement", async () => {
+    state.autoAbort = false;
+    state.account.config.reactions = { enabled: true, clearOnFinish: false };
+    let subagentHideStarted!: () => void;
+    const hideStarted = new Promise<void>((resolve) => {
+      subagentHideStarted = resolve;
+    });
+    let releaseSubagentHide!: () => void;
+    const allowHide = new Promise<void>((resolve) => {
+      releaseSubagentHide = resolve;
+    });
+    state.removeZulipReaction.mockImplementation(async (_client, reaction) => {
+      if (reaction.emojiName === "robot_face") {
+        subagentHideStarted();
+        await allowHide;
+      }
+    });
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
+      async ({ ctx }) => {
+        const { handleZulipSubagentEnded, handleZulipSubagentSpawned } =
+          await import("./subagent-reactions.js");
+        const requesterSessionKey = String(ctx.SessionKey);
+        await handleZulipSubagentSpawned(
+          {
+            runId: "finish-race-run",
+            childSessionKey: "finish-race-child",
+            requester: { channel: "zulip" },
+          },
+          { requesterSessionKey },
+        );
+        void handleZulipSubagentEnded(
+          { runId: "finish-race-run", targetSessionKey: "finish-race-child" },
+          { childSessionKey: "finish-race-child" },
+        );
+        return {};
+      },
+    );
+    state.pollResponses = [
+      {
+        result: "success",
+        events: [{ id: 1, type: "message", message: makeChannelMessage(1093) }],
+      },
+    ];
+
+    const monitorPromise = runMonitorOnce();
+    await hideStarted;
+    state.abortController?.abort();
+    releaseSubagentHide();
+    await monitorPromise;
+
+    expect(state.addZulipReaction).not.toHaveBeenCalledWith(
+      state.client,
+      expect.objectContaining({ messageId: "1093", emojiName: "check" }),
+    );
+    expect(state.addZulipReaction).not.toHaveBeenCalledWith(
+      state.client,
+      expect.objectContaining({ messageId: "1093", emojiName: "cross_mark" }),
+    );
+  });
+
+  it("stops promptly when aborted during retry backoff", async () => {
+    state.autoAbort = false;
+    getZulipEventsWithRetryMock.mockRejectedValueOnce(
+      Object.assign(new Error("synthetic rate limit"), { retryAfterMs: 120_000 }),
+    );
+
+    const monitorPromise = runMonitorOnce();
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (getZulipEventsWithRetryMock.mock.calls.length > 0) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    state.abortController?.abort();
+
+    await expect(
+      Promise.race([
+        monitorPromise.then(() => "stopped"),
+        new Promise<string>((resolve) => setTimeout(() => resolve("timed-out"), 250)),
+      ]),
+    ).resolves.toBe("stopped");
+  });
+
+  it("does not start the next event when aborted during batch pacing", async () => {
+    state.autoAbort = false;
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
+      async () => {
+        state.abortController?.abort();
+        return {};
+      },
+    );
+    state.pollResponses = [
+      {
+        result: "success",
+        events: [
+          { id: 1, type: "message", message: makeChannelMessage(1092) },
+          { id: 2, type: "message", message: makeChannelMessage(1091) },
+        ],
+      },
+    ];
+
+    await runMonitorOnce();
+
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
   });
 
   it("continues reply dispatch when the Zulip reaction API fails", async () => {

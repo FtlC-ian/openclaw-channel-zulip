@@ -138,4 +138,77 @@ describe("Zulip subagent reaction correlation", () => {
 
     expect(hide).toHaveBeenCalledTimes(1);
   });
+
+  it("ends every generation bound to a reset child session without touching other children", async () => {
+    const show = vi.fn(async () => {});
+    const hide = vi.fn(async () => {});
+    const context = registerZulipSubagentReactionContext({
+      requesterSessionKey: "requester",
+      show,
+      hide,
+    });
+    await handleZulipSubagentSpawned(
+      { runId: "old-run", childSessionKey: "child-reset", requester: { channel: "zulip" } },
+      { requesterSessionKey: "requester" },
+    );
+    await handleZulipSubagentSpawned(
+      { runId: "new-run", childSessionKey: "child-reset", requester: { channel: "zulip" } },
+      { requesterSessionKey: "requester" },
+    );
+    await handleZulipSubagentSpawned(
+      { runId: "other-run", childSessionKey: "child-active", requester: { channel: "zulip" } },
+      { requesterSessionKey: "requester" },
+    );
+    await context.finish();
+
+    await handleZulipSubagentEnded(
+      { targetSessionKey: "child-reset" },
+      { childSessionKey: "child-reset" },
+    );
+    expect(hide).not.toHaveBeenCalled();
+
+    await handleZulipSubagentEnded({ runId: "other-run" }, {});
+    expect(hide).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not use child fallback for an ended event carrying an unknown stale run id", async () => {
+    const hide = vi.fn(async () => {});
+    const context = registerZulipSubagentReactionContext({
+      requesterSessionKey: "requester",
+      show: vi.fn(async () => {}),
+      hide,
+    });
+    await handleZulipSubagentSpawned(
+      { runId: "current-run", childSessionKey: "shared-child", requester: { channel: "zulip" } },
+      { requesterSessionKey: "requester" },
+    );
+    await context.finish();
+
+    await handleZulipSubagentEnded(
+      { runId: "stale-run", targetSessionKey: "shared-child" },
+      { childSessionKey: "shared-child" },
+    );
+    expect(hide).not.toHaveBeenCalled();
+
+    await handleZulipSubagentEnded({ runId: "current-run" }, {});
+    expect(hide).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not create child-session fallback bindings for non-Zulip spawns", async () => {
+    const show = vi.fn(async () => {});
+    const hide = vi.fn(async () => {});
+    registerZulipSubagentReactionContext({ requesterSessionKey: "requester", show, hide });
+
+    await handleZulipSubagentSpawned(
+      { runId: "discord-run", childSessionKey: "discord-child", requester: { channel: "discord" } },
+      { requesterSessionKey: "requester" },
+    );
+    await handleZulipSubagentEnded(
+      { targetSessionKey: "discord-child" },
+      { childSessionKey: "discord-child" },
+    );
+
+    expect(show).not.toHaveBeenCalled();
+    expect(hide).not.toHaveBeenCalled();
+  });
 });

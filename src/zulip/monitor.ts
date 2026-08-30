@@ -369,6 +369,7 @@ async function saveZulipMediaBuffer(params: {
 }
 
 const ABORTED_INBOUND_MESSAGE = Symbol("aborted-inbound-message");
+const RETRYABLE_INBOUND_MESSAGE = Symbol("retryable-inbound-message");
 
 function delay(ms: number, signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) {
@@ -1137,7 +1138,9 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     }
 
     const successfulReplyCount =
-      (dispatchResult?.counts?.block ?? 0) + (dispatchResult?.counts?.final ?? 0);
+      (dispatchResult?.counts?.tool ?? 0) +
+      (dispatchResult?.counts?.block ?? 0) +
+      (dispatchResult?.counts?.final ?? 0);
     replyDeliveryCommitted ||= successfulReplyCount > 0;
     const abortOutcome = () =>
       replyDeliveryCommitted ? undefined : ABORTED_INBOUND_MESSAGE;
@@ -1156,6 +1159,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     }
     const finalDeliveryFailed = (dispatchResult?.failedCounts?.final ?? 0) > 0;
     const terminalError = Boolean(dispatchError) || finalDeliveryFailed;
+    const retryableNoDelivery = terminalError && !replyDeliveryCommitted;
     if (terminalError) {
       await statusReactions.setError();
     } else {
@@ -1187,6 +1191,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     }
 
     opts.statusSink?.({ lastInboundAt: Date.now() });
+    return retryableNoDelivery ? RETRYABLE_INBOUND_MESSAGE : undefined;
   };
 
   // Register event queue
@@ -1240,6 +1245,14 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         if (durableInboundJournal && durableId) {
           await durableInboundJournal.release(durableId, {
             lastError: "Zulip monitor stopped before delivery",
+          });
+        }
+        return;
+      }
+      if (outcome === RETRYABLE_INBOUND_MESSAGE) {
+        if (durableInboundJournal && durableId) {
+          await durableInboundJournal.release(durableId, {
+            lastError: "Zulip reply delivery failed before any visible response",
           });
         }
         return;

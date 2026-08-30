@@ -454,6 +454,9 @@ describe("monitorZulipProvider", () => {
 
     await runMonitorOnce();
 
+    expect(
+      state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher,
+    ).toHaveBeenCalledTimes(1);
     expect(state.addZulipReaction).toHaveBeenCalledWith(
       state.client,
       expect.objectContaining({ messageId: "1097", emojiName: "cross_mark" }),
@@ -474,6 +477,9 @@ describe("monitorZulipProvider", () => {
 
     await runMonitorOnce();
 
+    expect(
+      state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher,
+    ).toHaveBeenCalledTimes(1);
     expect(state.addZulipReaction).toHaveBeenCalledWith(
       state.client,
       expect.objectContaining({ messageId: "1095", emojiName: "cross_mark" }),
@@ -1192,6 +1198,114 @@ describe("monitorZulipProvider", () => {
       metadata: { queueEventId: 2 },
     });
     expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { failureMode: "dispatcher rejection", messageId: 2108 },
+    { failureMode: "failed final result", messageId: 2109 },
+  ])(
+    "keeps durable inbound retryable after $failureMode with no visible delivery",
+    async ({ failureMode, messageId }) => {
+      enableDurableInboundJournal();
+      state.account.config.reactions = { enabled: true, clearOnFinish: false };
+      let dispatchAttempts = 0;
+      if (failureMode === "dispatcher rejection") {
+        state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementationOnce(
+          async () => {
+            dispatchAttempts += 1;
+            throw new Error("synthetic durable dispatch failure");
+          },
+        );
+      } else {
+        state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementationOnce(
+          async () => {
+            dispatchAttempts += 1;
+            return {
+              counts: { tool: 0, block: 0, final: 0 },
+              failedCounts: { tool: 0, block: 0, final: 1 },
+            };
+          },
+        );
+      }
+      state.pollResponses = [
+        {
+          result: "success",
+          events: [{ id: 4, type: "message", message: makeChannelMessage(messageId) }],
+        },
+      ];
+
+      await runMonitorOnce();
+
+      const pendingStore = Array.from(state.durableStores.entries()).find(([namespace]) =>
+        namespace.includes(".pending."),
+      )?.[1];
+      const completedStore = Array.from(state.durableStores.entries()).find(([namespace]) =>
+        namespace.includes(".completed."),
+      )?.[1];
+      await expect(pendingStore?.entries()).resolves.toHaveLength(1);
+      await expect(completedStore?.entries()).resolves.toEqual([]);
+      expect(state.addZulipReaction).toHaveBeenCalledWith(
+        state.client,
+        expect.objectContaining({ messageId: String(messageId), emojiName: "cross_mark" }),
+      );
+      expect(
+        state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher,
+      ).toHaveBeenCalledTimes(1);
+      expect(dispatchAttempts).toBe(1);
+
+      state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher
+        .mockReset()
+        .mockImplementation(async () => {
+          dispatchAttempts += 1;
+          return { counts: { tool: 0, block: 0, final: 1 } };
+        });
+      await runMonitorOnce();
+
+      await expect(pendingStore?.entries()).resolves.toEqual([]);
+      await expect(completedStore?.entries()).resolves.toHaveLength(1);
+      expect(
+        state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher,
+      ).toHaveBeenCalledTimes(1);
+      expect(dispatchAttempts).toBe(2);
+    },
+  );
+
+  it("completes durable inbound after a visible partial reply even when final delivery fails", async () => {
+    enableDurableInboundJournal();
+    state.account.config.reactions = { enabled: true, clearOnFinish: false };
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
+      async ({ dispatcherOptions }) => {
+        await dispatcherOptions.deliver({ text: "visible partial reply" });
+        return {
+          counts: { tool: 0, block: 1, final: 0 },
+          failedCounts: { tool: 0, block: 0, final: 1 },
+        };
+      },
+    );
+    state.pollResponses = [
+      {
+        result: "success",
+        events: [{ id: 5, type: "message", message: makeChannelMessage(2110) }],
+      },
+    ];
+
+    await runMonitorOnce();
+
+    const pendingStore = Array.from(state.durableStores.entries()).find(([namespace]) =>
+      namespace.includes(".pending."),
+    )?.[1];
+    const completedStore = Array.from(state.durableStores.entries()).find(([namespace]) =>
+      namespace.includes(".completed."),
+    )?.[1];
+    await expect(pendingStore?.entries()).resolves.toEqual([]);
+    await expect(completedStore?.entries()).resolves.toHaveLength(1);
+    expect(state.addZulipReaction).toHaveBeenCalledWith(
+      state.client,
+      expect.objectContaining({ messageId: "2110", emojiName: "cross_mark" }),
+    );
+    expect(
+      state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher,
+    ).toHaveBeenCalledTimes(1);
   });
 
   it("keeps durable journal store caps below the plugin state row limit", async () => {

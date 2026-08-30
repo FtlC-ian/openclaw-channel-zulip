@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { EventEmitter, once } from "node:events";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { buildApiUrl, EventQueue, Gateway, isBotMessage, isChildRunning, isExactPoll, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, lifecycleSummary, normalizeScenarioError, redactError, resolveUploadUrl, signalProcessTree, validateEnvironment, waitForProcessTreeExit } from "./run.mjs";
+import { buildApiUrl, countMessageDeletionFailures, EventQueue, Gateway, isBotMessage, isChildRunning, isExactPoll, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, lifecycleSummary, normalizeScenarioError, redactError, resolveUploadUrl, signalProcessTree, validateEnvironment, waitForProcessTreeExit } from "./run.mjs";
 
 const validEnv = {
   ZULIP_URL: "https://zulip.example.test/path",
@@ -83,6 +83,16 @@ test("compares downloaded upload contents as exact UTF-8 bytes", () => {
   assert.equal(isExactUtf8(exact, "marker"), true);
   assert.equal(isExactUtf8(Uint8Array.from([0xef, 0xbb, 0xbf, ...exact]), "marker"), false);
   assert.equal(isExactUtf8(Uint8Array.from([...exact, 0x0a]), "marker"), false);
+});
+
+test("counts message cleanup failures without skipping later deletions", async () => {
+  const attempted = [];
+  const client = { request: async (path) => {
+    attempted.push(path);
+    if (path.endsWith("/2")) throw new Error("synthetic cleanup failure");
+  } };
+  assert.equal(await countMessageDeletionFailures(client, ["1", "2", "3"]), 1);
+  assert.deepEqual(attempted, ["messages/1", "messages/2", "messages/3"]);
 });
 
 test("requires lifecycle and subagent reactions to be removed", () => {
@@ -195,5 +205,22 @@ test("workflow is manual, protected, pinned, and bounded", async () => {
   assert.match(workflow, /merge-base --is-ancestor/);
   assert.match(workflow, /permissions:\n\s+contents: read/);
   assert.match(workflow, /timeout-minutes: 35/);
+  assert.doesNotMatch(workflow, /timeout-minutes: 35\n\s+env:/);
+  const prepareStep = workflow.slice(
+    workflow.indexOf("- name: Prepare isolated OpenClaw state"),
+    workflow.indexOf("- name: Run bounded live scenarios"),
+  );
+  const liveStep = workflow.slice(
+    workflow.indexOf("- name: Run bounded live scenarios"),
+    workflow.indexOf("- name: Record release evidence"),
+  );
+  assert.equal(workflow.match(/secrets\.OPENCLAW_SMOKE_CONFIG_JSON/g)?.length, 1);
+  assert.match(prepareStep, /secrets\.OPENCLAW_SMOKE_CONFIG_JSON/);
+  for (const secret of ["ZULIP_URL", "ZULIP_SMOKE_USER_EMAIL", "ZULIP_SMOKE_USER_API_KEY", "ZULIP_SMOKE_BOT_EMAIL", "ZULIP_SMOKE_BOT_API_KEY"]) {
+    assert.equal(workflow.match(new RegExp(`secrets\\.${secret}`, "g"))?.length, 1);
+    assert.match(liveStep, new RegExp(`secrets\\.${secret}`));
+    assert.doesNotMatch(prepareStep, new RegExp(`secrets\\.${secret}`));
+  }
+  assert.match(workflow, /Protected smoke config must use the robot subagent reaction/);
   for (const use of workflow.matchAll(/uses:\s+([^\s]+)/g)) assert.match(use[1], /@[0-9a-f]{40}$/);
 });

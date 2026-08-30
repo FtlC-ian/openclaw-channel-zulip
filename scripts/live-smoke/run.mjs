@@ -98,6 +98,18 @@ export function isExactUtf8(bytes, expected) {
   return bytes.length === expectedBytes.length && bytes.every((value, index) => value === expectedBytes[index]);
 }
 
+export async function countMessageDeletionFailures(client, ids) {
+  let failures = 0;
+  for (const id of ids) {
+    try {
+      await client.request(`messages/${id}`, { method: "DELETE" });
+    } catch {
+      failures += 1;
+    }
+  }
+  return failures;
+}
+
 export function lifecycleSummary(events, inboundMessageId) {
   const relevant = events.filter((event) =>
     event?.type === "reaction" && String(event.message_id) === String(inboundMessageId),
@@ -357,6 +369,7 @@ async function main() {
   const gateway = new Gateway(env.SMOKE_GATEWAY_PORT || 18789);
   const messageIds = { actor: new Set(), bot: new Set() };
   const report = [];
+  let runError;
   const sendDm = async (content, signal) => {
     const result = await actor.request("messages", { method: "POST", body: { type: "private", to: JSON.stringify([env.ZULIP_SMOKE_BOT_EMAIL]), content }, signal });
     messageIds.actor.add(String(result.id)); return String(result.id);
@@ -485,15 +498,24 @@ async function main() {
       const replies = queue.events.filter((e) => isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, marker));
       if (replies.length !== 1) throw new Error(`Durable receive produced ${replies.length} visible replies; expected exactly one`);
     });
+  } catch (error) {
+    runError = error;
   } finally {
     await gateway.stop().catch(() => {});
-    for (const id of messageIds.bot) await bot.request(`messages/${id}`, { method: "DELETE" }).catch(() => {});
-    for (const id of messageIds.actor) await actor.request(`messages/${id}`, { method: "DELETE" }).catch(() => {});
+    const cleanupFailures =
+      await countMessageDeletionFailures(bot, messageIds.bot) +
+      await countMessageDeletionFailures(actor, messageIds.actor);
     await queue.close().catch(() => {});
     for (const item of report) console.log(`${item.ok ? "PASS" : "FAIL"} ${item.name} (${item.ms}ms)${item.error ? `: ${item.error}` : ""}`);
     console.log(`Evidence: tested commit ${env.SMOKE_TESTED_SHA}; run identifier ${runId}`);
-    console.log("Cleanup: messages deleted where permissions permit; Zulip exposes no public API for deleting uploaded files.");
+    console.log(`Cleanup: message deletion failures=${cleanupFailures}; Zulip exposes no public API for deleting uploaded files.`);
+    if (cleanupFailures > 0) {
+      const cleanupError = new Error(`Cleanup failed for ${cleanupFailures} smoke messages`);
+      if (runError) console.error(`Cleanup also failed: ${redactError(cleanupError)}`);
+      else throw cleanupError;
+    }
   }
+  if (runError) throw runError;
 }
 
 if (import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

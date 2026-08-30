@@ -60,16 +60,6 @@ jobs:
     environment: zulip-live-smoke
     runs-on: ubuntu-latest
     timeout-minutes: 35
-    env:
-      OPENCLAW_SMOKE_CONFIG_JSON: ${{ secrets.OPENCLAW_SMOKE_CONFIG_JSON }}
-      ZULIP_URL: ${{ secrets.ZULIP_URL }}
-      ZULIP_SMOKE_USER_EMAIL: ${{ secrets.ZULIP_SMOKE_USER_EMAIL }}
-      ZULIP_SMOKE_USER_API_KEY: ${{ secrets.ZULIP_SMOKE_USER_API_KEY }}
-      ZULIP_SMOKE_BOT_EMAIL: ${{ secrets.ZULIP_SMOKE_BOT_EMAIL }}
-      ZULIP_SMOKE_BOT_API_KEY: ${{ secrets.ZULIP_SMOKE_BOT_API_KEY }}
-      ZULIP_SMOKE_STREAM: ${{ vars.ZULIP_SMOKE_STREAM }}
-      SMOKE_TESTED_SHA: ${{ needs.authorize.outputs.candidate_sha }}
-      SMOKE_SCENARIO_TIMEOUT_MS: '120000'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -89,17 +79,37 @@ jobs:
           pnpm run build
       - name: Prepare isolated OpenClaw state
         env:
+          OPENCLAW_SMOKE_CONFIG_JSON: ${{ secrets.OPENCLAW_SMOKE_CONFIG_JSON }}
           OPENCLAW_CONFIG_PATH: ${{ runner.temp }}/openclaw-smoke/openclaw.json
           OPENCLAW_STATE_DIR: ${{ runner.temp }}/openclaw-smoke/state
         run: |
           umask 077
           mkdir -p "$(dirname "$OPENCLAW_CONFIG_PATH")" "$OPENCLAW_STATE_DIR"
+          node --input-type=module <<'NODE'
+          const config = JSON.parse(process.env.OPENCLAW_SMOKE_CONFIG_JSON);
+          const zulip = config?.channels?.zulip ?? {};
+          const configured = [zulip, ...Object.values(zulip.accounts ?? {})]
+            .map((account) => account?.reactions?.subagent)
+            .filter((value) => value !== undefined);
+          const robotValues = new Set(["robot", ":robot:", "🤖", "🤖️"]);
+          if (configured.some((value) => !robotValues.has(value))) {
+            throw new Error("Protected smoke config must use the robot subagent reaction");
+          }
+          NODE
           printf '%s' "$OPENCLAW_SMOKE_CONFIG_JSON" > "$OPENCLAW_CONFIG_PATH"
           pnpm exec openclaw plugins install -l "$GITHUB_WORKSPACE"
           pnpm exec openclaw config set agents.defaults.workspace "$GITHUB_WORKSPACE/scripts/live-smoke/agent-workspace"
           pnpm exec openclaw config validate
       - name: Run bounded live scenarios
         env:
+          ZULIP_URL: ${{ secrets.ZULIP_URL }}
+          ZULIP_SMOKE_USER_EMAIL: ${{ secrets.ZULIP_SMOKE_USER_EMAIL }}
+          ZULIP_SMOKE_USER_API_KEY: ${{ secrets.ZULIP_SMOKE_USER_API_KEY }}
+          ZULIP_SMOKE_BOT_EMAIL: ${{ secrets.ZULIP_SMOKE_BOT_EMAIL }}
+          ZULIP_SMOKE_BOT_API_KEY: ${{ secrets.ZULIP_SMOKE_BOT_API_KEY }}
+          ZULIP_SMOKE_STREAM: ${{ vars.ZULIP_SMOKE_STREAM }}
+          SMOKE_TESTED_SHA: ${{ needs.authorize.outputs.candidate_sha }}
+          SMOKE_SCENARIO_TIMEOUT_MS: '120000'
           OPENCLAW_CONFIG_PATH: ${{ runner.temp }}/openclaw-smoke/openclaw.json
           OPENCLAW_STATE_DIR: ${{ runner.temp }}/openclaw-smoke/state
           SMOKE_GATEWAY_PORT: '18789'

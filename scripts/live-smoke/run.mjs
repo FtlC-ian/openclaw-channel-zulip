@@ -31,6 +31,26 @@ export function buildApiUrl(baseUrl, path) {
   return new URL(`${baseUrl.replace(/\/+$/, "")}/api/v1/${path.replace(/^\/+/, "")}`);
 }
 
+export function resolveUploadUrl(baseUrl, uri) {
+  const base = new URL(`${baseUrl.replace(/\/+$/, "")}/`);
+  const basePath = base.pathname === "/" ? "" : base.pathname.replace(/\/+$/, "");
+  const rawUri = String(uri ?? "");
+  let url;
+  if (/^https?:\/\//i.test(rawUri)) {
+    url = new URL(rawUri);
+  } else if (rawUri.startsWith("/")) {
+    const path = basePath && !rawUri.startsWith(`${basePath}/`) ? `${basePath}${rawUri}` : rawUri;
+    url = new URL(path, base.origin);
+  } else {
+    url = new URL(rawUri, base);
+  }
+  const uploadPrefix = `${basePath}/user_uploads/`;
+  if (url.origin !== base.origin || !url.pathname.startsWith(uploadPrefix)) {
+    throw new Error("Refusing smoke upload outside the configured Zulip realm");
+  }
+  return url;
+}
+
 export function redactError(error) {
   const text = error instanceof Error ? error.message : String(error);
   return text
@@ -128,12 +148,11 @@ class ZulipClient {
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok || !payload.uri) throw new Error(`Zulip upload failed (${response.status})`);
-    return payload.uri;
+    return resolveUploadUrl(this.baseUrl, payload.uri).href;
   }
 
   async download(uri, signal) {
-    const url = new URL(uri, this.baseUrl);
-    if (url.origin !== new URL(this.baseUrl).origin) throw new Error("Refusing cross-origin smoke upload");
+    const url = resolveUploadUrl(this.baseUrl, uri);
     const requestSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(30000)]) : AbortSignal.timeout(30000);
     const response = await fetch(url, { headers: { Authorization: this.authorization }, signal: requestSignal });
     if (!response.ok) throw new Error(`Zulip download failed (${response.status})`);

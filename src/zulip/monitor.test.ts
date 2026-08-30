@@ -539,6 +539,62 @@ describe("monitorZulipProvider", () => {
     );
   });
 
+  it("clears active reactions through the gateway-stop hook", async () => {
+    state.autoAbort = false;
+    state.account.config.reactions = { enabled: true, clearOnFinish: false };
+    let dispatched!: () => void;
+    const dispatchStarted = new Promise<void>((resolve) => {
+      dispatched = resolve;
+    });
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
+      async ({ dispatcherOptions, replyOptions }) => {
+        await dispatcherOptions.onReplyStart?.();
+        await replyOptions.onToolStart?.({ name: "exec", phase: "start" });
+        dispatched();
+        await new Promise<void>((resolve) => {
+          replyOptions.abortSignal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+        return {};
+      },
+    );
+    state.pollResponses = [
+      {
+        result: "success",
+        events: [{ id: 1, type: "message", message: makeChannelMessage(1092) }],
+      },
+    ];
+
+    const monitorPromise = runMonitorOnce();
+    await dispatchStarted;
+    const {
+      clearActiveZulipMonitorReactionLifecycles,
+      registerZulipMonitorReactionHooks,
+    } = await import("./monitor.js");
+    const on = vi.fn();
+    registerZulipMonitorReactionHooks({ on } as never);
+    expect(on).toHaveBeenCalledWith(
+      "gateway_stop",
+      clearActiveZulipMonitorReactionLifecycles,
+    );
+
+    await clearActiveZulipMonitorReactionLifecycles();
+
+    expect(state.removeZulipReaction).toHaveBeenCalledWith(
+      state.client,
+      expect.objectContaining({ messageId: "1092", emojiName: "eyes" }),
+    );
+    state.abortController?.abort();
+    await monitorPromise;
+    expect(state.addZulipReaction).not.toHaveBeenCalledWith(
+      state.client,
+      expect.objectContaining({ messageId: "1092", emojiName: "check" }),
+    );
+    expect(state.addZulipReaction).not.toHaveBeenCalledWith(
+      state.client,
+      expect.objectContaining({ messageId: "1092", emojiName: "cross_mark" }),
+    );
+  });
+
   it("does not add a terminal reaction when abort races subagent settlement", async () => {
     state.autoAbort = false;
     state.account.config.reactions = { enabled: true, clearOnFinish: false };

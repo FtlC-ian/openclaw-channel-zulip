@@ -3,6 +3,7 @@ import path from "node:path";
 import type {
   ChannelAccountSnapshot,
   OpenClawConfig,
+  OpenClawPluginApi,
   ReplyPayload,
   RuntimeEnv,
 } from "../sdk.js";
@@ -370,6 +371,17 @@ async function saveZulipMediaBuffer(params: {
 
 const ABORTED_INBOUND_MESSAGE = Symbol("aborted-inbound-message");
 const RETRYABLE_INBOUND_MESSAGE = Symbol("retryable-inbound-message");
+const activeMonitorReactionCleanups = new Set<() => Promise<void>>();
+
+export async function clearActiveZulipMonitorReactionLifecycles(): Promise<void> {
+  await Promise.allSettled(
+    Array.from(activeMonitorReactionCleanups, (cleanup) => cleanup()),
+  );
+}
+
+export function registerZulipMonitorReactionHooks(api: OpenClawPluginApi): void {
+  api.on("gateway_stop", clearActiveZulipMonitorReactionLifecycles);
+}
 
 function delay(ms: number, signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) {
@@ -1338,6 +1350,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     }
   };
 
+  activeMonitorReactionCleanups.add(cleanupActiveReactionLifecycles);
   try {
     await replayPendingDurableInboundMessages();
 
@@ -1452,6 +1465,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     await cleanupActiveReactionLifecycles();
     await Promise.allSettled(Array.from(activeMessageTasks));
     await cleanupActiveReactionLifecycles();
+    activeMonitorReactionCleanups.delete(cleanupActiveReactionLifecycles);
   }
 
   // Cleanup

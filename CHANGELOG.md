@@ -10,6 +10,7 @@
 - **Agent reaction guidance**: Advertise model-controlled Zulip reactions through prompt guidance, defaulting to extensive while keeping lifecycle/status indicators separate.
 
 ### Bug Fixes
+- **Gateway restart cleanup**: Await active monitor lifecycle cancellation from the gateway-stop hook so interrupted turns do not leave orphaned status reactions on Zulip messages.
 - **Lifecycle reaction metadata**: Send every built-in lifecycle and subagent default with Zulip's canonical Unicode emoji name, code, and reaction type so realms accept tool, soft-stall, and child-run indicators.
 - **Reply routing**: Store canonical last-route delivery context for Zulip DMs and stream topics so final replies and follow-ups stay on the right conversation.
 - **Replay dedupe**: Durable replay bypasses volatile in-memory duplicate suppression after handler failures.

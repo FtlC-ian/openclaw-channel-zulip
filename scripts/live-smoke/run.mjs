@@ -288,8 +288,12 @@ export function extractExactUploadUrl(content) {
     let decodedBasename = basename;
     let fullyDecodedBasename = basename;
     for (let depth = 0; depth < 100; depth += 1) {
+      if (/%(?:2f|5c|00)/i.test(fullyDecodedBasename)) return undefined;
       let decoded;
-      try { decoded = decodeURIComponent(fullyDecodedBasename); } catch { break; }
+      try { decoded = decodeURIComponent(fullyDecodedBasename); } catch {
+        if (fullyDecodedBasename !== basename) return undefined;
+        break;
+      }
       if (depth === 0) decodedBasename = decoded;
       if (decoded === fullyDecodedBasename) break;
       fullyDecodedBasename = decoded;

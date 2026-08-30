@@ -221,6 +221,8 @@ test("workflow is manual, protected, pinned, and bounded", async () => {
     assert.match(liveStep, new RegExp(`secrets\\.${secret}`));
     assert.doesNotMatch(prepareStep, new RegExp(`secrets\\.${secret}`));
   }
+  assert.match(workflow, /Protected smoke config must disable stream mention gating/);
   assert.match(workflow, /Protected smoke config must use the robot subagent reaction/);
+  assert.match(workflow, /reserves robot and tada reactions for exact evidence/);
   for (const use of workflow.matchAll(/uses:\s+([^\s]+)/g)) assert.match(use[1], /@[0-9a-f]{40}$/);
 });

@@ -28,9 +28,13 @@ repository-level secrets.
 
 The isolated configuration must enable the checked-out local Zulip plugin, use
 the dedicated bot account, allow DMs from the smoke actor, monitor the smoke
-stream with an open group policy, enable typing and lifecycle reactions with
-`clearOnFinish: true`, and use the default `robot` subagent reaction required
-by the committed evidence matcher. It must also provide a model/tool policy
-that permits the message, file, and `sessions_spawn` operations described by
-the committed smoke-agent workspace. A run that cannot observe one of those
-behaviors fails rather than silently skipping it.
+stream with an open group policy, and disable stream mention gating with
+`chatmode: "onmessage"` and `requireMention: false` at the root and for every
+account. It must enable typing and lifecycle reactions with
+`clearOnFinish: true` and use the default `robot` subagent reaction required by
+the committed evidence matcher. Lifecycle phase overrides must not use `robot`
+or `tada`; those reactions are reserved for subagent and explicit reaction
+evidence. The configuration must also provide a model/tool policy that permits
+the message, file, and `sessions_spawn` operations described by the committed
+smoke-agent workspace. A run that cannot observe one of those behaviors fails
+rather than silently skipping it.

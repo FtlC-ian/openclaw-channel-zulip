@@ -88,12 +88,30 @@ jobs:
           node --input-type=module <<'NODE'
           const config = JSON.parse(process.env.OPENCLAW_SMOKE_CONFIG_JSON);
           const zulip = config?.channels?.zulip ?? {};
-          const configured = [zulip, ...Object.values(zulip.accounts ?? {})]
-            .map((account) => account?.reactions?.subagent)
+          const { accounts: accountConfigs = {}, ...baseZulip } = zulip;
+          const accounts = [baseZulip,
+            ...Object.values(accountConfigs).map((account) => ({ ...baseZulip, ...account }))];
+          if (accounts.some((account) => account.chatmode !== "onmessage" || account.requireMention !== false)) {
+            throw new Error("Protected smoke config must disable stream mention gating");
+          }
+          const configured = accounts.map((account) => account?.reactions?.subagent)
             .filter((value) => value !== undefined);
           const robotValues = new Set(["robot", ":robot:", "🤖", "🤖️"]);
           if (configured.some((value) => !robotValues.has(value))) {
             throw new Error("Protected smoke config must use the robot subagent reaction");
+          }
+          const lifecycleValues = [
+            ...Object.values(config?.messages?.statusReactions?.emojis ?? {}),
+            ...accounts.flatMap((account) => {
+              const reactions = account?.reactions ?? {};
+              return [reactions.onStart, reactions.onSuccess, reactions.onError,
+                ...Object.values(reactions.emojis ?? {})];
+            }),
+          ].filter((value) => value !== undefined);
+          const normalize = (value) => String(value).trim().replace(/^:+|:+$/g, "")
+            .replaceAll("\ufe0f", "").toLowerCase();
+          if (lifecycleValues.some((value) => ["robot", "🤖", "tada", "🎉"].includes(normalize(value)))) {
+            throw new Error("Protected smoke config reserves robot and tada reactions for exact evidence");
           }
           NODE
           printf '%s' "$OPENCLAW_SMOKE_CONFIG_JSON" > "$OPENCLAW_CONFIG_PATH"

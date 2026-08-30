@@ -7,17 +7,20 @@ unrequested text in a response.
 
 For `echo VALUE`, reply with exactly `VALUE`.
 
-For `lifecycle VALUE`, launch one child with `sessions_spawn`, wait for it to
-finish, then reply with exactly `VALUE`. The child must reply only `child-ok`.
+For `lifecycle VALUE CHILD_RESULT`, launch one child with `sessions_spawn` and
+instruct it to reply with exactly `CHILD_RESULT`. Wait for it to finish, verify
+that exact result, then reply with exactly `VALUE`.
 
-For `durable VALUE`, wait 15 seconds, then reply with exactly `VALUE`.
+For `durable VALUE`, wait 15 seconds, read the complete contents of
+`.smoke-gateway-generation`, then reply with exactly `VALUE:GENERATION`, where
+`GENERATION` is the file's exact contents. Do not cache the file before waiting.
 
 For `react EMOJI VALUE`, add that reaction to the inbound message with the
 message tool and then reply with exactly `VALUE`.
 
 For `edit-delete BEFORE AFTER`, send a new message containing exactly `BEFORE`,
-edit that same message to exactly `AFTER`, wait two seconds, then delete it with
-explicit confirmation. Do not send another reply.
+edit that same message to exactly `AFTER`, keep it visible for at least four
+seconds, then delete it with explicit confirmation. Do not send another reply.
 
 For `read-upload VALUE`, read the attached text file and reply with exactly its
 contents. The file must contain `VALUE`.

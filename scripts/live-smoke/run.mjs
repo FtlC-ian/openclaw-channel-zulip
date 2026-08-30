@@ -2,6 +2,7 @@
 
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { chmod, readdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
@@ -14,6 +15,7 @@ export const REQUIRED_ENV = [
   "ZULIP_SMOKE_BOT_API_KEY",
   "ZULIP_SMOKE_STREAM",
   "SMOKE_TESTED_SHA",
+  "OPENCLAW_STATE_DIR",
 ];
 
 export function validateEnvironment(env) {
@@ -98,6 +100,50 @@ export function isExactUtf8(bytes, expected) {
   return bytes.length === expectedBytes.length && bytes.every((value, index) => value === expectedBytes[index]);
 }
 
+export async function assertMessageRemainsExact(client, id, expected, minimumMs, signal) {
+  const assertCurrent = async () => {
+    const result = await client.request(`messages/${id}`, { signal });
+    if (!isExactRenderedContent(result.message?.content, expected)) {
+      throw new Error("Edited message was not readable with its exact content");
+    }
+  };
+  await assertCurrent();
+  await delay(minimumMs, undefined, { signal });
+  await assertCurrent();
+}
+
+export async function countCompletedChildTranscripts(stateDir, marker) {
+  const files = [];
+  const visit = async (directory) => {
+    let entries;
+    try { entries = await readdir(directory, { withFileTypes: true }); }
+    catch (error) {
+      if (error?.code === "ENOENT") return;
+      throw error;
+    }
+    for (const entry of entries) {
+      const path = resolve(directory, entry.name);
+      if (entry.isDirectory()) await visit(path);
+      else if (entry.isFile() && entry.name.endsWith(".jsonl")) files.push(path);
+    }
+  };
+  await visit(resolve(stateDir, "agents"));
+  let matches = 0;
+  for (const file of files) {
+    const records = (await readFile(file, "utf8")).split("\n").filter(Boolean).flatMap((line) => {
+      try { return [JSON.parse(line)]; } catch { return []; }
+    });
+    if (!records.some((record) => JSON.stringify(record).includes(marker))) continue;
+    if (records.some((record) => assistantTextValues(record).includes(marker))) matches += 1;
+  }
+  return matches;
+}
+
+export async function writeGatewayGeneration(path, generation) {
+  await writeFile(path, generation, { mode: 0o600 });
+  await chmod(path, 0o600);
+}
+
 export async function countMessageDeletionFailures(client, ids) {
   let failures = 0;
   for (const id of ids) {
@@ -129,6 +175,7 @@ export function lifecycleSummary(events, inboundMessageId) {
     added,
     allRemoved: added.length > 0 && active.size === 0,
     sawSubagent: added.some((event) => event.emoji_name === "robot" || event.emoji_code === "1f916"),
+    subagentCount: added.filter((event) => event.emoji_name === "robot" || event.emoji_code === "1f916").length,
   };
 }
 
@@ -147,6 +194,19 @@ export function normalizeScenarioError(signal, error) {
 function reactionKey(event) {
   const user = event.user_id ?? event.user?.user_id ?? event.user?.email ?? event.user?.full_name ?? "";
   return `${user}:${event.emoji_name ?? ""}:${event.emoji_code ?? ""}:${event.reaction_type ?? ""}`;
+}
+
+function assistantTextValues(value) {
+  if (!value || typeof value !== "object") return [];
+  if (value.role === "assistant") {
+    if (typeof value.content === "string") return [value.content];
+    if (!Array.isArray(value.content)) return [];
+    return value.content.flatMap((part) => {
+      if (typeof part === "string") return [part];
+      return part?.type === "text" && typeof part.text === "string" ? [part.text] : [];
+    });
+  }
+  return Object.values(value).flatMap(assistantTextValues);
 }
 
 function escapeHtml(value) {
@@ -367,6 +427,7 @@ async function main() {
   const bot = new ZulipClient(env.ZULIP_URL, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_BOT_API_KEY);
   const queue = new EventQueue(actor);
   const gateway = new Gateway(env.SMOKE_GATEWAY_PORT || 18789);
+  const gatewayGenerationPath = resolve("scripts/live-smoke/agent-workspace/.smoke-gateway-generation");
   const messageIds = { actor: new Set(), bot: new Set() };
   const report = [];
   let runError;
@@ -415,8 +476,8 @@ async function main() {
     });
 
     await scenario("typing-and-lifecycle-reactions", async (signal) => {
-      const marker = `${runId}:lifecycle-ok`; const eventStart = queue.events.length;
-      const inboundId = await sendDm(command(`lifecycle ${marker}`), signal);
+      const marker = `${runId}:lifecycle-ok`; const childResult = `${runId}:child-ok`; const eventStart = queue.events.length;
+      const inboundId = await sendDm(command(`lifecycle ${marker} ${childResult}`), signal);
       const reply = await queue.waitFor((e) => isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, marker), timeoutMs, "lifecycle reply", signal);
       messageIds.bot.add(String(reply.message.id));
       await queue.waitFor((e) => {
@@ -435,7 +496,17 @@ async function main() {
       }
       if (!summary?.added.length) throw new Error("No lifecycle reaction was observed on the inbound message");
       if (!summary.sawSubagent) throw new Error("No truthful subagent lifecycle reaction was observed");
+      if (summary.subagentCount !== 1) throw new Error(`Observed ${summary.subagentCount} subagent lifecycle reactions; expected exactly one`);
       if (!summary.allRemoved) throw new Error("Lifecycle reactions were not cleaned up after completion");
+      const transcriptDeadline = Date.now() + timeoutMs;
+      let childTranscriptCount = 0;
+      while (Date.now() < transcriptDeadline && (childTranscriptCount = await countCompletedChildTranscripts(env.OPENCLAW_STATE_DIR, childResult)) === 0) {
+        await delay(250, undefined, { signal });
+      }
+      childTranscriptCount = await countCompletedChildTranscripts(env.OPENCLAW_STATE_DIR, childResult);
+      if (childTranscriptCount !== 1) {
+        throw new Error(`Found ${childTranscriptCount} completed child transcripts with the exact required result; expected one`);
+      }
     });
 
     await scenario("explicit-reaction", async (signal) => {
@@ -452,6 +523,7 @@ async function main() {
       const created = await queue.waitFor((e) => isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, before), timeoutMs, "message before edit", signal);
       const id = String(created.message.id); messageIds.bot.add(id);
       await queue.waitFor((e) => e.type === "update_message" && String(e.message_id) === id && isExactRenderedContent(e.content, after), timeoutMs, "message edit", signal);
+      await assertMessageRemainsExact(actor, id, after, 2000, signal);
       await queue.waitFor((e) => e.type === "delete_message" && (e.message_ids ?? [e.message_id]).map(String).includes(id), timeoutMs, "message delete", signal);
       messageIds.bot.delete(id);
     });
@@ -485,23 +557,44 @@ async function main() {
     });
 
     await scenario("durable-receive-completion-deduplication", async (signal) => {
-      const marker = `${runId}:durable-ok`; const inboundId = await sendDm(command(`durable ${marker}`), signal);
+      const marker = `${runId}:durable-ok`;
+      const oldGeneration = randomBytes(16).toString("hex");
+      await writeGatewayGeneration(gatewayGenerationPath, oldGeneration);
+      const inboundId = await sendDm(command(`durable ${marker}`), signal);
       await queue.waitFor((e) => e.type === "reaction" && e.op === "add" && String(e.message_id) === inboundId, timeoutMs, "durable accept signal", signal);
-      if (queue.events.some((e) => isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, marker))) {
+      const oldReply = `${marker}:${oldGeneration}`;
+      const prematureReply = queue.events.find((e) => isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, oldReply));
+      if (prematureReply) {
+        messageIds.bot.add(String(prematureReply.message.id));
         throw new Error("Durable reply completed before interruption; replay was not exercised");
       }
-      await gateway.restart(signal);
-      const reply = await queue.waitFor((e) => isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, marker), timeoutMs, "durable replay reply", signal);
+      await gateway.stop();
+      const replacementGeneration = randomBytes(16).toString("hex");
+      await writeGatewayGeneration(gatewayGenerationPath, replacementGeneration);
+      await gateway.start(signal);
+      const replacementReply = `${marker}:${replacementGeneration}`;
+      const reply = await queue.waitFor((e) => {
+        if (isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, oldReply)) {
+          messageIds.bot.add(String(e.message.id));
+          throw new Error("Durable reply originated from the pre-restart gateway");
+        }
+        return isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, replacementReply);
+      }, timeoutMs, "durable replay reply", signal);
       messageIds.bot.add(String(reply.message.id));
       const settleDeadline = Date.now() + 10000;
       while (Date.now() < settleDeadline) { await queue.poll(signal); await delay(500, undefined, { signal }); }
-      const replies = queue.events.filter((e) => isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, marker));
-      if (replies.length !== 1) throw new Error(`Durable receive produced ${replies.length} visible replies; expected exactly one`);
+      const oldReplies = queue.events.filter((e) => isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, oldReply));
+      for (const event of oldReplies) messageIds.bot.add(String(event.message.id));
+      const replies = queue.events.filter((e) => isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, replacementReply));
+      if (oldReplies.length || replies.length !== 1) {
+        throw new Error(`Durable receive produced ${oldReplies.length} old-generation and ${replies.length} replacement replies; expected zero and one`);
+      }
     });
   } catch (error) {
     runError = error;
   } finally {
     await gateway.stop().catch(() => {});
+    await unlink(gatewayGenerationPath).catch(() => {});
     const cleanupFailures =
       await countMessageDeletionFailures(bot, messageIds.bot) +
       await countMessageDeletionFailures(actor, messageIds.actor);

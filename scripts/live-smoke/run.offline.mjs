@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { EventEmitter, once } from "node:events";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
-import { buildApiUrl, countMessageDeletionFailures, EventQueue, Gateway, isBotMessage, isChildRunning, isExactPoll, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, lifecycleSummary, normalizeScenarioError, redactError, resolveUploadUrl, signalProcessTree, validateEnvironment, waitForProcessTreeExit } from "./run.mjs";
+import { assertMessageRemainsExact, buildApiUrl, countCompletedChildTranscripts, countMessageDeletionFailures, EventQueue, Gateway, isBotMessage, isChildRunning, isExactPoll, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, lifecycleSummary, normalizeScenarioError, redactError, resolveUploadUrl, signalProcessTree, validateEnvironment, waitForProcessTreeExit, writeGatewayGeneration } from "./run.mjs";
 
 const validEnv = {
   ZULIP_URL: "https://zulip.example.test/path",
@@ -13,6 +15,7 @@ const validEnv = {
   ZULIP_SMOKE_BOT_API_KEY: "bot-key",
   ZULIP_SMOKE_STREAM: "smoke",
   SMOKE_TESTED_SHA: "a".repeat(40),
+  OPENCLAW_STATE_DIR: "/tmp/openclaw-smoke-state",
 };
 
 test("validates protected configuration while preserving base paths", () => {
@@ -85,6 +88,55 @@ test("compares downloaded upload contents as exact UTF-8 bytes", () => {
   assert.equal(isExactUtf8(Uint8Array.from([...exact, 0x0a]), "marker"), false);
 });
 
+test("requires an edited message to remain readable with exact content", async () => {
+  const calls = [];
+  const client = { request: async (path) => {
+    calls.push({ path, at: Date.now() });
+    return { message: { content: "<p>after</p>" } };
+  } };
+  await assertMessageRemainsExact(client, "42", "after", 10);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].at - calls[0].at >= 9, true);
+  await assert.rejects(
+    assertMessageRemainsExact({ request: async () => ({ message: { content: "wrong" } }) }, "42", "after", 0),
+    /not readable/,
+  );
+});
+
+test("writes exact gateway-generation evidence with private permissions", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "zulip-smoke-generation-"));
+  const path = join(stateDir, "generation");
+  try {
+    await writeGatewayGeneration(path, "abc123");
+    assert.equal(await readFile(path, "utf8"), "abc123");
+    const { mode } = await stat(path);
+    assert.equal(mode & 0o777, 0o600);
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("requires the exact child result in an assistant transcript message", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "zulip-smoke-transcript-"));
+  const sessionsDir = join(stateDir, "agents", "main", "sessions");
+  const marker = "unique-child-result";
+  await mkdir(sessionsDir, { recursive: true });
+  try {
+    await writeFile(join(sessionsDir, "parent.jsonl"), `${JSON.stringify({ message: { role: "assistant", content: [
+      { type: "toolCall", arguments: { task: `reply ${marker}` } },
+    ] } })}\n`);
+    assert.equal(await countCompletedChildTranscripts(stateDir, marker), 0);
+    await writeFile(join(sessionsDir, "child.jsonl"), [
+      JSON.stringify({ message: { role: "user", content: `[Subagent Task] reply ${marker}` } }),
+      "malformed",
+      JSON.stringify({ message: { role: "assistant", content: [{ type: "text", text: marker }] } }),
+    ].join("\n"));
+    assert.equal(await countCompletedChildTranscripts(stateDir, marker), 1);
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
 test("counts message cleanup failures without skipping later deletions", async () => {
   const attempted = [];
   const client = { request: async (path) => {
@@ -98,7 +150,7 @@ test("counts message cleanup failures without skipping later deletions", async (
 test("requires lifecycle and subagent reactions to be removed", () => {
   const base = { type: "reaction", message_id: 42, user_id: 7, emoji_name: "robot", emoji_code: "1f916", reaction_type: "unicode_emoji" };
   assert.deepEqual(lifecycleSummary([{ ...base, op: "add" }, { ...base, op: "remove" }], "42"), {
-    added: [{ ...base, op: "add" }], allRemoved: true, sawSubagent: true,
+    added: [{ ...base, op: "add" }], allRemoved: true, sawSubagent: true, subagentCount: 1,
   });
   assert.equal(lifecycleSummary([{ ...base, op: "add" }, { ...base, op: "remove" }, { ...base, op: "add" }], "42").allRemoved, false);
   assert.equal(lifecycleSummary([{ ...base, op: "add" }, { ...base, user_id: 8, op: "add" }, { ...base, op: "remove" }], "42").allRemoved, false);
@@ -197,6 +249,7 @@ test("terminates the complete detached process group", { skip: process.platform 
 
 test("workflow is manual, protected, pinned, and bounded", async () => {
   const workflow = await readFile(new URL("../../.github/workflows/zulip-live-smoke.yml", import.meta.url), "utf8");
+  const agentProtocol = await readFile(new URL("./agent-workspace/AGENTS.md", import.meta.url), "utf8");
   assert.match(workflow, /workflow_dispatch:/);
   assert.doesNotMatch(workflow, /pull_request:|\n\s+push:/);
   assert.match(workflow, /environment: zulip-live-smoke/);
@@ -224,5 +277,8 @@ test("workflow is manual, protected, pinned, and bounded", async () => {
   assert.match(workflow, /Protected smoke config must disable stream mention gating/);
   assert.match(workflow, /Protected smoke config must use the robot subagent reaction/);
   assert.match(workflow, /reserves robot and tada reactions for exact evidence/);
+  assert.match(agentProtocol, /verify\nthat exact result/);
+  assert.match(agentProtocol, /\.smoke-gateway-generation/);
+  assert.match(agentProtocol, /at least four\nseconds/);
   for (const use of workflow.matchAll(/uses:\s+([^\s]+)/g)) assert.match(use[1], /@[0-9a-f]{40}$/);
 });

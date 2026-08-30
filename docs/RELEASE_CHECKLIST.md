@@ -38,3 +38,9 @@ evidence. The configuration must also provide a model/tool policy that permits
 the message, file, and `sessions_spawn` operations described by the committed
 smoke-agent workspace. A run that cannot observe one of those behaviors fails
 rather than silently skipping it.
+
+The harness verifies the exact child result in the isolated OpenClaw session
+transcript and reads the edited Zulip message before and after its required
+two-second visibility window. Durable replay uses a random generation value
+written only after the old gateway process group is fully down; the replacement
+must read and return that value, so a queued pre-restart reply cannot pass.

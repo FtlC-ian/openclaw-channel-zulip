@@ -44,19 +44,15 @@ function findLegacyStreamTopics(params: {
   streamName?: string;
   streamId: string;
 }): string[] | undefined {
-  const normalizedName = normalizeZulipStreamName(params.streamName);
-  const normalizedId = normalizeZulipStreamIdSelector(params.streamId);
-  const nameMatch = normalizedName
-    ? Object.entries(params.streamTopics ?? {}).find(([key]) =>
-        normalizeZulipStreamIdSelector(key) === undefined &&
-        normalizeZulipStreamName(key) === normalizedName,
-      )
-    : undefined;
-  const idMatch = Object.entries(params.streamTopics ?? {}).find(([key]) => {
-    const selector = normalizeZulipStreamIdSelector(key);
-    return selector !== undefined && selector === normalizedId;
-  });
-  return idMatch?.[1] ?? nameMatch?.[1];
+  const candidates = new Set(
+    [params.streamName, params.streamId]
+      .map(normalizeZulipStreamName)
+      .filter((value): value is string => value !== undefined),
+  );
+  return Object.entries(params.streamTopics ?? {}).find(([key]) => {
+    const normalizedKey = normalizeZulipStreamName(key);
+    return normalizedKey !== undefined && candidates.has(normalizedKey);
+  })?.[1];
 }
 
 function findRules(params: {

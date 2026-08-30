@@ -41,6 +41,27 @@ describe("Zulip inbound stream policy", () => {
     }).enabled).toBe(false);
   });
 
+  it("matches a decimal-looking legacy streamTopics key as a stream name", () => {
+    const policy = resolveZulipInboundStreamPolicy({
+      config: { streamTopics: { "4": ["allowed"] } },
+      streamName: "4",
+      streamId: "5",
+    });
+
+    expect(policy.additionalAllowedTopics).toEqual(["allowed"]);
+    expect(isZulipTopicAllowed({ topic: "allowed", policy })).toBe(true);
+  });
+
+  it("does not canonicalize decimal-looking legacy streamTopics ids", () => {
+    const policy = resolveZulipInboundStreamPolicy({
+      config: { streamTopics: { "017": ["allowed"] } },
+      streamName: "other",
+      streamId: "17",
+    });
+
+    expect(policy.additionalAllowedTopics).toBeUndefined();
+  });
+
   it("applies name rules and then id rules field by field", () => {
     const policy = resolveZulipInboundStreamPolicy({
       config: {

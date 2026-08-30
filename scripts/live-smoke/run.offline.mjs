@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { assertMessageRemainsExact, buildApiUrl, countCompletedChildTranscripts, countMessageDeletionFailures, EventQueue, Gateway, isBotMessage, isChildRunning, isExactPoll, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, lifecycleSummary, normalizeScenarioError, redactError, resolveUploadUrl, signalProcessTree, validateEnvironment, waitForProcessTreeExit, writeGatewayGeneration } from "./run.mjs";
+import { assertMessageRemainsExact, buildApiUrl, countCompletedChildTranscripts, countMessageDeletionFailures, EventQueue, Gateway, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, lifecycleSummary, normalizeScenarioError, redactError, resolveUploadUrl, signalProcessTree, validateEnvironment, waitForProcessTreeExit, writeGatewayGeneration } from "./run.mjs";
 
 const validEnv = {
   ZULIP_URL: "https://zulip.example.test/path",
@@ -81,6 +81,16 @@ test("matches complete raw or Zulip-rendered content", () => {
   assert.equal(isExactRenderedContent("\n<p>after</p>\n", "after"), false);
 });
 
+test("attributes every configured-bot DM containing the unique durable marker", () => {
+  const base = { type: "message", message: { type: "private", sender_email: "bot@example.test", display_recipient: [
+    { email: "bot@example.test" }, { email: "user@example.test" },
+  ] } };
+  for (const content of ["durable-marker", "durable-marker:old", "<p>durable-marker:wrong</p>", "prefix durable-marker suffix"]) {
+    assert.equal(isDurableReplyEvent({ ...base, message: { ...base.message, content } }, "bot@example.test", "user@example.test", "durable-marker"), true);
+  }
+  assert.equal(isDurableReplyEvent({ ...base, message: { ...base.message, sender_email: "other@example.test", content: "durable-marker" } }, "bot@example.test", "user@example.test", "durable-marker"), false);
+});
+
 test("compares downloaded upload contents as exact UTF-8 bytes", () => {
   const exact = new TextEncoder().encode("marker");
   assert.equal(isExactUtf8(exact, "marker"), true);
@@ -132,6 +142,19 @@ test("requires the exact child result in an assistant transcript message", async
       JSON.stringify({ message: { role: "assistant", content: [{ type: "text", text: marker }] } }),
     ].join("\n"));
     assert.equal(await countCompletedChildTranscripts(stateDir, marker), 1);
+    await writeFile(join(sessionsDir, "child.jsonl"), [
+      JSON.stringify({ message: { role: "user", content: `[Subagent Task] reply ${marker}` } }),
+      JSON.stringify({ message: { role: "assistant", content: [
+        { type: "text", text: marker }, { type: "text", text: "WRONG-EXTRA" },
+      ] } }),
+    ].join("\n"));
+    assert.equal(await countCompletedChildTranscripts(stateDir, marker), 0);
+    await writeFile(join(sessionsDir, "child.jsonl"), [
+      JSON.stringify({ message: { role: "user", content: `[Subagent Task] reply ${marker}` } }),
+      JSON.stringify({ message: { role: "assistant", content: [{ type: "text", text: marker }] } }),
+      JSON.stringify({ message: { role: "assistant", content: [{ type: "text", text: "WRONG-LATER" }] } }),
+    ].join("\n"));
+    assert.equal(await countCompletedChildTranscripts(stateDir, marker), 0);
   } finally {
     await rm(stateDir, { recursive: true, force: true });
   }

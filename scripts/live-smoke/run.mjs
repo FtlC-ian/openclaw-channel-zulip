@@ -77,6 +77,10 @@ export function isPrivateBotMessage(event, botEmail, actorEmail, marker) {
   return isPrivateBotEvent(event, botEmail, actorEmail) && isExactRenderedContent(event.message?.content, marker);
 }
 
+export function isDurableReplyEvent(event, botEmail, actorEmail, marker) {
+  return isPrivateBotEvent(event, botEmail, actorEmail) && String(event.message?.content ?? "").includes(marker);
+}
+
 export function isPrivateTypingEvent(event, botEmail, actorEmail, op) {
   if (event?.type !== "typing" || event.op !== op) return false;
   const senderEmail = event.sender?.email ?? event.sender_email;
@@ -134,7 +138,8 @@ export async function countCompletedChildTranscripts(stateDir, marker) {
       try { return [JSON.parse(line)]; } catch { return []; }
     });
     if (!records.some((record) => JSON.stringify(record).includes(marker))) continue;
-    if (records.some((record) => assistantTextValues(record).includes(marker))) matches += 1;
+    const results = records.flatMap(assistantMessageTexts);
+    if (results.at(-1) === marker) matches += 1;
   }
   return matches;
 }
@@ -196,17 +201,19 @@ function reactionKey(event) {
   return `${user}:${event.emoji_name ?? ""}:${event.emoji_code ?? ""}:${event.reaction_type ?? ""}`;
 }
 
-function assistantTextValues(value) {
+function assistantMessageTexts(value) {
   if (!value || typeof value !== "object") return [];
   if (value.role === "assistant") {
     if (typeof value.content === "string") return [value.content];
     if (!Array.isArray(value.content)) return [];
-    return value.content.flatMap((part) => {
+    if (value.content.some((part) => part?.type === "toolCall" || part?.type === "tool_use")) return [];
+    const text = value.content.flatMap((part) => {
       if (typeof part === "string") return [part];
       return part?.type === "text" && typeof part.text === "string" ? [part.text] : [];
-    });
+    }).join("");
+    return text ? [text] : [];
   }
-  return Object.values(value).flatMap(assistantTextValues);
+  return Object.values(value).flatMap(assistantMessageTexts);
 }
 
 function escapeHtml(value) {
@@ -562,8 +569,7 @@ async function main() {
       await writeGatewayGeneration(gatewayGenerationPath, oldGeneration);
       const inboundId = await sendDm(command(`durable ${marker}`), signal);
       await queue.waitFor((e) => e.type === "reaction" && e.op === "add" && String(e.message_id) === inboundId, timeoutMs, "durable accept signal", signal);
-      const oldReply = `${marker}:${oldGeneration}`;
-      const prematureReply = queue.events.find((e) => isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, oldReply));
+      const prematureReply = queue.events.find((e) => isDurableReplyEvent(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, marker));
       if (prematureReply) {
         messageIds.bot.add(String(prematureReply.message.id));
         throw new Error("Durable reply completed before interruption; replay was not exercised");
@@ -574,20 +580,21 @@ async function main() {
       await gateway.start(signal);
       const replacementReply = `${marker}:${replacementGeneration}`;
       const reply = await queue.waitFor((e) => {
-        if (isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, oldReply)) {
-          messageIds.bot.add(String(e.message.id));
-          throw new Error("Durable reply originated from the pre-restart gateway");
+        if (!isDurableReplyEvent(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, marker)) return false;
+        messageIds.bot.add(String(e.message.id));
+        if (!isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, replacementReply)) {
+          throw new Error("Durable reply did not contain the replacement gateway generation");
         }
-        return isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, replacementReply);
+        return true;
       }, timeoutMs, "durable replay reply", signal);
       messageIds.bot.add(String(reply.message.id));
       const settleDeadline = Date.now() + 10000;
       while (Date.now() < settleDeadline) { await queue.poll(signal); await delay(500, undefined, { signal }); }
-      const oldReplies = queue.events.filter((e) => isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, oldReply));
-      for (const event of oldReplies) messageIds.bot.add(String(event.message.id));
-      const replies = queue.events.filter((e) => isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, replacementReply));
-      if (oldReplies.length || replies.length !== 1) {
-        throw new Error(`Durable receive produced ${oldReplies.length} old-generation and ${replies.length} replacement replies; expected zero and one`);
+      const replies = queue.events.filter((e) => isDurableReplyEvent(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, marker));
+      for (const event of replies) messageIds.bot.add(String(event.message.id));
+      const validReplies = replies.filter((e) => isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, replacementReply));
+      if (replies.length !== 1 || validReplies.length !== 1) {
+        throw new Error(`Durable receive produced ${replies.length} attributable replies (${validReplies.length} valid); expected exactly one valid replacement reply`);
       }
     });
   } catch (error) {

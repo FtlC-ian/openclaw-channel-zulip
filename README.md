@@ -137,10 +137,22 @@ Add the plugin id to `plugins.allow` in `~/.openclaw/openclaw.json`:
       // Group policy: "open" | "allowlist" | "disabled"
       "groupPolicy": "open",
 
-      // Optional reaction hooks (defaults no longer add start/success emoji spam)
+      // Truthful lifecycle reactions on the inbound message. The defaults show
+      // queued, thinking, tool category, compaction, stalls, done/error, and
+      // a separate robot while one or more spawned children are active.
       "reactions": {
-        "enabled": false,
-        "onError": "warning"
+        "enabled": true,
+        "clearOnFinish": true,
+        "subagent": "robot_face",
+        "timing": {
+          "stallSoftMs": 10000,
+          "stallHardMs": 30000
+        },
+        "emojis": {
+          "thinking": "brain",
+          "coding": "computer",
+          "web": "globe_with_meridians"
+        }
       },
 
       // Model-controlled reaction prompt guidance: "off" | "minimal" | "extensive"
@@ -172,6 +184,24 @@ Then restart the Gateway:
 ```sh
 openclaw gateway restart
 ```
+
+### Lifecycle reactions
+
+When `channels.zulip.reactions.enabled` is not `false`, the plugin uses OpenClaw's
+public status-reaction controller. Reactions reflect actual queued, reasoning,
+tool-category, compaction, stall, done, and error events; native Zulip typing
+continues independently and no placeholder message is posted. `clearOnFinish`
+defaults to `true`, so the terminal reaction is removed after its configured
+hold. Set it to `false` to retain the final done/error reaction.
+
+The dedicated `subagent` reaction is driven only by `subagent_spawned` and
+`subagent_ended` hooks. It remains while at least one child run bound to that
+exact inbound turn is active, including concurrent children and children that
+outlive the requester's reply. The default is `robot_face`. Built-in lifecycle
+Unicode values and named Zulip emoji are supported. Account-level
+`reactions.emojis` and `reactions.timing` override global
+`messages.statusReactions` values. The legacy `onStart`, `onSuccess`, and
+`onError` keys remain accepted as queued, done, and error aliases.
 
 ---
 

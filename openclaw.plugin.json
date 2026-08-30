@@ -28,6 +28,36 @@
           "secretInput": {
             "anyOf": [{ "type": "string" }, { "$ref": "#/$defs/secretRef" }]
           },
+          "statusReactionEmojis": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "queued": { "type": "string" },
+              "thinking": { "type": "string" },
+              "tool": { "type": "string" },
+              "coding": { "type": "string" },
+              "web": { "type": "string" },
+              "deploy": { "type": "string" },
+              "build": { "type": "string" },
+              "concierge": { "type": "string" },
+              "done": { "type": "string" },
+              "error": { "type": "string" },
+              "stallSoft": { "type": "string" },
+              "stallHard": { "type": "string" },
+              "compacting": { "type": "string" }
+            }
+          },
+          "statusReactionTiming": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "debounceMs": { "type": "integer", "minimum": 0 },
+              "stallSoftMs": { "type": "integer", "minimum": 0 },
+              "stallHardMs": { "type": "integer", "minimum": 0 },
+              "doneHoldMs": { "type": "integer", "minimum": 0 },
+              "errorHoldMs": { "type": "integer", "minimum": 0 }
+            }
+          },
           "zulipAccount": {
             "type": "object",
             "additionalProperties": true,
@@ -72,7 +102,10 @@
                   "clearOnFinish": { "type": "boolean" },
                   "onStart": { "type": "string" },
                   "onSuccess": { "type": "string" },
-                  "onError": { "type": "string" }
+                  "onError": { "type": "string" },
+                  "emojis": { "$ref": "#/$defs/statusReactionEmojis" },
+                  "timing": { "$ref": "#/$defs/statusReactionTiming" },
+                  "subagent": { "type": "string" }
                 }
               },
               "agentReactionGuidance": { "type": "string", "enum": ["off", "minimal", "extensive"] },
@@ -135,7 +168,10 @@
               "clearOnFinish": { "type": "boolean" },
               "onStart": { "type": "string" },
               "onSuccess": { "type": "string" },
-              "onError": { "type": "string" }
+              "onError": { "type": "string" },
+              "emojis": { "$ref": "#/$defs/statusReactionEmojis" },
+              "timing": { "$ref": "#/$defs/statusReactionTiming" },
+              "subagent": { "type": "string" }
             }
           },
           "agentReactionGuidance": { "type": "string", "enum": ["off", "minimal", "extensive"] },
@@ -198,7 +234,11 @@
           "label": "Require @mention in Streams"
         },
         "reactions.enabled": {
-          "label": "Reaction Indicators"
+          "label": "Lifecycle Reaction Indicators"
+        },
+        "reactions.subagent": {
+          "label": "Active Subagent Reaction",
+          "placeholder": "robot_face"
         },
         "agentReactionGuidance": {
           "label": "Agent Reaction Guidance",
@@ -246,7 +286,11 @@
       "label": "Require @mention in Streams"
     },
     "reactions.enabled": {
-      "label": "Reaction Indicators"
+      "label": "Lifecycle Reaction Indicators"
+    },
+    "reactions.subagent": {
+      "label": "Active Subagent Reaction",
+      "placeholder": "robot_face"
     },
     "agentReactionGuidance": {
       "label": "Agent Reaction Guidance",

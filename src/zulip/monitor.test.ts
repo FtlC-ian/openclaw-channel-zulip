@@ -122,6 +122,8 @@ const state = vi.hoisted(() => {
     downloadedUploads: [] as Array<{ buffer: Buffer; contentType: string; filename: string }>,
     extractedUploadUrls: [] as string[],
     client: { authHeader: "fake-auth" },
+    addZulipReaction: vi.fn(async () => {}),
+    removeZulipReaction: vi.fn(async () => {}),
     botUser: {
       id: 999,
       email: "debbie-bot@zlp.pubnerd.app",
@@ -181,8 +183,8 @@ vi.mock("./client.js", () => ({
   getZulipEventsWithRetry: getZulipEventsWithRetryMock,
   deleteZulipQueue: deleteZulipQueueMock,
   sendZulipTyping: vi.fn(async () => {}),
-  addZulipReaction: vi.fn(async () => {}),
-  removeZulipReaction: vi.fn(async () => {}),
+  addZulipReaction: state.addZulipReaction,
+  removeZulipReaction: state.removeZulipReaction,
 }));
 
 vi.mock("./accounts.js", () => ({
@@ -242,7 +244,8 @@ vi.mock("openclaw/plugin-sdk/channel-inbound", async (importOriginal) => ({
   logInboundDrop: vi.fn(),
 }));
 
-vi.mock("openclaw/plugin-sdk/channel-feedback", () => ({
+vi.mock("openclaw/plugin-sdk/channel-feedback", async (importOriginal) => ({
+  ...await importOriginal<typeof import("openclaw/plugin-sdk/channel-feedback")>(),
   logTypingFailure: vi.fn(),
 }));
 
@@ -342,6 +345,8 @@ describe("monitorZulipProvider", () => {
     deleteZulipQueueMock.mockClear();
     fetchZulipSubscriptionsMock.mockClear();
     fetchZulipStreamMock.mockClear();
+    state.addZulipReaction.mockClear();
+    state.removeZulipReaction.mockClear();
   });
 
   it("wires typing idle cleanup into the reply dispatcher", async () => {
@@ -356,8 +361,99 @@ describe("monitorZulipProvider", () => {
 
     const dispatcherCall = state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mock.calls[0]?.[0]?.dispatcherOptions;
     const typingCallbacks = typingCallbacksMock.mock.results[0]?.value;
-    expect(dispatcherCall?.onReplyStart).toBe(typingCallbacks?.onReplyStart);
+    await dispatcherCall?.onReplyStart?.();
+    expect(typingCallbacks?.onReplyStart).toHaveBeenCalledTimes(1);
     expect(dispatcherCall?.onIdle).toBe(typingCallbacks?.onIdle);
+  });
+
+  it("reports real model, tool, compaction, and terminal lifecycle states", async () => {
+    state.account.config.reactions = {
+      enabled: true,
+      timing: {
+        debounceMs: 0,
+        stallSoftMs: 60_000,
+        stallHardMs: 120_000,
+        doneHoldMs: 0,
+      },
+    };
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
+      async ({ dispatcherOptions, replyOptions }) => {
+        await dispatcherOptions.onReplyStart?.();
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        await replyOptions.onToolStart?.({ name: "exec", phase: "start" });
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        await replyOptions.onToolStart?.({ name: "exec", phase: "end" });
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        await replyOptions.onCompactionStart?.();
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        await replyOptions.onCompactionEnd?.();
+        await new Promise((resolve) => setTimeout(resolve, 1));
+      },
+    );
+    state.pollResponses = [
+      {
+        result: "success",
+        events: [{ id: 1, type: "message", message: makeChannelMessage(1098) }],
+      },
+    ];
+
+    await runMonitorOnce();
+
+    const addedNames = state.addZulipReaction.mock.calls.map((call) => call[1].emojiName);
+    expect(addedNames).toEqual(expect.arrayContaining([
+      "eyes",
+      "brain",
+      "computer",
+      "compression",
+      "check",
+    ]));
+    expect(state.removeZulipReaction).toHaveBeenCalledWith(
+      state.client,
+      expect.objectContaining({ messageId: "1098", emojiName: "eyes" }),
+    );
+    expect(state.removeZulipReaction).toHaveBeenCalledWith(
+      state.client,
+      expect.objectContaining({ messageId: "1098", emojiName: "check" }),
+    );
+  });
+
+  it("uses the terminal error state when reply dispatch throws", async () => {
+    state.account.config.reactions = { enabled: true };
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockRejectedValue(
+      new Error("synthetic dispatch failure"),
+    );
+    state.pollResponses = [
+      {
+        result: "success",
+        events: [{ id: 1, type: "message", message: makeChannelMessage(1097) }],
+      },
+    ];
+
+    await runMonitorOnce();
+
+    expect(state.addZulipReaction).toHaveBeenCalledWith(
+      state.client,
+      expect.objectContaining({ messageId: "1097", emojiName: "cross_mark" }),
+    );
+  });
+
+  it("continues reply dispatch when the Zulip reaction API fails", async () => {
+    state.account.config.reactions = { enabled: true };
+    state.addZulipReaction.mockRejectedValueOnce(new Error("reaction unavailable"));
+    state.pollResponses = [
+      {
+        result: "success",
+        events: [{ id: 1, type: "message", message: makeChannelMessage(1096) }],
+      },
+    ];
+
+    await runMonitorOnce();
+
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+    expect(state.addZulipReaction).toHaveBeenCalledWith(
+      state.client,
+      expect.objectContaining({ messageId: "1096", emojiName: "eyes" }),
+    );
   });
 
   it("forwards presentation and channel data only with the first text chunk", async () => {

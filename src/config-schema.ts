@@ -21,6 +21,32 @@ const BlockStreamingCoalesceSchema = z
 
 const MarkdownTableModeSchema = z.enum(["native", "codeblock", "disabled"]);
 const AgentReactionGuidanceSchema = z.enum(["off", "minimal", "extensive"]);
+const StatusReactionEmojisSchema = z
+  .object({
+    queued: z.string().optional(),
+    thinking: z.string().optional(),
+    tool: z.string().optional(),
+    coding: z.string().optional(),
+    web: z.string().optional(),
+    deploy: z.string().optional(),
+    build: z.string().optional(),
+    concierge: z.string().optional(),
+    done: z.string().optional(),
+    error: z.string().optional(),
+    stallSoft: z.string().optional(),
+    stallHard: z.string().optional(),
+    compacting: z.string().optional(),
+  })
+  .strict();
+const StatusReactionTimingSchema = z
+  .object({
+    debounceMs: z.number().int().nonnegative().optional(),
+    stallSoftMs: z.number().int().nonnegative().optional(),
+    stallHardMs: z.number().int().nonnegative().optional(),
+    doneHoldMs: z.number().int().nonnegative().optional(),
+    errorHoldMs: z.number().int().nonnegative().optional(),
+  })
+  .strict();
 
 const OptionalSecretInputSchema = buildOptionalSecretInputSchema();
 
@@ -87,7 +113,11 @@ const ZulipAccountSchemaBase = z
         onStart: z.string().optional(),
         onSuccess: z.string().optional(),
         onError: z.string().optional(),
+        emojis: StatusReactionEmojisSchema.optional(),
+        timing: StatusReactionTimingSchema.optional(),
+        subagent: z.string().optional(),
       })
+      .strict()
       .optional(),
     agentReactionGuidance: AgentReactionGuidanceSchema.optional(),
     textChunkLimit: z.number().int().positive().optional(),

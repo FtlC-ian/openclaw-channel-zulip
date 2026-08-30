@@ -8,7 +8,11 @@ import type {
 } from "../sdk.js";
 import { createChannelPairingController } from "../sdk.js";
 import { resolveControlCommandGate } from "openclaw/plugin-sdk/command-auth-native";
-import { logTypingFailure } from "openclaw/plugin-sdk/channel-feedback";
+import {
+  createStatusReactionController,
+  DEFAULT_TIMING,
+  logTypingFailure,
+} from "openclaw/plugin-sdk/channel-feedback";
 import { formatInboundEnvelope, logInboundDrop } from "openclaw/plugin-sdk/channel-inbound";
 import { mergeDmAllowFromSources, resolveGroupAllowFromSources } from "openclaw/plugin-sdk/allow-from";
 import { readChannelIngressStoreAllowFromForDmPolicy } from "openclaw/plugin-sdk/channel-ingress-runtime";
@@ -46,7 +50,13 @@ import {
 } from "./durable-receive.js";
 import { buildZulipStreamConversation } from "../session-conversation.js";
 import { sendMessageZulip } from "./send.js";
-import { downloadZulipUpload, extractZulipUploadUrls, normalizeZulipEmojiName, sanitizeUploadFilename } from "./uploads.js";
+import { downloadZulipUpload, extractZulipUploadUrls, sanitizeUploadFilename } from "./uploads.js";
+import {
+  createZulipStatusReactionAdapter,
+  resolveZulipReactionSpec,
+  resolveZulipStatusReactionConfig,
+} from "./status-reactions.js";
+import { registerZulipSubagentReactionContext } from "./subagent-reactions.js";
 
 export type MonitorZulipOpts = {
   apiKey?: string;
@@ -413,12 +423,10 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
   const mediaMaxBytes =
     (account.config.mediaMaxMb || cfg.agents?.defaults?.mediaMaxMb || 5) * 1024 * 1024;
 
-  const reactionConfig = account.config.reactions ?? {};
-  const reactionsEnabled = reactionConfig.enabled !== false;
-  const reactionClearOnFinish = reactionConfig.clearOnFinish !== false;
-  const reactionStart = normalizeZulipEmojiName(reactionConfig.onStart ?? "");
-  const reactionSuccess = normalizeZulipEmojiName(reactionConfig.onSuccess ?? "");
-  const reactionError = normalizeZulipEmojiName(reactionConfig.onError ?? "warning");
+  const statusReactionConfig = resolveZulipStatusReactionConfig({
+    accountConfig: account.config,
+    globalStatusReactions: cfg.messages?.statusReactions,
+  });
 
   const pairing = createChannelPairingController({
     core,
@@ -836,30 +844,55 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       `zulip inbound: from=${ctxPayload.From} len=${bodyText.length} preview="${previewLine}"`,
     );
 
-    const addReactionSafe = async (emojiName: string) => {
-      if (!reactionsEnabled || !emojiName) {
+    const addReactionSafe = async (reaction: {
+      emojiName: string;
+      emojiCode?: string;
+      reactionType?: string;
+    }) => {
+      if (!statusReactionConfig.enabled || !reaction.emojiName) {
         return;
       }
       try {
-        await addZulipReaction(client, { messageId, emojiName });
+        await addZulipReaction(client, { messageId, ...reaction });
       } catch (err) {
-        logVerboseMessage(`zulip: failed to add reaction ${emojiName}: ${String(err)}`);
+        logVerboseMessage(`zulip: failed to add reaction ${reaction.emojiName}: ${String(err)}`);
       }
     };
-    const removeReactionSafe = async (emojiName: string) => {
-      if (!reactionsEnabled || !emojiName) {
+    const removeReactionSafe = async (reaction: {
+      emojiName: string;
+      emojiCode?: string;
+      reactionType?: string;
+    }) => {
+      if (!statusReactionConfig.enabled || !reaction.emojiName) {
         return;
       }
       try {
-        await removeZulipReaction(client, { messageId, emojiName });
+        await removeZulipReaction(client, { messageId, ...reaction });
       } catch (err) {
-        logVerboseMessage(`zulip: failed to remove reaction ${emojiName}: ${String(err)}`);
+        logVerboseMessage(`zulip: failed to remove reaction ${reaction.emojiName}: ${String(err)}`);
       }
     };
+    const statusReactions = createStatusReactionController({
+      enabled: statusReactionConfig.enabled,
+      adapter: createZulipStatusReactionAdapter({
+        add: addReactionSafe,
+        remove: removeReactionSafe,
+      }),
+      initialEmoji: statusReactionConfig.emojis.queued,
+      emojis: statusReactionConfig.emojis,
+      timing: statusReactionConfig.timing,
+      onError: (err) => {
+        logVerboseMessage(`zulip: status reaction update failed: ${String(err)}`);
+      },
+    });
+    statusReactions.setQueued();
 
-    if (reactionsEnabled) {
-      await addReactionSafe(reactionStart);
-    }
+    const subagentReaction = resolveZulipReactionSpec(statusReactionConfig.subagent);
+    const subagentContext = registerZulipSubagentReactionContext({
+      requesterSessionKey: String(ctxPayload.SessionKey ?? sessionKey),
+      show: () => addReactionSafe(subagentReaction),
+      hide: () => removeReactionSafe(subagentReaction),
+    });
 
     const textLimit = core.channel.text.resolveTextChunkLimit(cfg, "zulip", account.accountId, {
       fallbackLimit: account.textChunkLimit ?? 4000,
@@ -915,7 +948,10 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     const dispatcherOptions = {
       ...prefixOptions,
       humanDelay: core.channel.reply.resolveHumanDelayConfig(cfg, route.agentId),
-      onReplyStart: typingCallbacks.onReplyStart,
+      onReplyStart: async () => {
+        await typingCallbacks.onReplyStart();
+        await statusReactions.setThinking();
+      },
       onIdle: typingCallbacks.onIdle,
       deliver: async (payload: ReplyPayload) => {
         const mediaUrls = payload.mediaUrls ?? (payload.mediaUrl ? [payload.mediaUrl] : []);
@@ -965,30 +1001,53 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
 
     let dispatchError: unknown;
     try {
-      await core.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
-        ctx: ctxPayload,
-        cfg,
-        dispatcherOptions,
-        replyOptions: {
-          disableBlockStreaming:
-            typeof account.blockStreaming === "boolean" ? !account.blockStreaming : undefined,
-          onModelSelected,
-        },
-      });
+      await subagentContext.run(() =>
+        core.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
+          ctx: ctxPayload,
+          cfg,
+          dispatcherOptions,
+          replyOptions: {
+            disableBlockStreaming:
+              typeof account.blockStreaming === "boolean" ? !account.blockStreaming : undefined,
+            onModelSelected,
+            allowToolLifecycleWhenProgressHidden: statusReactionConfig.enabled ? true : undefined,
+            onToolStart: async (payload) => {
+              if (payload.phase === "end") {
+                statusReactions.cancelPending();
+                await statusReactions.setThinking();
+                return;
+              }
+              await statusReactions.setTool(payload.name);
+            },
+            onCompactionStart: async () => {
+              await statusReactions.setCompacting();
+            },
+            onCompactionEnd: async () => {
+              statusReactions.cancelPending();
+              await statusReactions.setThinking();
+            },
+          },
+        }),
+      );
     } catch (err) {
       dispatchError = err;
       runtime.error?.(`zulip reply failed: ${String(err)}`);
     }
 
-    if (reactionsEnabled) {
-      if (reactionClearOnFinish) {
-        await removeReactionSafe(reactionStart);
-      }
-      if (dispatchError) {
-        await addReactionSafe(reactionError);
-      } else {
-        await addReactionSafe(reactionSuccess);
-      }
+    await subagentContext.finish();
+    if (dispatchError) {
+      await statusReactions.setError();
+    } else {
+      await statusReactions.setDone();
+    }
+    if (account.config.reactions?.clearOnFinish !== false) {
+      const terminalHoldMs = dispatchError
+        ? (statusReactionConfig.timing?.errorHoldMs ?? DEFAULT_TIMING.errorHoldMs)
+        : (statusReactionConfig.timing?.doneHoldMs ?? DEFAULT_TIMING.doneHoldMs);
+      const cleanupTimer = setTimeout(() => {
+        void statusReactions.clear();
+      }, terminalHoldMs);
+      cleanupTimer.unref?.();
     }
 
     opts.statusSink?.({ lastInboundAt: Date.now() });

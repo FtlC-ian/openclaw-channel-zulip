@@ -65,6 +65,21 @@ export function isBotMessage(event, botEmail, marker) {
   return isExactRenderedContent(event.message?.content, marker);
 }
 
+export function isPrivateBotMessage(event, botEmail, actorEmail, marker) {
+  if (!isBotMessage(event, botEmail, marker) || event.message?.type !== "private") return false;
+  const recipients = Array.isArray(event.message?.display_recipient) ? event.message.display_recipient : [];
+  const emails = recipients.map((recipient) => recipient?.email).filter(Boolean);
+  return emails.includes(botEmail) && emails.includes(actorEmail);
+}
+
+export function isPrivateTypingEvent(event, botEmail, actorEmail, op) {
+  if (event?.type !== "typing" || event.op !== op) return false;
+  const senderEmail = event.sender?.email ?? event.sender_email;
+  if (senderEmail !== botEmail || (event.message_type && !["direct", "private"].includes(event.message_type))) return false;
+  const recipients = Array.isArray(event.recipients) ? event.recipients : [];
+  return recipients.length === 0 || recipients.some((recipient) => (recipient?.email ?? recipient) === actorEmail);
+}
+
 export function isExactRenderedContent(content, expected) {
   const rendered = String(content ?? "");
   return rendered === expected || rendered === `<p>${escapeHtml(expected)}</p>`;
@@ -200,11 +215,13 @@ export class EventQueue {
 }
 
 export class Gateway {
-  constructor(port, { termTimeoutMs = 10000, killTimeoutMs = 5000, healthProbe } = {}) {
+  constructor(port, { termTimeoutMs = 10000, killTimeoutMs = 5000, healthProbe, healthProbeSpawn = spawn, healthProbeTimeoutMs = 5000 } = {}) {
     this.port = String(port);
     this.termTimeoutMs = termTimeoutMs;
     this.killTimeoutMs = killTimeoutMs;
     this.healthProbe = healthProbe;
+    this.healthProbeSpawn = healthProbeSpawn;
+    this.healthProbeTimeoutMs = healthProbeTimeoutMs;
   }
   async start(signal) {
     signal?.throwIfAborted();
@@ -229,11 +246,25 @@ export class Gateway {
   async isHealthy() {
     if (this.healthProbe) return this.healthProbe();
     return new Promise((resolve) => {
-      const probe = spawn("pnpm", ["exec", "openclaw", "gateway", "health", "--port", this.port, "--timeout", "2000"], { stdio: "ignore", env: process.env });
+      const probe = this.healthProbeSpawn("pnpm", ["exec", "openclaw", "gateway", "health", "--port", this.port, "--timeout", "2000"], {
+        stdio: "ignore", env: process.env, detached: process.platform !== "win32",
+      });
       let settled = false;
-      const finish = (value) => { if (!settled) { settled = true; resolve(value); } };
+      let timeout;
+      const finish = (value) => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timeout);
+          resolve(value);
+        }
+      };
       probe.once("error", () => finish(false));
       probe.once("exit", (code) => finish(code === 0));
+      timeout = setTimeout(() => {
+        try { signalProcessTree(probe, "SIGKILL"); } catch {}
+        finish(false);
+      }, this.healthProbeTimeoutMs);
+      timeout.unref?.();
     });
   }
   async waitUntilUnhealthy(timeoutMs) {
@@ -350,7 +381,7 @@ async function main() {
 
     await scenario("dm-round-trip", async (signal) => {
       const marker = `${runId}:dm-ok`; await sendDm(command(`echo ${marker}`), signal);
-      const event = await queue.waitFor((e) => isBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, marker), timeoutMs, "DM reply", signal);
+      const event = await queue.waitFor((e) => isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, marker), timeoutMs, "DM reply", signal);
       messageIds.bot.add(String(event.message.id));
     });
 
@@ -365,9 +396,14 @@ async function main() {
     await scenario("typing-and-lifecycle-reactions", async (signal) => {
       const marker = `${runId}:lifecycle-ok`; const eventStart = queue.events.length;
       const inboundId = await sendDm(command(`lifecycle ${marker}`), signal);
-      const reply = await queue.waitFor((e) => isBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, marker), timeoutMs, "lifecycle reply", signal);
+      const reply = await queue.waitFor((e) => isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, marker), timeoutMs, "lifecycle reply", signal);
       messageIds.bot.add(String(reply.message.id));
-      await queue.waitFor((e) => queue.events.indexOf(e) >= eventStart && e.type === "typing" && e.op === "stop", timeoutMs, "typing stop cleanup", signal);
+      await queue.waitFor((e) => {
+        const stopIndex = queue.events.indexOf(e);
+        if (stopIndex < eventStart || !isPrivateTypingEvent(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, "stop")) return false;
+        return queue.events.slice(eventStart, stopIndex).some((candidate) =>
+          isPrivateTypingEvent(candidate, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, "start"));
+      }, timeoutMs, "ordered typing start/stop cleanup", signal);
       const deadline = Date.now() + timeoutMs;
       let summary;
       while (Date.now() < deadline) {
@@ -379,22 +415,20 @@ async function main() {
       if (!summary?.added.length) throw new Error("No lifecycle reaction was observed on the inbound message");
       if (!summary.sawSubagent) throw new Error("No truthful subagent lifecycle reaction was observed");
       if (!summary.allRemoved) throw new Error("Lifecycle reactions were not cleaned up after completion");
-      const startedTyping = queue.events.slice(eventStart).some((e) => e.type === "typing" && e.op === "start");
-      if (!startedTyping) throw new Error("Typing start was not observed");
     });
 
     await scenario("explicit-reaction", async (signal) => {
       const marker = `${runId}:reacted`;
       const inboundId = await sendDm(command(`react 🎉 ${marker}`), signal);
       await queue.waitFor((e) => e.type === "reaction" && e.op === "add" && String(e.message_id) === inboundId && (e.emoji_name === "tada" || e.emoji_code === "1f389"), timeoutMs, "explicit reaction", signal);
-      const reply = await queue.waitFor((e) => isBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, marker), timeoutMs, "reaction acknowledgement", signal);
+      const reply = await queue.waitFor((e) => isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, marker), timeoutMs, "reaction acknowledgement", signal);
       messageIds.bot.add(String(reply.message.id));
     });
 
     await scenario("edit-delete", async (signal) => {
       const before = `${runId}:before-edit`; const after = `${runId}:after-edit`;
       await sendDm(command(`edit-delete ${before} ${after}`), signal);
-      const created = await queue.waitFor((e) => isBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, before), timeoutMs, "message before edit", signal);
+      const created = await queue.waitFor((e) => isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, before), timeoutMs, "message before edit", signal);
       const id = String(created.message.id); messageIds.bot.add(id);
       await queue.waitFor((e) => e.type === "update_message" && String(e.message_id) === id && isExactRenderedContent(e.content, after), timeoutMs, "message edit", signal);
       await queue.waitFor((e) => e.type === "delete_message" && (e.message_ids ?? [e.message_id]).map(String).includes(id), timeoutMs, "message delete", signal);
@@ -404,7 +438,7 @@ async function main() {
     await scenario("upload-download", async (signal) => {
       const inboundMarker = `${runId}:inbound-upload`; const uri = await actor.upload(`${runId}.txt`, inboundMarker, signal);
       await sendDm(`${command(`read-upload ${inboundMarker}`)}\n[attachment](${uri})`, signal);
-      const inboundReply = await queue.waitFor((e) => isBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, inboundMarker), timeoutMs, "inbound upload read", signal);
+      const inboundReply = await queue.waitFor((e) => isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, inboundMarker), timeoutMs, "inbound upload read", signal);
       messageIds.bot.add(String(inboundReply.message.id));
       const outboundMarker = `${runId}:outbound-upload`; await sendDm(command(`send-upload ${outboundMarker}`), signal);
       const outbound = await queue.waitFor((e) => e.type === "message" && e.message?.sender_email === env.ZULIP_SMOKE_BOT_EMAIL && /user_uploads\//.test(String(e.message?.content ?? "")), timeoutMs, "outbound upload", signal);
@@ -417,7 +451,9 @@ async function main() {
       const question = `${runId}:poll`; const optionA = `smoke-choice:${runId}:interactive-ok`; const optionB = `${runId}:beta`;
       await sendDm(command(`poll ${question} ${optionA} ${optionB}`), signal);
       const poll = await queue.waitFor((e) => {
-        if (e.type !== "message" || e.message?.sender_email !== env.ZULIP_SMOKE_BOT_EMAIL) return false;
+        if (e.type !== "message" || e.message?.type !== "private" || e.message?.sender_email !== env.ZULIP_SMOKE_BOT_EMAIL) return false;
+        const recipients = Array.isArray(e.message?.display_recipient) ? e.message.display_recipient : [];
+        if (!recipients.some((recipient) => recipient?.email === env.ZULIP_SMOKE_USER_EMAIL)) return false;
         const raw = e.message?.widget_content;
         let widget = raw;
         if (typeof raw === "string") { try { widget = JSON.parse(raw); } catch { return false; } }
@@ -425,22 +461,22 @@ async function main() {
       }, timeoutMs, "native poll", signal);
       messageIds.bot.add(String(poll.message.id));
       await sendDm(optionA, signal);
-      const reply = await queue.waitFor((e) => isBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, `${runId}:interactive-ok`), timeoutMs, "interactive reply", signal);
+      const reply = await queue.waitFor((e) => isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, `${runId}:interactive-ok`), timeoutMs, "interactive reply", signal);
       messageIds.bot.add(String(reply.message.id));
     });
 
     await scenario("durable-receive-completion-deduplication", async (signal) => {
       const marker = `${runId}:durable-ok`; const inboundId = await sendDm(command(`durable ${marker}`), signal);
       await queue.waitFor((e) => e.type === "reaction" && e.op === "add" && String(e.message_id) === inboundId, timeoutMs, "durable accept signal", signal);
-      if (queue.events.some((e) => isBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, marker))) {
+      if (queue.events.some((e) => isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, marker))) {
         throw new Error("Durable reply completed before interruption; replay was not exercised");
       }
       await gateway.restart(signal);
-      const reply = await queue.waitFor((e) => isBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, marker), timeoutMs, "durable replay reply", signal);
+      const reply = await queue.waitFor((e) => isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, marker), timeoutMs, "durable replay reply", signal);
       messageIds.bot.add(String(reply.message.id));
       const settleDeadline = Date.now() + 10000;
       while (Date.now() < settleDeadline) { await queue.poll(signal); await delay(500, undefined, { signal }); }
-      const replies = queue.events.filter((e) => isBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, marker));
+      const replies = queue.events.filter((e) => isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, marker));
       if (replies.length !== 1) throw new Error(`Durable receive produced ${replies.length} visible replies; expected exactly one`);
     });
   } finally {

@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { EventEmitter, once } from "node:events";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { buildApiUrl, EventQueue, Gateway, isBotMessage, isChildRunning, isExactPoll, isExactRenderedContent, isExactUtf8, lifecycleSummary, normalizeScenarioError, redactError, resolveUploadUrl, signalProcessTree, validateEnvironment, waitForProcessTreeExit } from "./run.mjs";
+import { buildApiUrl, EventQueue, Gateway, isBotMessage, isChildRunning, isExactPoll, isExactRenderedContent, isExactUtf8, isPrivateBotMessage, isPrivateTypingEvent, lifecycleSummary, normalizeScenarioError, redactError, resolveUploadUrl, signalProcessTree, validateEnvironment, waitForProcessTreeExit } from "./run.mjs";
 
 const validEnv = {
   ZULIP_URL: "https://zulip.example.test/path",
@@ -45,6 +45,22 @@ test("matches only marked messages from the configured bot", () => {
   assert.equal(isBotMessage({ ...event, message: { ...event.message, content: "<p>marker</p>" } }, "bot@example.test", "marker"), true);
   assert.equal(isBotMessage({ ...event, message: { ...event.message, content: "prefix marker" } }, "bot@example.test", "marker"), false);
   assert.equal(isBotMessage(event, "other@example.test", "marker"), false);
+});
+
+test("requires private bot replies with the expected participants", () => {
+  const event = { type: "message", message: { type: "private", sender_email: "bot@example.test", content: "marker", display_recipient: [
+    { email: "bot@example.test" }, { email: "user@example.test" },
+  ] } };
+  assert.equal(isPrivateBotMessage(event, "bot@example.test", "user@example.test", "marker"), true);
+  assert.equal(isPrivateBotMessage({ ...event, message: { ...event.message, type: "stream" } }, "bot@example.test", "user@example.test", "marker"), false);
+  assert.equal(isPrivateBotMessage({ ...event, message: { ...event.message, display_recipient: [{ email: "bot@example.test" }] } }, "bot@example.test", "user@example.test", "marker"), false);
+});
+
+test("matches private typing events from the configured bot", () => {
+  const event = { type: "typing", op: "start", message_type: "direct", sender: { email: "bot@example.test" }, recipients: [{ email: "user@example.test" }] };
+  assert.equal(isPrivateTypingEvent(event, "bot@example.test", "user@example.test", "start"), true);
+  assert.equal(isPrivateTypingEvent({ ...event, op: "stop" }, "bot@example.test", "user@example.test", "start"), false);
+  assert.equal(isPrivateTypingEvent({ ...event, sender: { email: "other@example.test" } }, "bot@example.test", "user@example.test", "start"), false);
 });
 
 test("matches complete raw or Zulip-rendered content", () => {
@@ -120,6 +136,25 @@ test("waits for gateway exit after escalating to SIGKILL", async () => {
   await Promise.all([gateway.stop(), gateway.stop()]);
   assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
   assert.equal(gateway.process, undefined);
+});
+
+test("kills a health probe that exceeds its process deadline", async () => {
+  const probe = new EventEmitter();
+  probe.exitCode = null;
+  probe.signalCode = null;
+  probe.kill = (signal) => {
+    probe.signalCode = signal;
+    setImmediate(() => probe.emit("exit", null, signal));
+    return true;
+  };
+  const gateway = new Gateway(18789, { healthProbeSpawn: () => probe, healthProbeTimeoutMs: 5 });
+  const keepAlive = setInterval(() => {}, 1000);
+  try {
+    assert.equal(await gateway.isHealthy(), false);
+    assert.equal(probe.signalCode, "SIGKILL");
+  } finally {
+    clearInterval(keepAlive);
+  }
 });
 
 test("treats signal-terminated children as stopped", () => {

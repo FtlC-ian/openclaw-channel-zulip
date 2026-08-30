@@ -790,7 +790,9 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     const effectiveWasMentioned = wasMentioned || shouldBypassMention || oncharTriggered;
     const canDetectMention = Boolean(botUsername) || mentionRegexes.length > 0;
 
-    if (oncharEnabled && !oncharTriggered && !wasMentioned && !isControlCommand) {
+    const shouldApplyOncharGate =
+      oncharEnabled && (kind === "dm" || inboundStreamPolicy?.requireMention !== false);
+    if (shouldApplyOncharGate && !oncharTriggered && !wasMentioned && !isControlCommand) {
       return;
     }
 

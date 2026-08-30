@@ -343,6 +343,8 @@ describe("monitorZulipProvider", () => {
       return { code: "123456", created: false };
     });
     state.account.streams = ["debbie"];
+    state.account.requireMention = false;
+    state.account.chatmode = "normal";
     state.account.config = {
       dmPolicy: "open",
       groupPolicy: "open",
@@ -1301,6 +1303,68 @@ describe("monitorZulipProvider", () => {
     for (const store of state.durableStores.values()) {
       await expect(store.entries()).resolves.toEqual([]);
     }
+  });
+
+  it.each([
+    { label: "explicitly disabled", requireMention: false, expectedDispatches: 1, messageId: 3101 },
+    { label: "explicitly enabled", requireMention: true, expectedDispatches: 0, messageId: 3102 },
+    { label: "inherited", requireMention: undefined, expectedDispatches: 0, messageId: 3103 },
+  ])(
+    "applies onchar gating when per-stream mention policy is $label",
+    async ({ requireMention, expectedDispatches, messageId }) => {
+      state.account.chatmode = "onchar";
+      state.account.config = {
+        ...state.account.config,
+        streamOverrides: {
+          debbie: requireMention === undefined ? {} : { requireMention },
+        },
+      };
+      state.core.channel.groups.resolveRequireMention.mockImplementation(
+        ({ requireMentionOverride }: { requireMentionOverride?: boolean }) =>
+          requireMentionOverride ?? false,
+      );
+      state.pollResponses = [{
+        result: "success",
+        events: [{ id: 1, type: "message", message: makeChannelMessage(messageId) }],
+      }];
+
+      await runMonitorOnce();
+
+      expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher)
+        .toHaveBeenCalledTimes(expectedDispatches);
+    },
+  );
+
+  it("preserves onchar gating for DMs and its authorized control-command bypass", async () => {
+    state.account.chatmode = "onchar";
+    state.account.config = {
+      ...state.account.config,
+      dmPolicy: "pairing",
+    };
+    state.pairingAllowFrom = ["user8@zlp.pubnerd.app"];
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 1, type: "message", message: makePrivateMessage(3104) }],
+    }];
+
+    await runMonitorOnce();
+
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+
+    state.core.channel.commands.shouldHandleTextCommands.mockReturnValue(true);
+    state.core.channel.text.hasControlCommand.mockReturnValue(true);
+    state.pollResponses = [{
+      result: "success",
+      events: [{
+        id: 2,
+        type: "message",
+        message: { ...makeChannelMessage(3105), content: "/status" },
+      }],
+    }];
+
+    await runMonitorOnce();
+
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
   });
 
   it("broadens initial and replacement queues when overrides can enable other streams", async () => {

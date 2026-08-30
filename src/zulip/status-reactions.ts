@@ -15,18 +15,18 @@ type ZulipReactionSpec = {
 const unicodeStatusReactions = new Map<string, ZulipReactionSpec>([
   ["👀", { emojiName: "eyes", emojiCode: "1f440", reactionType: "unicode_emoji" }],
   ["🧠", { emojiName: "brain", emojiCode: "1f9e0", reactionType: "unicode_emoji" }],
-  ["🛠", { emojiName: "hammer_and_wrench", emojiCode: "1f6e0", reactionType: "unicode_emoji" }],
+  ["🛠", { emojiName: "working_on_it", emojiCode: "1f6e0", reactionType: "unicode_emoji" }],
   ["💻", { emojiName: "computer", emojiCode: "1f4bb", reactionType: "unicode_emoji" }],
-  ["🌐", { emojiName: "globe_with_meridians", emojiCode: "1f310", reactionType: "unicode_emoji" }],
+  ["🌐", { emojiName: "www", emojiCode: "1f310", reactionType: "unicode_emoji" }],
   ["🛫", { emojiName: "airplane_departure", emojiCode: "1f6eb", reactionType: "unicode_emoji" }],
-  ["🏗", { emojiName: "building_construction", emojiCode: "1f3d7", reactionType: "unicode_emoji" }],
+  ["🏗", { emojiName: "construction", emojiCode: "1f3d7", reactionType: "unicode_emoji" }],
   ["💁", { emojiName: "information_desk_person", emojiCode: "1f481", reactionType: "unicode_emoji" }],
   ["✅", { emojiName: "check", emojiCode: "2705", reactionType: "unicode_emoji" }],
   ["❌", { emojiName: "cross_mark", emojiCode: "274c", reactionType: "unicode_emoji" }],
-  ["⏳", { emojiName: "hourglass_flowing_sand", emojiCode: "23f3", reactionType: "unicode_emoji" }],
+  ["⏳", { emojiName: "time_ticking", emojiCode: "23f3", reactionType: "unicode_emoji" }],
   ["⚠", { emojiName: "warning", emojiCode: "26a0", reactionType: "unicode_emoji" }],
   ["🗜", { emojiName: "compression", emojiCode: "1f5dc", reactionType: "unicode_emoji" }],
-  ["🤖", { emojiName: "robot_face", emojiCode: "1f916", reactionType: "unicode_emoji" }],
+  ["🤖", { emojiName: "robot", emojiCode: "1f916", reactionType: "unicode_emoji" }],
 ]);
 const namedZulipEmojiPattern =
   /^:?(?:[A-Za-z0-9][A-Za-z0-9_+-]*|[+-][A-Za-z0-9][A-Za-z0-9_+-]*):?$/;

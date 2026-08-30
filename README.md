@@ -143,7 +143,7 @@ Add the plugin id to `plugins.allow` in `~/.openclaw/openclaw.json`:
       "reactions": {
         "enabled": true,
         "clearOnFinish": true,
-        "subagent": "robot_face",
+        "subagent": "🤖",
         "timing": {
           "stallSoftMs": 10000,
           "stallHardMs": 30000
@@ -151,7 +151,7 @@ Add the plugin id to `plugins.allow` in `~/.openclaw/openclaw.json`:
         "emojis": {
           "thinking": "brain",
           "coding": "computer",
-          "web": "globe_with_meridians"
+          "web": "🌐"
         }
       },
 
@@ -197,7 +197,7 @@ hold. Set it to `false` to retain the final done/error reaction.
 The dedicated `subagent` reaction is driven only by `subagent_spawned` and
 `subagent_ended` hooks. It remains while at least one child run bound to that
 exact inbound turn is active, including concurrent children and children that
-outlive the requester's reply. The default is `robot_face`. Built-in lifecycle
+outlive the requester's reply. The default is `🤖`. Built-in lifecycle
 Unicode values (`👀`, `🧠`, `🛠️`, `💻`, `🌐`, `🛫`, `🏗️`, `💁`, `✅`, `❌`,
 `⏳`, `⚠️`, `🗜️`, and `🤖`) and named Zulip emoji are supported; arbitrary
 Unicode is rejected because Zulip requires exact reaction metadata. An empty

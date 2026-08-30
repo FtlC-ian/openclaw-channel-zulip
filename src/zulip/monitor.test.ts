@@ -551,7 +551,7 @@ describe("monitorZulipProvider", () => {
       releaseSubagentHide = resolve;
     });
     state.removeZulipReaction.mockImplementation(async (_client, reaction) => {
-      if (reaction.emojiName === "robot_face") {
+      if (reaction.emojiName === "robot") {
         subagentHideStarted();
         await allowHide;
       }
@@ -1447,7 +1447,7 @@ describe("monitorZulipProvider", () => {
       releaseSubagentHide = resolve;
     });
     state.removeZulipReaction.mockImplementation(async (_client, reaction) => {
-      if (reaction.emojiName === "robot_face") {
+      if (reaction.emojiName === "robot") {
         subagentHideStarted();
         await allowHide;
       }

@@ -10,7 +10,7 @@ describe("Zulip lifecycle reaction config", () => {
         clearOnFinish: true,
         emojis: { thinking: "brain", coding: "computer" },
         timing: { debounceMs: 25, stallSoftMs: 10_000, stallHardMs: 30_000 },
-        subagent: "robot_face",
+        subagent: "🤖",
       },
     });
 

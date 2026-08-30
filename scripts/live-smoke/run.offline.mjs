@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { assertFinalPrivateTypingStop, assertMessageRemainsExact, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, drainEventQueueUntilQuiet, EventQueue, Gateway, hasFinalPrivateTypingStop, inspectChildTranscripts, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactPollMessage, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, isUsageCountedTranscriptName, lifecycleSummary, normalizeScenarioError, redactError, resolveUploadUrl, signalProcessTree, subagentCompletedBeforeReply, validateEnvironment, waitForProcessTreeExit, writeGatewayGeneration } from "./run.mjs";
+import { assertFinalPrivateTypingStop, assertMessageRemainsExact, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, drainEventQueueUntilQuiet, eventOccursBefore, EventQueue, Gateway, hasFinalPrivateTypingStop, hasProvableMinimumMessageDelay, inspectChildTranscripts, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactPollMessage, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, isUsageCountedTranscriptName, lifecycleSummary, normalizeScenarioError, redactError, resolveUploadUrl, signalProcessTree, subagentCompletedBeforeReply, validateEnvironment, waitForProcessTreeExit, writeGatewayGeneration } from "./run.mjs";
 
 const validEnv = {
   ZULIP_URL: "https://zulip.example.test/path",
@@ -207,6 +207,21 @@ test("attributes every configured-bot DM containing the unique durable marker", 
     assert.equal(isDurableReplyEvent({ ...base, message: { ...base.message, content } }, "bot@example.test", "user@example.test", "durable-marker"), true);
   }
   assert.equal(isDurableReplyEvent({ ...base, message: { ...base.message, sender_email: "other@example.test", content: "durable-marker" } }, "bot@example.test", "user@example.test", "durable-marker"), false);
+});
+
+test("requires the explicit reaction event to precede its acknowledgement", () => {
+  const reaction = { type: "reaction" };
+  const reply = { type: "message" };
+  assert.equal(eventOccursBefore([reaction, reply], reaction, reply), true);
+  assert.equal(eventOccursBefore([reply, reaction], reaction, reply), false);
+  assert.equal(eventOccursBefore([reaction], reaction, reply), false);
+});
+
+test("proves the durable delay from Zulip server message timestamps", () => {
+  const commandEvent = { message: { timestamp: 100 } };
+  assert.equal(hasProvableMinimumMessageDelay(commandEvent, { message: { timestamp: 116 } }, 15), true);
+  assert.equal(hasProvableMinimumMessageDelay(commandEvent, { message: { timestamp: 115 } }, 15), false);
+  assert.equal(hasProvableMinimumMessageDelay(commandEvent, { message: {} }, 15), false);
 });
 
 test("captures every attributable reply id before an early failure", () => {

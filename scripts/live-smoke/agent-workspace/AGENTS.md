@@ -11,9 +11,11 @@ For `lifecycle VALUE CHILD_RESULT`, launch one child with `sessions_spawn` and
 instruct it to reply with exactly `CHILD_RESULT`. Wait for it to finish, verify
 that exact result, then reply with exactly `VALUE`.
 
-For `durable VALUE`, wait 15 seconds, read the complete contents of
+For `durable VALUE`, wait at least 16 seconds, read the complete contents of
 `.smoke-gateway-generation`, then reply with exactly `VALUE:GENERATION`, where
-`GENERATION` is the file's exact contents. Do not cache the file before waiting.
+`GENERATION` is the file's exact contents. The extra second lets the harness
+prove a full 15-second delay using Zulip's integer server timestamps. Do not
+cache the file before waiting.
 
 For `react EMOJI VALUE`, add that reaction to the inbound message with the
 message tool and then reply with exactly `VALUE`.

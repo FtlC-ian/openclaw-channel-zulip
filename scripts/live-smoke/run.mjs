@@ -81,6 +81,19 @@ export function isDurableReplyEvent(event, botEmail, actorEmail, marker) {
   return isPrivateBotEvent(event, botEmail, actorEmail) && String(event.message?.content ?? "").includes(marker);
 }
 
+export function eventOccursBefore(events, first, second) {
+  const firstIndex = events.indexOf(first);
+  const secondIndex = events.indexOf(second);
+  return firstIndex >= 0 && secondIndex >= 0 && firstIndex < secondIndex;
+}
+
+export function hasProvableMinimumMessageDelay(commandEvent, replyEvent, minimumSeconds) {
+  const commandTimestamp = commandEvent?.message?.timestamp;
+  const replyTimestamp = replyEvent?.message?.timestamp;
+  return Number.isSafeInteger(commandTimestamp) && Number.isSafeInteger(replyTimestamp) &&
+    replyTimestamp - commandTimestamp > minimumSeconds;
+}
+
 export function captureMessageIds(events, predicate, target) {
   const matches = events.filter(predicate);
   for (const event of matches) {
@@ -613,9 +626,12 @@ async function main() {
     await scenario("explicit-reaction", async (signal) => {
       const marker = `${runId}:reacted`;
       const inboundId = await sendDm(command(`react 🎉 ${marker}`), signal);
-      await queue.waitFor((e) => e.type === "reaction" && e.op === "add" && String(e.message_id) === inboundId && (e.emoji_name === "tada" || e.emoji_code === "1f389"), timeoutMs, "explicit reaction", signal);
+      const reaction = await queue.waitFor((e) => e.type === "reaction" && e.op === "add" && String(e.message_id) === inboundId && (e.emoji_name === "tada" || e.emoji_code === "1f389"), timeoutMs, "explicit reaction", signal);
       const reply = await queue.waitFor((e) => isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, marker), timeoutMs, "reaction acknowledgement", signal);
       messageIds.bot.add(String(reply.message.id));
+      if (!eventOccursBefore(queue.events, reaction, reply)) {
+        throw new Error("Reaction acknowledgement arrived before the requested reaction");
+      }
     });
 
     await scenario("edit-delete", async (signal) => {
@@ -663,6 +679,9 @@ async function main() {
         const oldGeneration = randomBytes(16).toString("hex");
         await writeGatewayGeneration(gatewayGenerationPath, oldGeneration);
         const inboundId = await sendDm(command(`durable ${marker}`), signal);
+        const commandEvent = await queue.waitFor((e) => e.type === "message" &&
+          String(e.message?.id) === inboundId && e.message?.sender_email === env.ZULIP_SMOKE_USER_EMAIL,
+        timeoutMs, "durable command event", signal);
         await queue.waitFor((e) => e.type === "reaction" && e.op === "add" && String(e.message_id) === inboundId, timeoutMs, "durable accept signal", signal);
         if (captureReplies().length) {
           throw new Error("Durable reply completed before interruption; replay was not exercised");
@@ -677,6 +696,9 @@ async function main() {
           captureReplies();
           if (!isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, replacementReply)) {
             throw new Error("Durable reply did not contain the replacement gateway generation");
+          }
+          if (!hasProvableMinimumMessageDelay(commandEvent, e, 15)) {
+            throw new Error("Durable reply did not prove the required 15-second delay");
           }
           return true;
         }, timeoutMs, "durable replay reply", signal);

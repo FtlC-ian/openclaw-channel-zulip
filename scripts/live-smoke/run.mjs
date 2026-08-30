@@ -577,13 +577,6 @@ async function main() {
         await queue.poll(signal);
         await delay(500, undefined, { signal });
       }
-      if (!summary?.added.length) throw new Error("No lifecycle reaction was observed on the inbound message");
-      if (!summary.sawSubagent) throw new Error("No truthful subagent lifecycle reaction was observed");
-      if (summary.subagentCount !== 1) throw new Error(`Observed ${summary.subagentCount} subagent lifecycle reactions; expected exactly one`);
-      if (!summary.allRemoved) throw new Error("Lifecycle reactions were not cleaned up after completion");
-      if (!subagentCompletedBeforeReply(queue.events, inboundId, reply)) {
-        throw new Error("The child lifecycle did not complete before the parent reply");
-      }
       const transcriptDeadline = Date.now() + timeoutMs;
       let childTranscripts;
       while (Date.now() < transcriptDeadline && (childTranscripts = await inspectChildTranscripts(env.OPENCLAW_STATE_DIR, childResult)).completedExact === 0) {
@@ -594,6 +587,14 @@ async function main() {
         throw new Error(`Found ${childTranscripts.total} child transcripts and ${childTranscripts.completedExact} exact completed results; expected exactly one of each`);
       }
       await assertFinalPrivateTypingStop(queue, eventStart, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, signal);
+      summary = lifecycleSummary(queue.events, inboundId);
+      if (!summary.added.length) throw new Error("No lifecycle reaction was observed on the inbound message");
+      if (!summary.sawSubagent) throw new Error("No truthful subagent lifecycle reaction was observed");
+      if (summary.subagentCount !== 1) throw new Error(`Observed ${summary.subagentCount} subagent lifecycle reactions; expected exactly one`);
+      if (!summary.allRemoved) throw new Error("Lifecycle reactions were not cleaned up after completion");
+      if (!subagentCompletedBeforeReply(queue.events, inboundId, reply)) {
+        throw new Error("The child lifecycle did not complete before the parent reply");
+      }
     });
 
     await scenario("explicit-reaction", async (signal) => {

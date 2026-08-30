@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { EventEmitter } from "node:events";
+import { spawn } from "node:child_process";
+import { EventEmitter, once } from "node:events";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { EventQueue, Gateway, isBotMessage, isExactPoll, lifecycleSummary, normalizeScenarioError, redactError, validateEnvironment } from "./run.mjs";
+import { EventQueue, Gateway, isBotMessage, isChildRunning, isExactPoll, lifecycleSummary, normalizeScenarioError, redactError, signalProcessTree, validateEnvironment, waitForProcessTreeExit } from "./run.mjs";
 
 const validEnv = {
   ZULIP_URL: "https://zulip.example.test/path",
@@ -80,17 +81,39 @@ test("coalesces concurrent event polls", async () => {
 test("waits for gateway exit after escalating to SIGKILL", async () => {
   const child = new EventEmitter();
   child.exitCode = null;
+  child.signalCode = null;
   const signals = [];
   child.kill = (signal) => {
     signals.push(signal);
     if (signal === "SIGKILL") setImmediate(() => { child.exitCode = 137; child.emit("exit", 137); });
     return true;
   };
-  const gateway = new Gateway(18789, { termTimeoutMs: 1, killTimeoutMs: 100 });
+  const gateway = new Gateway(18789, { termTimeoutMs: 1, killTimeoutMs: 100, healthProbe: async () => false });
   gateway.process = child;
   await Promise.all([gateway.stop(), gateway.stop()]);
   assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
   assert.equal(gateway.process, undefined);
+});
+
+test("treats signal-terminated children as stopped", () => {
+  assert.equal(isChildRunning({ exitCode: null, signalCode: "SIGTERM" }), false);
+  assert.equal(isChildRunning({ exitCode: null, signalCode: null }), true);
+});
+
+test("terminates the complete detached process group", { skip: process.platform === "win32" }, async () => {
+  const child = spawn(process.execPath, ["-e", "process.on('SIGTERM',()=>{});process.send('ready');setInterval(()=>{},1000)"], {
+    detached: true,
+    stdio: ["ignore", "ignore", "ignore", "ipc"],
+  });
+  try {
+    await once(child, "message");
+    signalProcessTree(child, "SIGTERM");
+    assert.equal(await waitForProcessTreeExit(child, 100), false);
+    signalProcessTree(child, "SIGKILL");
+    assert.equal(await waitForProcessTreeExit(child, 2000), true);
+  } finally {
+    signalProcessTree(child, "SIGKILL");
+  }
 });
 
 test("workflow is manual, protected, pinned, and bounded", async () => {

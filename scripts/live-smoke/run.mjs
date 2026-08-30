@@ -166,29 +166,49 @@ export class EventQueue {
 }
 
 export class Gateway {
-  constructor(port, { termTimeoutMs = 10000, killTimeoutMs = 5000 } = {}) {
+  constructor(port, { termTimeoutMs = 10000, killTimeoutMs = 5000, healthProbe } = {}) {
     this.port = String(port);
     this.termTimeoutMs = termTimeoutMs;
     this.killTimeoutMs = killTimeoutMs;
+    this.healthProbe = healthProbe;
   }
   async start(signal) {
     signal?.throwIfAborted();
-    if (this.process?.exitCode === null) throw new Error("Runner-local OpenClaw gateway is already running");
+    if (this.process && isProcessTreeRunning(this.process)) throw new Error("Runner-local OpenClaw gateway is already running");
     this.process = spawn("pnpm", ["exec", "openclaw", "gateway", "run", "--bind", "loopback", "--port", this.port, "--auth", "none", "--compact"], {
-      cwd: process.cwd(), env: process.env, stdio: ["ignore", "ignore", "ignore"],
+      cwd: process.cwd(), env: process.env, stdio: ["ignore", "ignore", "ignore"], detached: process.platform !== "win32",
     });
+    const child = this.process;
     const deadline = Date.now() + 30000;
     while (Date.now() < deadline) {
       signal?.throwIfAborted();
-      if (this.process.exitCode !== null) throw new Error("Runner-local OpenClaw gateway exited during startup");
-      const ok = await new Promise((resolve) => {
-        const probe = spawn("pnpm", ["exec", "openclaw", "gateway", "health", "--port", this.port, "--timeout", "2000"], { stdio: "ignore", env: process.env });
-        probe.once("exit", (code) => resolve(code === 0));
-      });
-      if (ok) return;
+      if (!isChildRunning(child)) throw new Error("Runner-local OpenClaw gateway exited during startup");
+      if (await this.isHealthy()) {
+        await delay(500, undefined, { signal });
+        if (!isChildRunning(child)) throw new Error("Runner-local OpenClaw gateway exited during startup");
+        if (await this.isHealthy()) return;
+      }
       await delay(1000, undefined, { signal });
     }
     throw new Error("Runner-local OpenClaw gateway did not become healthy within 30s");
+  }
+  async isHealthy() {
+    if (this.healthProbe) return this.healthProbe();
+    return new Promise((resolve) => {
+      const probe = spawn("pnpm", ["exec", "openclaw", "gateway", "health", "--port", this.port, "--timeout", "2000"], { stdio: "ignore", env: process.env });
+      let settled = false;
+      const finish = (value) => { if (!settled) { settled = true; resolve(value); } };
+      probe.once("error", () => finish(false));
+      probe.once("exit", (code) => finish(code === 0));
+    });
+  }
+  async waitUntilUnhealthy(timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (!await this.isHealthy()) return;
+      await delay(100);
+    }
+    throw new Error("Runner-local OpenClaw gateway remained healthy after process shutdown");
   }
   async stop() {
     if (this.stopPromise) return this.stopPromise;
@@ -197,29 +217,58 @@ export class Gateway {
   }
   async stopCurrentProcess() {
     const child = this.process;
-    if (!child || child.exitCode !== null) {
+    if (!child || !isProcessTreeRunning(child)) {
       if (this.process === child) this.process = undefined;
       return;
     }
-    child.kill("SIGTERM");
-    if (!await waitForExit(child, this.termTimeoutMs) && child.exitCode === null) {
-      child.kill("SIGKILL");
-      if (!await waitForExit(child, this.killTimeoutMs)) {
-        throw new Error("Runner-local OpenClaw gateway did not exit after SIGKILL");
+    signalProcessTree(child, "SIGTERM");
+    if (!await waitForProcessTreeExit(child, this.termTimeoutMs)) {
+      signalProcessTree(child, "SIGKILL");
+      if (!await waitForProcessTreeExit(child, this.killTimeoutMs)) {
+        throw new Error("Runner-local OpenClaw gateway process group did not exit after SIGKILL");
       }
     }
+    await this.waitUntilUnhealthy(this.killTimeoutMs);
     if (this.process === child) this.process = undefined;
   }
   async restart(signal) { await this.stop(); signal?.throwIfAborted(); await this.start(signal); }
 }
 
-function waitForExit(child, timeoutMs) {
-  if (child.exitCode !== null) return Promise.resolve(true);
-  return new Promise((resolve) => {
-    const onExit = () => { clearTimeout(timer); resolve(true); };
-    const timer = setTimeout(() => { child.removeListener("exit", onExit); resolve(false); }, timeoutMs);
-    child.once("exit", onExit);
-  });
+export function isChildRunning(child) {
+  return child.exitCode === null && child.signalCode === null;
+}
+
+function isProcessTreeRunning(child) {
+  if (process.platform === "win32" || !child.pid) return isChildRunning(child);
+  try {
+    process.kill(-child.pid, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === "ESRCH") return false;
+    if (error?.code === "EPERM") return true;
+    throw error;
+  }
+}
+
+export function signalProcessTree(child, signal) {
+  if (!isProcessTreeRunning(child)) return false;
+  if (process.platform === "win32" || !child.pid) return child.kill(signal);
+  try {
+    process.kill(-child.pid, signal);
+    return true;
+  } catch (error) {
+    if (error?.code === "ESRCH") return false;
+    throw error;
+  }
+}
+
+export async function waitForProcessTreeExit(child, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!isProcessTreeRunning(child)) return true;
+    await delay(25);
+  }
+  return !isProcessTreeRunning(child);
 }
 
 function command(value) { return `SMOKE_COMMAND\n${value}\nEND_SMOKE_COMMAND`; }

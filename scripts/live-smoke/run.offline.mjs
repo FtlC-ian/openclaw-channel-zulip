@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { assertMessageRemainsExact, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, EventQueue, Gateway, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, lifecycleSummary, normalizeScenarioError, redactError, resolveUploadUrl, signalProcessTree, validateEnvironment, waitForProcessTreeExit, writeGatewayGeneration } from "./run.mjs";
+import { assertMessageRemainsExact, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, EventQueue, Gateway, hasFinalPrivateTypingStop, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, lifecycleSummary, normalizeScenarioError, redactError, resolveUploadUrl, signalProcessTree, validateEnvironment, waitForProcessTreeExit, writeGatewayGeneration } from "./run.mjs";
 
 const validEnv = {
   ZULIP_URL: "https://zulip.example.test/path",
@@ -71,6 +71,18 @@ test("matches private typing events from the configured bot", () => {
   assert.equal(isPrivateTypingEvent({ ...event, op: "stop" }, "bot@example.test", "user@example.test", "start"), false);
   assert.equal(isPrivateTypingEvent({ ...event, sender: { email: "other@example.test" } }, "bot@example.test", "user@example.test", "start"), false);
   assert.equal(isPrivateTypingEvent({ ...event, recipients: [...event.recipients, { email: "third@example.test" }] }, "bot@example.test", "user@example.test", "start"), false);
+});
+
+test("requires the final matching typing event to stop", () => {
+  const base = { type: "typing", message_type: "direct", sender: { email: "bot@example.test" }, recipients: [
+    { email: "bot@example.test" }, { email: "user@example.test" },
+  ] };
+  const start = { ...base, op: "start" };
+  const stop = { ...base, op: "stop" };
+  assert.equal(hasFinalPrivateTypingStop([start, stop], "bot@example.test", "user@example.test"), true);
+  assert.equal(hasFinalPrivateTypingStop([start, stop, start], "bot@example.test", "user@example.test"), false);
+  assert.equal(hasFinalPrivateTypingStop([stop], "bot@example.test", "user@example.test"), false);
+  assert.equal(hasFinalPrivateTypingStop([start, stop, { ...start, sender: { email: "other@example.test" } }], "bot@example.test", "user@example.test"), true);
 });
 
 test("matches complete raw or Zulip-rendered content", () => {

@@ -107,6 +107,13 @@ export function isPrivateTypingEvent(event, botEmail, actorEmail, op) {
   return hasExactDirectParticipants(recipients, botEmail, actorEmail);
 }
 
+export function hasFinalPrivateTypingStop(events, botEmail, actorEmail) {
+  const lifecycle = events.filter((event) =>
+    isPrivateTypingEvent(event, botEmail, actorEmail, "start") ||
+    isPrivateTypingEvent(event, botEmail, actorEmail, "stop"));
+  return lifecycle.some((event) => event.op === "start") && lifecycle.at(-1)?.op === "stop";
+}
+
 function hasExactDirectParticipants(recipients, botEmail, actorEmail) {
   const emails = new Set(recipients.map((recipient) => recipient?.email ?? recipient).filter(Boolean));
   return emails.size === 2 && emails.has(botEmail) && emails.has(actorEmail);
@@ -507,10 +514,8 @@ async function main() {
       const reply = await queue.waitFor((e) => isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, marker), timeoutMs, "lifecycle reply", signal);
       messageIds.bot.add(String(reply.message.id));
       await queue.waitFor((e) => {
-        const stopIndex = queue.events.indexOf(e);
-        if (stopIndex < eventStart || !isPrivateTypingEvent(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, "stop")) return false;
-        return queue.events.slice(eventStart, stopIndex).some((candidate) =>
-          isPrivateTypingEvent(candidate, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, "start"));
+        if (queue.events.indexOf(e) < eventStart || !isPrivateTypingEvent(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, "stop")) return false;
+        return hasFinalPrivateTypingStop(queue.events.slice(eventStart), env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL);
       }, timeoutMs, "ordered typing start/stop cleanup", signal);
       const deadline = Date.now() + timeoutMs;
       let summary;

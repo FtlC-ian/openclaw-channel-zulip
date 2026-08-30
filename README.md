@@ -276,6 +276,12 @@ openclaw gateway restart
 
 Pull requests and pushes to `main` run the release-blocking **CI** workflow on Node 22.19 and Node 24. Each run installs from `pnpm-lock.yaml` with `--frozen-lockfile`, builds, runs the full test suite, checks whitespace errors with `git diff --check`, packs the release artifact, installs it with the locked OpenClaw host in a clean temporary project, and imports its public package entry point. The workflow has read-only repository permissions and does not receive repository or Zulip secrets.
 
+Release candidates also have a manual **Zulip live smoke (protected)** workflow.
+It can run only from `main`, accepts only a full commit SHA already reachable
+from `main`, and obtains dedicated-realm credentials only after approval through
+the protected `zulip-live-smoke` GitHub Environment. See
+[the release checklist](docs/RELEASE_CHECKLIST.md) for setup and evidence rules.
+
 The scheduled **OpenClaw compatibility (advisory)** workflow is intentionally separate from release gating. Once a week it chooses the first eligible release from OpenClaw's `latest` and `extended-stable` npm channels that has been published for at least 24 hours, then installs and tests it in a temporary copy of the plugin. That temporary install and the packed-artifact smoke test enforce pnpm's 24-hour release-age rule and may update only disposable lockfiles; they never change or commit this repository's lockfile. A failure identifies compatibility work to investigate; it does not replace the locked CI evidence required for a release.
 
 ---

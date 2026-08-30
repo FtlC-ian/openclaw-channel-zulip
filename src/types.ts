@@ -21,6 +21,17 @@ type BlockStreamingCoalesceConfig = {
 export type ZulipChatMode = "oncall" | "onmessage" | "onchar";
 export type ZulipAgentReactionGuidance = "off" | "minimal" | "extensive";
 
+export type ZulipStreamRule = {
+  /** Enable or disable inbound processing for the selected stream. */
+  enabled?: boolean;
+  /** Override the account-level mention requirement for this stream. */
+  requireMention?: boolean;
+  /** Allow only these topics. Empty or "*" means all topics. */
+  allowedTopics?: string[];
+  /** Reject these topics. "*" rejects every topic. */
+  excludedTopics?: string[];
+};
+
 export type ZulipAccountConfig = {
   /** Optional display name for this account (used in CLI/UI lists). */
   name?: string;
@@ -50,6 +61,8 @@ export type ZulipAccountConfig = {
   topics?: string[];
   /** Restrict monitored topics per stream name or stream id. Case-insensitive after trimming. */
   streamTopics?: Record<string, string[]>;
+  /** Per-stream inbound policy overrides keyed by normalized stream name or decimal stream id. */
+  streamOverrides?: Record<string, ZulipStreamRule>;
   /**
    * Controls when channel messages trigger replies.
    * - "oncall": only respond when mentioned

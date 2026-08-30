@@ -2,6 +2,10 @@ import { z } from "zod";
 import { buildJsonChannelConfigSchema } from "openclaw/plugin-sdk/channel-config-schema";
 import { buildOptionalSecretInputSchema } from "openclaw/plugin-sdk/secret-input";
 import { isSupportedZulipReactionValue } from "./zulip/status-reactions.js";
+import {
+  normalizeZulipStreamIdSelector,
+  normalizeZulipStreamName,
+} from "./zulip/stream-policy.js";
 
 // Inlined from openclaw/plugin-sdk to avoid module resolution issues
 // when installed via npm to ~/.openclaw/extensions/. These are stable
@@ -51,6 +55,44 @@ const StatusReactionTimingSchema = z
     errorHoldMs: z.number().int().nonnegative().optional(),
   })
   .strict();
+const ZulipStreamRuleSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    requireMention: z.boolean().optional(),
+    allowedTopics: z.array(z.string()).optional(),
+    excludedTopics: z.array(z.string()).optional(),
+  })
+  .strict();
+const ZulipStreamOverridesSchema = z
+  .record(z.string(), ZulipStreamRuleSchema)
+  .superRefine((overrides, ctx) => {
+    const selectors = new Map<string, string>();
+    for (const key of Object.keys(overrides)) {
+      const normalizedId = normalizeZulipStreamIdSelector(key);
+      const normalizedName = normalizeZulipStreamName(key);
+      if (!normalizedName) {
+        ctx.addIssue({
+          code: "custom",
+          path: [key],
+          message: "Stream override selectors cannot be empty",
+        });
+        continue;
+      }
+      const selector = normalizedId !== undefined
+        ? `id:${normalizedId}`
+        : `name:${normalizedName}`;
+      const existing = selectors.get(selector);
+      if (existing !== undefined) {
+        ctx.addIssue({
+          code: "custom",
+          path: [key],
+          message: `Stream override selector duplicates ${JSON.stringify(existing)} after normalization`,
+        });
+      } else {
+        selectors.set(selector, key);
+      }
+    }
+  });
 
 const OptionalSecretInputSchema = buildOptionalSecretInputSchema();
 
@@ -101,6 +143,7 @@ const ZulipAccountSchemaBase = z
     streams: z.array(z.string()).optional(),
     topics: z.array(z.string()).optional(),
     streamTopics: z.record(z.string(), z.array(z.string())).optional(),
+    streamOverrides: ZulipStreamOverridesSchema.optional(),
     defaultTopic: z.string().optional(),
     chatmode: z.enum(["oncall", "onmessage", "onchar"]).optional(),
     oncharPrefixes: z.array(z.string()).optional(),

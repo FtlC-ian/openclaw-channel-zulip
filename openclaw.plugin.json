@@ -70,6 +70,16 @@
               "errorHoldMs": { "type": "integer", "minimum": 0 }
             }
           },
+          "zulipStreamRule": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "enabled": { "type": "boolean" },
+              "requireMention": { "type": "boolean" },
+              "allowedTopics": { "type": "array", "items": { "type": "string" } },
+              "excludedTopics": { "type": "array", "items": { "type": "string" } }
+            }
+          },
           "zulipAccount": {
             "type": "object",
             "additionalProperties": true,
@@ -96,6 +106,10 @@
               "streamTopics": {
                 "type": "object",
                 "additionalProperties": { "type": "array", "items": { "type": "string" } }
+              },
+              "streamOverrides": {
+                "type": "object",
+                "additionalProperties": { "$ref": "#/$defs/zulipStreamRule" }
               },
               "defaultTopic": { "type": "string" },
               "chatmode": { "type": "string", "enum": ["oncall", "onmessage", "onchar"] },
@@ -162,6 +176,10 @@
           "streamTopics": {
             "type": "object",
             "additionalProperties": { "type": "array", "items": { "type": "string" } }
+          },
+          "streamOverrides": {
+            "type": "object",
+            "additionalProperties": { "$ref": "#/$defs/zulipStreamRule" }
           },
           "defaultTopic": { "type": "string" },
           "chatmode": { "type": "string", "enum": ["oncall", "onmessage", "onchar"] },
@@ -231,6 +249,11 @@
         "streamTopics": {
           "label": "Per-Stream Topic Filters",
           "placeholder": "{\"general\":[\"support\"]}"
+        },
+        "streamOverrides": {
+          "label": "Per-Stream Inbound Overrides",
+          "description": "Inbound-only rules keyed by trimmed, case-insensitive stream name or an ASCII decimal stream ID. ID rules take precedence over name rules.",
+          "placeholder": "{\"general\":{\"enabled\":true,\"requireMention\":false,\"allowedTopics\":[\"support\"]}}"
         },
         "defaultTopic": {
           "label": "Default Topic",

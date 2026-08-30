@@ -119,6 +119,8 @@ const state = vi.hoisted(() => {
     durableStores: new Map<string, ReturnType<typeof createMemoryKeyedStore>>(),
     pollResponses: [] as Array<Record<string, unknown>>,
     pairingAllowFrom: [] as string[],
+    pairingUpsertError: undefined as Error | undefined,
+    upsertPairingRequest: vi.fn(async () => ({ code: "123456", created: false })),
     streamSubscriptions: [] as Array<Record<string, unknown>>,
     streamLookups: new Map<string, Record<string, unknown> | Error>(),
     downloadedUploads: [] as Array<{ buffer: Buffer; contentType: string; filename: string }>,
@@ -172,6 +174,12 @@ const fetchZulipStreamMock = vi.fn(async (_client: unknown, streamId: string) =>
   }
   if (result) {
     return result;
+  }
+  const subscription = state.streamSubscriptions.find(
+    (entry) => String(entry.stream_id ?? entry.id ?? "") === String(streamId),
+  );
+  if (subscription) {
+    return subscription;
   }
   throw new Error(`unexpected stream metadata lookup: ${streamId}`);
 });
@@ -230,7 +238,7 @@ const typingCallbacksMock = vi.fn(() => ({
 
 vi.mock("../sdk.js", () => ({
   createChannelPairingController: vi.fn(() => ({
-    upsertPairingRequest: vi.fn(async () => ({ code: "123456", created: false })),
+    upsertPairingRequest: state.upsertPairingRequest,
     readStoreForDmPolicy: vi.fn(async () => state.pairingAllowFrom),
   })),
 }));
@@ -327,6 +335,16 @@ describe("monitorZulipProvider", () => {
     state.core.channel.inbound.buildContext.mockImplementation(buildChannelInboundEventContext);
     state.durableStores = new Map();
     state.pairingAllowFrom = [];
+    state.pairingUpsertError = undefined;
+    state.upsertPairingRequest.mockReset().mockImplementation(async () => {
+      if (state.pairingUpsertError) {
+        throw state.pairingUpsertError;
+      }
+      return { code: "123456", created: false };
+    });
+    state.account.streams = ["debbie"];
+    state.account.requireMention = false;
+    state.account.chatmode = "normal";
     state.account.config = {
       dmPolicy: "open",
       groupPolicy: "open",
@@ -357,6 +375,7 @@ describe("monitorZulipProvider", () => {
     fetchZulipStreamMock.mockClear();
     state.addZulipReaction.mockReset().mockResolvedValue(undefined);
     state.removeZulipReaction.mockReset().mockResolvedValue(undefined);
+    typingCallbacksMock.mockClear();
   });
 
   it("wires typing idle cleanup into the reply dispatcher", async () => {
@@ -1221,6 +1240,467 @@ describe("monitorZulipProvider", () => {
 
     expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(1);
     expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops disabled stream overrides before durable acceptance or observable inbound work", async () => {
+    enableDurableInboundJournal();
+    state.account.config = {
+      ...state.account.config,
+      streams: ["*"],
+      streamOverrides: { debbie: { enabled: false } },
+      reactions: { enabled: true },
+    };
+    state.extractedUploadUrls = ["https://zlp.pubnerd.app/user_uploads/2/aa/report.pdf"];
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 1, type: "message", message: makeChannelMessage(1210) }],
+    }];
+
+    await runMonitorOnce();
+
+    expect(extractZulipUploadUrlsMock).not.toHaveBeenCalled();
+    expect(downloadZulipUploadMock).not.toHaveBeenCalled();
+    expect(state.addZulipReaction).not.toHaveBeenCalled();
+    expect(typingCallbacksMock).not.toHaveBeenCalled();
+    expect(state.core.channel.activity.record).not.toHaveBeenCalled();
+    expect(state.core.channel.inbound.buildContext).not.toHaveBeenCalled();
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+    for (const store of state.durableStores.values()) {
+      await expect(store.entries()).resolves.toEqual([]);
+    }
+  });
+
+  it("drops mention-gated stream messages before durable acceptance or attachment work", async () => {
+    enableDurableInboundJournal();
+    state.account.requireMention = false;
+    state.account.config = {
+      ...state.account.config,
+      streamOverrides: { "4": { requireMention: true } },
+      reactions: { enabled: true },
+    };
+    state.core.channel.groups.resolveRequireMention.mockImplementation(
+      ({ requireMentionOverride }: { requireMentionOverride?: boolean }) =>
+        requireMentionOverride ?? false,
+    );
+    state.extractedUploadUrls = ["https://zlp.pubnerd.app/user_uploads/2/aa/report.pdf"];
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 1, type: "message", message: makeChannelMessage(1213) }],
+    }];
+
+    await runMonitorOnce();
+
+    expect(extractZulipUploadUrlsMock).not.toHaveBeenCalled();
+    expect(downloadZulipUploadMock).not.toHaveBeenCalled();
+    expect(state.core.channel.media.saveMediaBuffer).not.toHaveBeenCalled();
+    expect(state.addZulipReaction).not.toHaveBeenCalled();
+    expect(typingCallbacksMock).not.toHaveBeenCalled();
+    expect(state.core.channel.activity.record).not.toHaveBeenCalled();
+    expect(state.core.channel.routing.resolveAgentRoute).not.toHaveBeenCalled();
+    expect(state.core.channel.inbound.buildContext).not.toHaveBeenCalled();
+    expect(state.core.channel.session.updateLastRoute).not.toHaveBeenCalled();
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+    for (const store of state.durableStores.values()) {
+      await expect(store.entries()).resolves.toEqual([]);
+    }
+  });
+
+  it.each([
+    { label: "explicitly disabled", requireMention: false, expectedDispatches: 1, messageId: 3101 },
+    { label: "explicitly enabled", requireMention: true, expectedDispatches: 0, messageId: 3102 },
+    { label: "inherited", requireMention: undefined, expectedDispatches: 0, messageId: 3103 },
+  ])(
+    "applies onchar gating when per-stream mention policy is $label",
+    async ({ requireMention, expectedDispatches, messageId }) => {
+      state.account.chatmode = "onchar";
+      state.account.config = {
+        ...state.account.config,
+        streamOverrides: {
+          debbie: requireMention === undefined ? {} : { requireMention },
+        },
+      };
+      state.core.channel.groups.resolveRequireMention.mockImplementation(
+        ({ requireMentionOverride }: { requireMentionOverride?: boolean }) =>
+          requireMentionOverride ?? false,
+      );
+      state.pollResponses = [{
+        result: "success",
+        events: [{ id: 1, type: "message", message: makeChannelMessage(messageId) }],
+      }];
+
+      await runMonitorOnce();
+
+      expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher)
+        .toHaveBeenCalledTimes(expectedDispatches);
+    },
+  );
+
+  it("preserves onchar gating for DMs and its authorized control-command bypass", async () => {
+    state.account.chatmode = "onchar";
+    state.account.config = {
+      ...state.account.config,
+      dmPolicy: "pairing",
+    };
+    state.pairingAllowFrom = ["user8@zlp.pubnerd.app"];
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 1, type: "message", message: makePrivateMessage(3104) }],
+    }];
+
+    await runMonitorOnce();
+
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+
+    state.core.channel.commands.shouldHandleTextCommands.mockReturnValue(true);
+    state.core.channel.text.hasControlCommand.mockReturnValue(true);
+    state.pollResponses = [{
+      result: "success",
+      events: [{
+        id: 2,
+        type: "message",
+        message: { ...makeChannelMessage(3105), content: "/status" },
+      }],
+    }];
+
+    await runMonitorOnce();
+
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("broadens initial and replacement queues when overrides can enable other streams", async () => {
+    state.account.streams = ["debbie"];
+    state.account.config = {
+      ...state.account.config,
+      streams: ["debbie"],
+      streamOverrides: { random: { enabled: true } },
+    };
+    state.pollResponses = [
+      { result: "error", code: "BAD_EVENT_QUEUE_ID", msg: "expired" },
+      { result: "success", events: [] },
+    ];
+
+    await runMonitorOnce();
+
+    expect(registerZulipQueueMock).toHaveBeenCalledTimes(2);
+    for (const call of registerZulipQueueMock.mock.calls) {
+      expect(call[1]).toEqual({ eventTypes: ["message"], streams: ["*"] });
+    }
+  });
+
+  it("keeps a narrow queue when an enabled override is already covered by legacy streams", async () => {
+    state.account.streams = ["general"];
+    state.account.config = {
+      ...state.account.config,
+      streams: ["general"],
+      streamOverrides: { GENERAL: { enabled: true } },
+    };
+
+    await runMonitorOnce();
+
+    expect(registerZulipQueueMock).toHaveBeenCalledWith(
+      state.client,
+      { eventTypes: ["message"], streams: ["general"] },
+    );
+  });
+
+  it("lets an id override win over a normalized name override for mention and topics", async () => {
+    state.account.requireMention = true;
+    state.account.config = {
+      ...state.account.config,
+      streams: ["other"],
+      topics: ["blocked-by-account-default"],
+      streamOverrides: {
+        " DEBBIE ": { enabled: true, requireMention: true, allowedTopics: ["wrong-topic"] },
+        "4": { requireMention: false, allowedTopics: ["zulip-plugin-pr"] },
+      },
+    };
+    state.core.channel.groups.resolveRequireMention.mockImplementation(
+      ({ requireMentionOverride }: { requireMentionOverride?: boolean }) =>
+        requireMentionOverride ?? true,
+    );
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 1, type: "message", message: makeChannelMessage(1211) }],
+    }];
+
+    await runMonitorOnce();
+
+    expect(state.core.channel.groups.resolveRequireMention).toHaveBeenCalledWith(
+      expect.objectContaining({ requireMentionOverride: false }),
+    );
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the event's authoritative stream name after a cached stream rename", async () => {
+    state.streamSubscriptions = [{
+      stream_id: 4,
+      name: "old-name",
+      invite_only: false,
+    }];
+    state.account.config = {
+      ...state.account.config,
+      streamOverrides: {
+        "old-name": { enabled: false },
+        "new-name": { enabled: true },
+      },
+    };
+    state.pollResponses = [{
+      result: "success",
+      events: [{
+        id: 1,
+        type: "message",
+        message: { ...makeChannelMessage(1212), display_recipient: "new-name" },
+      }],
+    }];
+
+    await runMonitorOnce();
+
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains the last good stream metadata snapshot when a later seed fails", async () => {
+    state.streamSubscriptions = [{
+      stream_id: 4,
+      name: "retained-name",
+      invite_only: false,
+    }];
+    await runMonitorOnce();
+
+    fetchZulipSubscriptionsMock.mockRejectedValueOnce(new Error("temporary subscription failure"));
+    state.account.streams = ["retained-name"];
+    state.account.config = {
+      ...state.account.config,
+      streams: ["retained-name"],
+    };
+    state.pollResponses = [{
+      result: "success",
+      events: [{
+        id: 1,
+        type: "message",
+        message: { ...makeChannelMessage(1216), display_recipient: null },
+      }],
+    }];
+
+    await runMonitorOnce();
+
+    expect(fetchZulipStreamMock).not.toHaveBeenCalled();
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    {
+      label: "the fresh lookup fails",
+      lookup: new Error("temporary stream lookup failure"),
+    },
+    {
+      label: "the fresh lookup has a blank name",
+      lookup: { id: 4, name: "   ", invite_only: false },
+    },
+  ])("keeps replay pending with stale cached metadata when $label", async ({ lookup }) => {
+    state.streamSubscriptions = [{ stream_id: 4, name: "old-name", invite_only: false }];
+    await runMonitorOnce();
+
+    enableDurableInboundJournal();
+    fetchZulipSubscriptionsMock.mockRejectedValueOnce(new Error("temporary subscription failure"));
+    state.streamLookups.set("4", lookup);
+    state.account.streams = ["old-name"];
+    state.account.config = {
+      ...state.account.config,
+      streams: ["old-name"],
+    };
+    const {
+      createZulipDurableInboundMessageId,
+      createZulipDurableInboundReceiveJournal,
+      serializeZulipDurableInboundMessage,
+    } = await import("./durable-receive.js");
+    const message = makeChannelMessage(1219);
+    const durableId = createZulipDurableInboundMessageId({
+      accountId: state.account.accountId,
+      messageId: String(message.id),
+    });
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    await journal.accept(durableId, {
+      message: serializeZulipDurableInboundMessage(message),
+      receivedAt: Date.now(),
+    });
+
+    await runMonitorOnce();
+
+    await expect(journal.pending()).resolves.toEqual([
+      expect.objectContaining({
+        id: durableId,
+        lastError: "Zulip stream metadata unavailable during durable replay",
+      }),
+    ]);
+    expect(fetchZulipStreamMock).toHaveBeenCalledWith(state.client, "4");
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+  });
+
+  it("uses a fresh renamed stream lookup for durable replay policy", async () => {
+    state.streamSubscriptions = [{ stream_id: 4, name: "old-name", invite_only: false }];
+    await runMonitorOnce();
+
+    enableDurableInboundJournal();
+    fetchZulipSubscriptionsMock.mockRejectedValueOnce(new Error("temporary subscription failure"));
+    state.streamLookups.set("4", { id: 4, name: "new-name", invite_only: false });
+    state.account.streams = ["new-name"];
+    state.account.config = {
+      ...state.account.config,
+      streams: ["new-name"],
+      streamOverrides: {
+        "old-name": { enabled: false },
+        "new-name": { enabled: true },
+      },
+    };
+    const {
+      createZulipDurableInboundMessageId,
+      createZulipDurableInboundReceiveJournal,
+      serializeZulipDurableInboundMessage,
+    } = await import("./durable-receive.js");
+    const message = makeChannelMessage(1220);
+    const durableId = createZulipDurableInboundMessageId({
+      accountId: state.account.accountId,
+      messageId: String(message.id),
+    });
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    await journal.accept(durableId, {
+      message: serializeZulipDurableInboundMessage(message),
+      receivedAt: Date.now(),
+    });
+
+    await runMonitorOnce();
+
+    await expect(journal.pending()).resolves.toEqual([]);
+    expect(fetchZulipStreamMock).toHaveBeenCalledWith(state.client, "4");
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("durably retries a pairing ingress failure without journaling known policy drops", async () => {
+    enableDurableInboundJournal();
+    state.account.config = {
+      ...state.account.config,
+      dmPolicy: "pairing",
+      streams: ["*"],
+      streamOverrides: { debbie: { enabled: false } },
+    };
+    state.pairingUpsertError = new Error("synthetic pairing persistence failure");
+    const filteredMessage = makeChannelMessage(1217);
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 1, type: "message", message: filteredMessage }],
+    }];
+
+    await runMonitorOnce();
+
+    for (const store of state.durableStores.values()) {
+      await expect(store.entries()).resolves.toEqual([]);
+    }
+
+    state.account.config.streamOverrides = { debbie: { enabled: true } };
+    const message = makePrivateMessage(1218);
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 2, type: "message", message }],
+    }];
+    await runMonitorOnce();
+
+    const {
+      createZulipDurableInboundMessageId,
+      createZulipDurableInboundReceiveJournal,
+    } = await import("./durable-receive.js");
+    const durableId = createZulipDurableInboundMessageId({
+      accountId: state.account.accountId,
+      messageId: String(message.id),
+    });
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    await expect(journal.pending()).resolves.toEqual([
+      expect.objectContaining({
+        id: durableId,
+        lastError: "Error: synthetic pairing persistence failure",
+      }),
+    ]);
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+
+    state.pairingUpsertError = undefined;
+    await runMonitorOnce();
+
+    await expect(journal.pending()).resolves.toEqual([]);
+    expect(state.upsertPairingRequest).toHaveBeenCalledTimes(2);
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+  });
+
+  it("keeps a legacy-allowlisted replay pending when authoritative stream metadata is unavailable", async () => {
+    enableDurableInboundJournal();
+    state.streamSubscriptions = [];
+    state.streamLookups.set("4", new Error("stream metadata unavailable"));
+    state.account.config = {
+      ...state.account.config,
+      streams: ["debbie"],
+    };
+    const {
+      createZulipDurableInboundMessageId,
+      createZulipDurableInboundReceiveJournal,
+      serializeZulipDurableInboundMessage,
+    } = await import("./durable-receive.js");
+    const message = makeChannelMessage(1214);
+    const durableId = createZulipDurableInboundMessageId({
+      accountId: state.account.accountId,
+      messageId: String(message.id),
+    });
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    await journal.accept(durableId, {
+      message: serializeZulipDurableInboundMessage(message),
+      receivedAt: Date.now(),
+    });
+
+    await runMonitorOnce();
+
+    const pending = await journal.pending();
+    expect(pending).toHaveLength(1);
+    expect(pending[0]).toMatchObject({
+      lastError: "Zulip stream metadata unavailable during durable replay",
+    });
+    expect(fetchZulipStreamMock).toHaveBeenCalledWith(state.client, "4");
+    expect(state.core.channel.inbound.buildContext).not.toHaveBeenCalled();
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+  });
+
+  it("keeps a replay pending rather than bypassing a name disable when metadata is unavailable", async () => {
+    enableDurableInboundJournal();
+    state.streamSubscriptions = [];
+    state.streamLookups.set("4", new Error("stream metadata unavailable"));
+    state.account.config = {
+      ...state.account.config,
+      streams: ["*"],
+      streamOverrides: { debbie: { enabled: false } },
+    };
+    const {
+      createZulipDurableInboundMessageId,
+      createZulipDurableInboundReceiveJournal,
+      serializeZulipDurableInboundMessage,
+    } = await import("./durable-receive.js");
+    const message = makeChannelMessage(1215);
+    const durableId = createZulipDurableInboundMessageId({
+      accountId: state.account.accountId,
+      messageId: String(message.id),
+    });
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    await journal.accept(durableId, {
+      message: serializeZulipDurableInboundMessage(message),
+      receivedAt: Date.now(),
+    });
+
+    await runMonitorOnce();
+
+    const pending = await journal.pending();
+    expect(pending).toHaveLength(1);
+    expect(pending[0]).toMatchObject({
+      lastError: "Zulip stream metadata unavailable during durable replay",
+    });
+    expect(state.addZulipReaction).not.toHaveBeenCalled();
+    expect(state.core.channel.activity.record).not.toHaveBeenCalled();
+    expect(state.core.channel.inbound.buildContext).not.toHaveBeenCalled();
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
   });
 
   it("ignores duplicate inbound message ids on repeat processing", async () => {

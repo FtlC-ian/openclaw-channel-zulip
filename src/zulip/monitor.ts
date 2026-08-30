@@ -372,14 +372,21 @@ async function saveZulipMediaBuffer(params: {
 const ABORTED_INBOUND_MESSAGE = Symbol("aborted-inbound-message");
 const RETRYABLE_INBOUND_MESSAGE = Symbol("retryable-inbound-message");
 const activeMonitorReactionCleanups = new Set<() => Promise<void>>();
+let monitorReactionShutdownStarted = false;
+
+export function startZulipMonitorReactionLifecycles(): void {
+  monitorReactionShutdownStarted = false;
+}
 
 export async function clearActiveZulipMonitorReactionLifecycles(): Promise<void> {
+  monitorReactionShutdownStarted = true;
   await Promise.allSettled(
     Array.from(activeMonitorReactionCleanups, (cleanup) => cleanup()),
   );
 }
 
 export function registerZulipMonitorReactionHooks(api: OpenClawPluginApi): void {
+  api.on("gateway_start", startZulipMonitorReactionLifecycles);
   api.on("gateway_stop", clearActiveZulipMonitorReactionLifecycles);
 }
 
@@ -487,7 +494,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     message: ZulipMessage,
     options: { skipRecentDedupe?: boolean } = {},
   ) => {
-    if (opts.abortSignal?.aborted) {
+    if (opts.abortSignal?.aborted || monitorReactionShutdownStarted) {
       return ABORTED_INBOUND_MESSAGE;
     }
     const messageId = String(message.id ?? "");
@@ -901,7 +908,11 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       emojiCode?: string;
       reactionType?: string;
     }) => {
-      if (!statusReactionConfig.enabled || !reaction.emojiName) {
+      if (
+        monitorReactionShutdownStarted ||
+        !statusReactionConfig.enabled ||
+        !reaction.emojiName
+      ) {
         return;
       }
       try {
@@ -915,7 +926,11 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       emojiCode?: string;
       reactionType?: string;
     }) => {
-      if (statusReactionConfig.enabled && reaction.emojiName) {
+      if (
+        !monitorReactionShutdownStarted &&
+        statusReactionConfig.enabled &&
+        reaction.emojiName
+      ) {
         await addZulipReaction(client, { messageId, ...reaction });
       }
     };
@@ -942,7 +957,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         logVerboseMessage(`zulip: failed to remove reaction ${reaction.emojiName}: ${String(err)}`);
       }
     };
-    if (opts.abortSignal?.aborted) {
+    if (opts.abortSignal?.aborted || monitorReactionShutdownStarted) {
       return ABORTED_INBOUND_MESSAGE;
     }
     const statusReactions = createStatusReactionController({
@@ -993,7 +1008,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       subagentLifecycleSettled = true;
       releaseReactionCleanupIfSettled();
     });
-    if (opts.abortSignal?.aborted) {
+    if (opts.abortSignal?.aborted || monitorReactionShutdownStarted) {
       await cancelReactionLifecycle();
       opts.statusSink?.({ lastInboundAt: Date.now() });
       return ABORTED_INBOUND_MESSAGE;

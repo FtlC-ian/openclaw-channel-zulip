@@ -320,7 +320,9 @@ function enableDurableInboundJournal() {
 }
 
 describe("monitorZulipProvider", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    const { startZulipMonitorReactionLifecycles } = await import("./monitor.js");
+    startZulipMonitorReactionLifecycles();
     state.core = state.createCore();
     state.core.channel.inbound.buildContext.mockImplementation(buildChannelInboundEventContext);
     state.durableStores = new Map();
@@ -546,6 +548,20 @@ describe("monitorZulipProvider", () => {
     const dispatchStarted = new Promise<void>((resolve) => {
       dispatched = resolve;
     });
+    let removalStarted!: () => void;
+    const removalAttempted = new Promise<void>((resolve) => {
+      removalStarted = resolve;
+    });
+    let releaseRemoval!: () => void;
+    const removalAllowed = new Promise<void>((resolve) => {
+      releaseRemoval = resolve;
+    });
+    state.removeZulipReaction.mockImplementation(async (_client, reaction) => {
+      if (reaction.messageId === "1092" && reaction.emojiName === "eyes") {
+        removalStarted();
+        await removalAllowed;
+      }
+    });
     state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
       async ({ dispatcherOptions, replyOptions }) => {
         await dispatcherOptions.onReplyStart?.();
@@ -560,7 +576,10 @@ describe("monitorZulipProvider", () => {
     state.pollResponses = [
       {
         result: "success",
-        events: [{ id: 1, type: "message", message: makeChannelMessage(1092) }],
+        events: [
+          { id: 1, type: "message", message: makeChannelMessage(1092) },
+          { id: 2, type: "message", message: makeChannelMessage(1093) },
+        ],
       },
     ];
 
@@ -569,19 +588,32 @@ describe("monitorZulipProvider", () => {
     const {
       clearActiveZulipMonitorReactionLifecycles,
       registerZulipMonitorReactionHooks,
+      startZulipMonitorReactionLifecycles,
     } = await import("./monitor.js");
     const on = vi.fn();
     registerZulipMonitorReactionHooks({ on } as never);
+    expect(on).toHaveBeenCalledWith("gateway_start", startZulipMonitorReactionLifecycles);
     expect(on).toHaveBeenCalledWith(
       "gateway_stop",
       clearActiveZulipMonitorReactionLifecycles,
     );
 
-    await clearActiveZulipMonitorReactionLifecycles();
+    const gatewayCleanup = clearActiveZulipMonitorReactionLifecycles();
+    await removalAttempted;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    releaseRemoval();
+    await gatewayCleanup;
 
     expect(state.removeZulipReaction).toHaveBeenCalledWith(
       state.client,
       expect.objectContaining({ messageId: "1092", emojiName: "eyes" }),
+    );
+    expect(
+      state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher,
+    ).toHaveBeenCalledTimes(1);
+    expect(state.addZulipReaction).not.toHaveBeenCalledWith(
+      state.client,
+      expect.objectContaining({ messageId: "1093" }),
     );
     state.abortController?.abort();
     await monitorPromise;

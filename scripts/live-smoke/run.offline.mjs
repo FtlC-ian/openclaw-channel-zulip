@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { isBotMessage, lifecycleSummary, redactError, validateEnvironment } from "./run.mjs";
+import { EventQueue, isBotMessage, lifecycleSummary, normalizeScenarioError, redactError, validateEnvironment } from "./run.mjs";
 
 const validEnv = {
   ZULIP_URL: "https://zulip.example.test/path",
@@ -36,6 +36,30 @@ test("requires lifecycle and subagent reactions to be removed", () => {
   assert.deepEqual(lifecycleSummary([{ ...base, op: "add" }, { ...base, op: "remove" }], "42"), {
     added: [{ ...base, op: "add" }], allRemoved: true, sawSubagent: true,
   });
+});
+
+test("cancels a timed-out event wait", async () => {
+  const queue = new EventQueue({ request: async () => ({ events: [] }) });
+  const controller = new AbortController();
+  const waiting = queue.waitFor(() => false, 10000, "never", controller.signal);
+  controller.abort(new Error("scenario timed out"));
+  await assert.rejects(waiting, (error) => error.name === "AbortError");
+  assert.equal(normalizeScenarioError(controller.signal, new Error("aborted fetch")).message, "scenario timed out");
+});
+
+test("coalesces concurrent event polls", async () => {
+  let calls = 0;
+  let resolveRequest;
+  const queue = new EventQueue({ request: () => {
+    calls += 1;
+    return new Promise((resolve) => { resolveRequest = resolve; });
+  }});
+  const first = queue.poll();
+  const second = queue.poll();
+  assert.equal(calls, 1);
+  resolveRequest({ events: [{ id: 1, type: "message" }] });
+  await Promise.all([first, second]);
+  assert.equal(queue.events.length, 1);
 });
 
 test("workflow is manual, protected, pinned, and bounded", async () => {

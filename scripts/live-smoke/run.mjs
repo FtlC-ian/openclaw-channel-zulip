@@ -168,7 +168,7 @@ export async function inspectChildTranscripts(stateDir, marker) {
     for (const entry of entries) {
       const path = resolve(directory, entry.name);
       if (entry.isDirectory()) await visit(path);
-      else if (entry.isFile() && /\.jsonl(?:\.(?:deleted|reset)\..+)?$/.test(entry.name)) files.push(path);
+      else if (entry.isFile() && isUsageCountedTranscriptName(entry.name)) files.push(path);
     }
   };
   await visit(resolve(stateDir, "agents"));
@@ -184,6 +184,13 @@ export async function inspectChildTranscripts(stateDir, marker) {
     if (results.at(-1) === marker) completedExact += 1;
   }
   return { total, completedExact };
+}
+
+export function isUsageCountedTranscriptName(name) {
+  const stamp = "\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}(?:\\.\\d{3})?Z";
+  if (new RegExp(`\\.jsonl\\.(?:deleted|reset)\\.${stamp}$`).test(name)) return true;
+  if (!name.endsWith(".jsonl") || name.endsWith(".trajectory.jsonl")) return false;
+  return !/\.checkpoint\.[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.jsonl$/i.test(name);
 }
 
 export async function writeGatewayGeneration(path, generation) {

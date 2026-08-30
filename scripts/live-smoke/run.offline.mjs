@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { assertFinalPrivateTypingStop, assertMessageRemainsExact, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, EventQueue, Gateway, hasFinalPrivateTypingStop, inspectChildTranscripts, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactPollMessage, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, lifecycleSummary, normalizeScenarioError, redactError, resolveUploadUrl, signalProcessTree, subagentCompletedBeforeReply, validateEnvironment, waitForProcessTreeExit, writeGatewayGeneration } from "./run.mjs";
+import { assertFinalPrivateTypingStop, assertMessageRemainsExact, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, EventQueue, Gateway, hasFinalPrivateTypingStop, inspectChildTranscripts, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactPollMessage, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, isUsageCountedTranscriptName, lifecycleSummary, normalizeScenarioError, redactError, resolveUploadUrl, signalProcessTree, subagentCompletedBeforeReply, validateEnvironment, waitForProcessTreeExit, writeGatewayGeneration } from "./run.mjs";
 
 const validEnv = {
   ZULIP_URL: "https://zulip.example.test/path",
@@ -243,6 +243,22 @@ test("requires the exact child result in an assistant transcript message", async
   } finally {
     await rm(stateDir, { recursive: true, force: true });
   }
+});
+
+test("matches only locked OpenClaw session transcript filenames", () => {
+  for (const name of [
+    "child.jsonl",
+    "child.jsonl.deleted.2026-08-30T19-00-00Z",
+    "child.jsonl.deleted.2026-08-30T19-00-00.000Z",
+    "child.jsonl.reset.2026-08-30T19-00-00.000Z",
+  ]) assert.equal(isUsageCountedTranscriptName(name), true, name);
+  for (const name of [
+    "child.jsonl.deleted.not-a-timestamp",
+    "child.jsonl.reset.2026-08-30T19-00-00.000Z.extra",
+    "child.jsonl.deleted.2026-08-30T19-00-00.00Z",
+    "child.trajectory.jsonl",
+    "child.checkpoint.11111111-1111-4111-8111-111111111111.jsonl",
+  ]) assert.equal(isUsageCountedTranscriptName(name), false, name);
 });
 
 test("counts message cleanup failures without skipping later deletions", async () => {

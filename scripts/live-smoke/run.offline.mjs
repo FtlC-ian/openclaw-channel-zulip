@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { EventEmitter, once } from "node:events";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { EventQueue, Gateway, isBotMessage, isChildRunning, isExactPoll, isExactRenderedContent, isExactUtf8, lifecycleSummary, normalizeScenarioError, redactError, signalProcessTree, validateEnvironment, waitForProcessTreeExit } from "./run.mjs";
+import { buildApiUrl, EventQueue, Gateway, isBotMessage, isChildRunning, isExactPoll, isExactRenderedContent, isExactUtf8, lifecycleSummary, normalizeScenarioError, redactError, signalProcessTree, validateEnvironment, waitForProcessTreeExit } from "./run.mjs";
 
 const validEnv = {
   ZULIP_URL: "https://zulip.example.test/path",
@@ -15,10 +15,15 @@ const validEnv = {
   SMOKE_TESTED_SHA: "a".repeat(40),
 };
 
-test("validates protected configuration without returning URL paths", () => {
-  assert.equal(validateEnvironment(validEnv).ZULIP_URL, "https://zulip.example.test");
+test("validates protected configuration while preserving base paths", () => {
+  assert.equal(validateEnvironment(validEnv).ZULIP_URL, "https://zulip.example.test/path");
   assert.throws(() => validateEnvironment({ ...validEnv, ZULIP_URL: "http://zulip.test" }), /HTTPS/);
   assert.throws(() => validateEnvironment({ ...validEnv, ZULIP_SMOKE_USER_API_KEY: "" }), /protected configuration/);
+});
+
+test("preserves Zulip base paths when constructing API URLs", () => {
+  assert.equal(buildApiUrl("https://zulip.example.test/path", "/messages").href, "https://zulip.example.test/path/api/v1/messages");
+  assert.equal(buildApiUrl("https://zulip.example.test", "user_uploads").href, "https://zulip.example.test/api/v1/user_uploads");
 });
 
 test("redacts URLs and authorization values", () => {

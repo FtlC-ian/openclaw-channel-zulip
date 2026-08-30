@@ -22,7 +22,13 @@ export function validateEnvironment(env) {
   if (!/^[0-9a-f]{40}$/.test(env.SMOKE_TESTED_SHA)) throw new Error("SMOKE_TESTED_SHA must be a full commit SHA");
   const url = new URL(env.ZULIP_URL);
   if (url.protocol !== "https:") throw new Error("ZULIP_URL must use HTTPS");
-  return { ...env, ZULIP_URL: url.origin };
+  url.search = "";
+  url.hash = "";
+  return { ...env, ZULIP_URL: url.toString().replace(/\/+$/, "") };
+}
+
+export function buildApiUrl(baseUrl, path) {
+  return new URL(`${baseUrl.replace(/\/+$/, "")}/api/v1/${path.replace(/^\/+/, "")}`);
 }
 
 export function redactError(error) {
@@ -100,7 +106,7 @@ class ZulipClient {
   }
 
   async request(path, { method = "GET", params, body, signal } = {}) {
-    const url = new URL(`/api/v1/${path}`, this.baseUrl);
+    const url = buildApiUrl(this.baseUrl, path);
     if (params) for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value));
     const response = await fetch(url, {
       method,
@@ -116,7 +122,7 @@ class ZulipClient {
   async upload(filename, contents, signal) {
     const form = new FormData();
     form.set("file", new Blob([contents], { type: "text/plain" }), filename);
-    const response = await fetch(new URL("/api/v1/user_uploads", this.baseUrl), {
+    const response = await fetch(buildApiUrl(this.baseUrl, "user_uploads"), {
       method: "POST", headers: { Authorization: this.authorization }, body: form,
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30000)]) : AbortSignal.timeout(30000),
     });

@@ -114,6 +114,17 @@ export function hasFinalPrivateTypingStop(events, botEmail, actorEmail) {
   return lifecycle.some((event) => event.op === "start") && lifecycle.at(-1)?.op === "stop";
 }
 
+export async function assertFinalPrivateTypingStop(queue, eventStart, botEmail, actorEmail, signal, settleMs = 500) {
+  await delay(settleMs, undefined, { signal });
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const batch = await queue.poll(signal);
+    if (!batch.some((event) => event.type !== "heartbeat")) break;
+  }
+  if (!hasFinalPrivateTypingStop(queue.events.slice(eventStart), botEmail, actorEmail)) {
+    throw new Error("Final direct typing state was not stopped after lifecycle completion");
+  }
+}
+
 function hasExactDirectParticipants(recipients, botEmail, actorEmail) {
   const emails = new Set(recipients.map((recipient) => recipient?.email ?? recipient).filter(Boolean));
   return emails.size === 2 && emails.has(botEmail) && emails.has(actorEmail);
@@ -513,10 +524,6 @@ async function main() {
       const inboundId = await sendDm(command(`lifecycle ${marker} ${childResult}`), signal);
       const reply = await queue.waitFor((e) => isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, marker), timeoutMs, "lifecycle reply", signal);
       messageIds.bot.add(String(reply.message.id));
-      await queue.waitFor((e) => {
-        if (queue.events.indexOf(e) < eventStart || !isPrivateTypingEvent(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, "stop")) return false;
-        return hasFinalPrivateTypingStop(queue.events.slice(eventStart), env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL);
-      }, timeoutMs, "ordered typing start/stop cleanup", signal);
       const deadline = Date.now() + timeoutMs;
       let summary;
       while (Date.now() < deadline) {
@@ -538,6 +545,7 @@ async function main() {
       if (childTranscriptCount !== 1) {
         throw new Error(`Found ${childTranscriptCount} completed child transcripts with the exact required result; expected one`);
       }
+      await assertFinalPrivateTypingStop(queue, eventStart, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, signal);
     });
 
     await scenario("explicit-reaction", async (signal) => {

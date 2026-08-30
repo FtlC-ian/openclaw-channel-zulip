@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { EventQueue, isBotMessage, lifecycleSummary, normalizeScenarioError, redactError, validateEnvironment } from "./run.mjs";
+import { EventQueue, isBotMessage, isExactPoll, lifecycleSummary, normalizeScenarioError, redactError, validateEnvironment } from "./run.mjs";
 
 const validEnv = {
   ZULIP_URL: "https://zulip.example.test/path",
@@ -28,14 +28,28 @@ test("redacts URLs and authorization values", () => {
 test("matches only marked messages from the configured bot", () => {
   const event = { type: "message", message: { sender_email: "bot@example.test", content: "marker" } };
   assert.equal(isBotMessage(event, "bot@example.test", "marker"), true);
+  assert.equal(isBotMessage({ ...event, message: { ...event.message, content: "<p>marker</p>" } }, "bot@example.test", "marker"), true);
+  assert.equal(isBotMessage({ ...event, message: { ...event.message, content: "prefix marker" } }, "bot@example.test", "marker"), false);
   assert.equal(isBotMessage(event, "other@example.test", "marker"), false);
 });
 
 test("requires lifecycle and subagent reactions to be removed", () => {
-  const base = { type: "reaction", message_id: 42, emoji_name: "robot", emoji_code: "1f916", reaction_type: "unicode_emoji" };
+  const base = { type: "reaction", message_id: 42, user_id: 7, emoji_name: "robot", emoji_code: "1f916", reaction_type: "unicode_emoji" };
   assert.deepEqual(lifecycleSummary([{ ...base, op: "add" }, { ...base, op: "remove" }], "42"), {
     added: [{ ...base, op: "add" }], allRemoved: true, sawSubagent: true,
   });
+  assert.equal(lifecycleSummary([{ ...base, op: "add" }, { ...base, op: "remove" }, { ...base, op: "add" }], "42").allRemoved, false);
+  assert.equal(lifecycleSummary([{ ...base, op: "add" }, { ...base, user_id: 8, op: "add" }, { ...base, op: "remove" }], "42").allRemoved, false);
+});
+
+test("requires the poll's exact ordered choices and replies", () => {
+  const widget = { extra_data: { poll: true, heading: "question", choices: [
+    { type: "multiple_choice", short_name: "a", long_name: "a", reply: "a" },
+    { type: "multiple_choice", short_name: "b", long_name: "b", reply: "b" },
+  ] } };
+  assert.equal(isExactPoll(widget, "question", ["a", "b"]), true);
+  assert.equal(isExactPoll(widget, "question", ["b", "a"]), false);
+  assert.equal(isExactPoll({ extra_data: { ...widget.extra_data, choices: [{ ...widget.extra_data.choices[0], reply: "wrong" }, widget.extra_data.choices[1]] } }, "question", ["a", "b"]), false);
 });
 
 test("cancels a timed-out event wait", async () => {

@@ -35,21 +35,39 @@ export function redactError(error) {
 }
 
 export function isBotMessage(event, botEmail, marker) {
-  return event?.type === "message" && event.message?.sender_email === botEmail &&
-    String(event.message?.content ?? "").includes(marker);
+  if (event?.type !== "message" || event.message?.sender_email !== botEmail) return false;
+  const content = String(event.message?.content ?? "").trim();
+  return content === marker || content === `<p>${escapeHtml(marker)}</p>`;
 }
 
 export function lifecycleSummary(events, inboundMessageId) {
   const relevant = events.filter((event) =>
     event?.type === "reaction" && String(event.message_id) === String(inboundMessageId),
   );
-  const added = relevant.filter((event) => event.op === "add");
-  const removedKeys = new Set(relevant.filter((event) => event.op === "remove").map(reactionKey));
+  const added = [];
+  const active = new Set();
+  for (const event of relevant) {
+    const key = reactionKey(event);
+    if (event.op === "add") {
+      added.push(event);
+      active.add(key);
+    } else if (event.op === "remove") {
+      active.delete(key);
+    }
+  }
   return {
     added,
-    allRemoved: added.length > 0 && added.every((event) => removedKeys.has(reactionKey(event))),
+    allRemoved: added.length > 0 && active.size === 0,
     sawSubagent: added.some((event) => event.emoji_name === "robot" || event.emoji_code === "1f916"),
   };
+}
+
+export function isExactPoll(widget, question, options) {
+  const extra = widget?.extra_data;
+  if (extra?.poll !== true || extra.heading !== question || !Array.isArray(extra.choices)) return false;
+  if (extra.choices.length !== options.length) return false;
+  return extra.choices.every((choice, index) => choice?.type === "multiple_choice" &&
+    choice.short_name === options[index] && choice.long_name === options[index] && choice.reply === options[index]);
 }
 
 export function normalizeScenarioError(signal, error) {
@@ -57,7 +75,13 @@ export function normalizeScenarioError(signal, error) {
 }
 
 function reactionKey(event) {
-  return `${event.emoji_name ?? ""}:${event.emoji_code ?? ""}:${event.reaction_type ?? ""}`;
+  const user = event.user_id ?? event.user?.user_id ?? event.user?.email ?? event.user?.full_name ?? "";
+  return `${user}:${event.emoji_name ?? ""}:${event.emoji_code ?? ""}:${event.reaction_type ?? ""}`;
+}
+
+function escapeHtml(value) {
+  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;").replaceAll("'", "&#39;");
 }
 
 class ZulipClient {
@@ -286,7 +310,7 @@ async function main() {
         const raw = e.message?.widget_content;
         let widget = raw;
         if (typeof raw === "string") { try { widget = JSON.parse(raw); } catch { return false; } }
-        return widget?.extra_data?.poll === true && widget?.extra_data?.heading === question;
+        return isExactPoll(widget, question, [optionA, optionB]);
       }, timeoutMs, "native poll", signal);
       messageIds.bot.add(String(poll.message.id));
       await sendDm(optionA, signal);

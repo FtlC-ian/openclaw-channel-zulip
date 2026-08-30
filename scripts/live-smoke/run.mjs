@@ -114,12 +114,20 @@ export function hasFinalPrivateTypingStop(events, botEmail, actorEmail) {
   return lifecycle.some((event) => event.op === "start") && lifecycle.at(-1)?.op === "stop";
 }
 
-export async function assertFinalPrivateTypingStop(queue, eventStart, botEmail, actorEmail, signal, settleMs = 500) {
-  await delay(settleMs, undefined, { signal });
-  for (let attempt = 0; attempt < 5; attempt += 1) {
+export async function drainEventQueueUntilQuiet(queue, signal, quietMs = 500, maxMs = 5000, pollIntervalMs = 100) {
+  const deadline = Date.now() + maxMs;
+  let quietSince = Date.now();
+  while (Date.now() < deadline) {
     const batch = await queue.poll(signal);
-    if (!batch.some((event) => event.type !== "heartbeat")) break;
+    if (batch.some((event) => event.type !== "heartbeat")) quietSince = Date.now();
+    if (Date.now() - quietSince >= quietMs) return;
+    await delay(pollIntervalMs, undefined, { signal });
   }
+  throw new Error("Event queue did not reach a stable quiet window");
+}
+
+export async function assertFinalPrivateTypingStop(queue, eventStart, botEmail, actorEmail, signal, quietMs = 500, maxMs = 5000, pollIntervalMs = 100) {
+  await drainEventQueueUntilQuiet(queue, signal, quietMs, maxMs, pollIntervalMs);
   if (!hasFinalPrivateTypingStop(queue.events.slice(eventStart), botEmail, actorEmail)) {
     throw new Error("Final direct typing state was not stopped after lifecycle completion");
   }

@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { assertFinalPrivateTypingStop, assertMessageRemainsExact, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, EventQueue, Gateway, hasFinalPrivateTypingStop, inspectChildTranscripts, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactPollMessage, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, isUsageCountedTranscriptName, lifecycleSummary, normalizeScenarioError, redactError, resolveUploadUrl, signalProcessTree, subagentCompletedBeforeReply, validateEnvironment, waitForProcessTreeExit, writeGatewayGeneration } from "./run.mjs";
+import { assertFinalPrivateTypingStop, assertMessageRemainsExact, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, drainEventQueueUntilQuiet, EventQueue, Gateway, hasFinalPrivateTypingStop, inspectChildTranscripts, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactPollMessage, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, isUsageCountedTranscriptName, lifecycleSummary, normalizeScenarioError, redactError, resolveUploadUrl, signalProcessTree, subagentCompletedBeforeReply, validateEnvironment, waitForProcessTreeExit, writeGatewayGeneration } from "./run.mjs";
 
 const validEnv = {
   ZULIP_URL: "https://zulip.example.test/path",
@@ -101,9 +101,35 @@ test("rechecks the final typing state after draining later events", async () => 
     },
   };
   await assert.rejects(
-    assertFinalPrivateTypingStop(queue, 0, "bot@example.test", "user@example.test", undefined, 0),
+    assertFinalPrivateTypingStop(queue, 0, "bot@example.test", "user@example.test", undefined, 10, 100, 0),
     /Final direct typing state was not stopped/,
   );
+});
+
+test("drains through a transient empty poll before checking terminal lifecycle state", async () => {
+  const base = { type: "reaction", message_id: 42, user_id: 7, reaction_type: "unicode_emoji" };
+  const events = [
+    { ...base, emoji_name: "robot", emoji_code: "1f916", op: "add" },
+    { ...base, emoji_name: "robot", emoji_code: "1f916", op: "remove" },
+  ];
+  const started = Date.now();
+  let terminalSent = false;
+  const queue = { events, async poll() {
+    if (!terminalSent && Date.now() - started >= 10) {
+      terminalSent = true;
+      const terminal = { ...base, emoji_name: "white_check_mark", emoji_code: "2705", op: "add" };
+      this.events.push(terminal);
+      return [terminal];
+    }
+    return [];
+  } };
+  await drainEventQueueUntilQuiet(queue, undefined, 30, 200, 5);
+  assert.equal(lifecycleSummary(queue.events, "42").allRemoved, false);
+});
+
+test("fails closed when the event queue never reaches a quiet window", async () => {
+  const queue = { events: [], async poll() { return [{ type: "message" }]; } };
+  await assert.rejects(drainEventQueueUntilQuiet(queue, undefined, 10, 25, 0), /stable quiet window/);
 });
 
 test("matches complete raw or Zulip-rendered content", () => {

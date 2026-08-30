@@ -114,13 +114,13 @@ export function hasFinalPrivateTypingStop(events, botEmail, actorEmail) {
   return lifecycle.some((event) => event.op === "start") && lifecycle.at(-1)?.op === "stop";
 }
 
-export async function drainEventQueueUntilQuiet(queue, signal, quietMs = 500, maxMs = 5000, pollIntervalMs = 100) {
+export async function drainEventQueueUntilQuiet(queue, signal, quietMs = 500, maxMs = 5000, pollIntervalMs = 100, isComplete = () => true) {
   const deadline = Date.now() + maxMs;
   let quietSince = Date.now();
   while (Date.now() < deadline) {
     const batch = await queue.poll(signal);
     if (batch.some((event) => event.type !== "heartbeat")) quietSince = Date.now();
-    if (Date.now() - quietSince >= quietMs) return;
+    if (Date.now() - quietSince >= quietMs && isComplete()) return;
     await delay(pollIntervalMs, undefined, { signal });
   }
   throw new Error("Event queue did not reach a stable quiet window");
@@ -595,6 +595,7 @@ async function main() {
         throw new Error(`Found ${childTranscripts.total} child transcripts and ${childTranscripts.completedExact} exact completed results; expected exactly one of each`);
       }
       await assertFinalPrivateTypingStop(queue, eventStart, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, signal);
+      await drainEventQueueUntilQuiet(queue, signal, 500, timeoutMs, 100, () => lifecycleSummary(queue.events, inboundId).allRemoved);
       summary = lifecycleSummary(queue.events, inboundId);
       if (!summary.added.length) throw new Error("No lifecycle reaction was observed on the inbound message");
       if (!summary.sawSubagent) throw new Error("No truthful subagent lifecycle reaction was observed");

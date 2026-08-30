@@ -132,6 +132,38 @@ test("fails closed when the event queue never reaches a quiet window", async () 
   await assert.rejects(drainEventQueueUntilQuiet(queue, undefined, 10, 25, 0), /stable quiet window/);
 });
 
+test("waits through the locked default terminal hold until lifecycle cleanup", async () => {
+  const base = { type: "reaction", message_id: 42, user_id: 7, reaction_type: "unicode_emoji" };
+  const terminal = { ...base, emoji_name: "check", emoji_code: "2705" };
+  const events = [
+    { ...base, emoji_name: "robot", emoji_code: "1f916", op: "add" },
+    { ...base, emoji_name: "robot", emoji_code: "1f916", op: "remove" },
+  ];
+  const started = Date.now();
+  let added = false;
+  let removed = false;
+  const queue = { events, async poll() {
+    const elapsed = Date.now() - started;
+    if (!added && elapsed >= 25) {
+      added = true;
+      const event = { ...terminal, op: "add" };
+      this.events.push(event);
+      return [event];
+    }
+    if (!removed && elapsed >= 1525) {
+      removed = true;
+      const event = { ...terminal, op: "remove" };
+      this.events.push(event);
+      return [event];
+    }
+    return [];
+  } };
+  await drainEventQueueUntilQuiet(queue, undefined, 500, 4000, 25, () => lifecycleSummary(queue.events, "42").allRemoved);
+  assert.equal(removed, true);
+  assert.equal(lifecycleSummary(queue.events, "42").allRemoved, true);
+  assert.equal(Date.now() - started >= 2000, true);
+});
+
 test("matches complete raw or Zulip-rendered content", () => {
   assert.equal(isExactRenderedContent("after", "after"), true);
   assert.equal(isExactRenderedContent("<p>after</p>", "after"), true);

@@ -416,6 +416,11 @@ test("accepts only a standalone outbound upload without captions or local paths"
   assert.equal(extractExactUploadUrl('<p><a href="/user_uploads/x/%252Froot%25.txt">%2Froot%.txt</a></p>'), undefined);
   assert.equal(extractExactUploadUrl('<p><a href="/user_uploads/x/..%252Fsecret%25.txt">..%2Fsecret%.txt</a></p>'), undefined);
   assert.equal(extractExactUploadUrl('<p><a href="/user_uploads/x/%255Chome%25ZZ.txt">%5Chome%ZZ.txt</a></p>'), undefined);
+  assert.equal(extractExactUploadUrl('<p><a href="/user_uploads/x/file.txt?source=/home/runner/file.txt">/user_uploads/x/file.txt?source=/home/runner/file.txt</a></p>'), undefined);
+  assert.equal(extractExactUploadUrl('<p><a href="/user_uploads/x/file.txt#/home/runner/file.txt">/user_uploads/x/file.txt#/home/runner/file.txt</a></p>'), undefined);
+  assert.equal(extractExactUploadUrl("/user_uploads/x/file.txt?source=%252Fhome%252Frunner"), undefined);
+  assert.equal(extractExactUploadUrl('<p><a href="/user_uploads/x/%ZZ.txt">%ZZ.txt</a></p>'), undefined);
+  assert.equal(extractExactUploadUrl('<p><a href="/user_uploads/x/100%.txt">100%.txt</a></p>'), undefined);
   assert.equal(extractExactUploadUrl('<p><a href="/user_uploads/x/file.txt">unrequested prose</a></p>'), undefined);
   assert.equal(extractExactUploadUrl('<p><a href="/user_uploads/x/My%20File.txt">My File.txt</a></p>'), "/user_uploads/x/My%20File.txt");
   assert.equal(extractExactUploadUrl('<p><a href="/user_uploads/x/file.txt">/user_uploads/x/file.txt</a></p>'), "/user_uploads/x/file.txt");

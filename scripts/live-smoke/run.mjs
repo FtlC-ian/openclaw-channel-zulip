@@ -284,16 +284,14 @@ export function extractExactUploadUrl(content) {
   const anchor = rendered.match(/^<p><a href="([^"<>]*\/user_uploads\/[^"<>]+)">([^<>]+)<\/a><\/p>$/);
   if (anchor) {
     const href = anchor[1].replaceAll("&amp;", "&");
+    if (/[?#]/.test(href)) return undefined;
     const basename = href.split(/[?#]/, 1)[0].split("/").at(-1);
     let decodedBasename = basename;
     let fullyDecodedBasename = basename;
     for (let depth = 0; depth < 100; depth += 1) {
       if (/%(?:2f|5c|00)/i.test(fullyDecodedBasename)) return undefined;
       let decoded;
-      try { decoded = decodeURIComponent(fullyDecodedBasename); } catch {
-        if (fullyDecodedBasename !== basename) return undefined;
-        break;
-      }
+      try { decoded = decodeURIComponent(fullyDecodedBasename); } catch { return undefined; }
       if (depth === 0) decodedBasename = decoded;
       if (decoded === fullyDecodedBasename) break;
       fullyDecodedBasename = decoded;
@@ -305,7 +303,8 @@ export function extractExactUploadUrl(content) {
     return href;
   }
   const bare = rendered.match(/^((?:https?:\/\/[^\s<>]+)?\/[^\s<>]*user_uploads\/[^\s<>]+)$/);
-  return bare?.[1].replaceAll("&amp;", "&");
+  const bareUrl = bare?.[1].replaceAll("&amp;", "&");
+  return bareUrl && !/[?#]/.test(bareUrl) ? bareUrl : undefined;
 }
 
 export function isExactPollMessage(message, question, options) {

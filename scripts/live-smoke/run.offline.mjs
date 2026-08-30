@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { assertMessageRemainsExact, buildApiUrl, captureMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, EventQueue, Gateway, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, lifecycleSummary, normalizeScenarioError, redactError, resolveUploadUrl, signalProcessTree, validateEnvironment, waitForProcessTreeExit, writeGatewayGeneration } from "./run.mjs";
+import { assertMessageRemainsExact, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, EventQueue, Gateway, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, lifecycleSummary, normalizeScenarioError, redactError, resolveUploadUrl, signalProcessTree, validateEnvironment, waitForProcessTreeExit, writeGatewayGeneration } from "./run.mjs";
 
 const validEnv = {
   ZULIP_URL: "https://zulip.example.test/path",
@@ -101,6 +101,27 @@ test("captures every attributable reply id before an early failure", () => {
   const matches = captureMessageIds(events, (event) => event.message.content !== "unrelated", ids);
   assert.equal(matches.length, 2);
   assert.deepEqual([...ids], ["1", "2"]);
+});
+
+test("captures every observed in-run bot message while excluding already deleted messages", () => {
+  const dm = (id, content, sender = "bot@example.test") => ({ type: "message", message: {
+    id, type: "private", sender_email: sender, content, display_recipient: [
+      { email: "bot@example.test" }, { email: "user@example.test" },
+    ],
+  } });
+  const events = [
+    dm(1, "malformed extra output"),
+    dm(2, "already deleted"),
+    dm(3, "other sender", "other@example.test"),
+    { type: "message", message: { id: 4, type: "stream", sender_email: "bot@example.test", content: "wrong", display_recipient: "smoke", subject: "run-id-topic" } },
+    { type: "message", message: { id: 5, type: "stream", sender_email: "bot@example.test", content: "run-id marker", display_recipient: "other", subject: "other" } },
+  ];
+  const ids = new Set();
+  const matches = captureObservedSmokeBotMessageIds(events, {
+    botEmail: "bot@example.test", actorEmail: "user@example.test", stream: "smoke", runId: "run-id",
+  }, ids, new Set(["2"]));
+  assert.equal(matches.length, 3);
+  assert.deepEqual([...ids], ["1", "4", "5"]);
 });
 
 test("compares downloaded upload contents as exact UTF-8 bytes", () => {
@@ -314,6 +335,6 @@ test("workflow is manual, protected, pinned, and bounded", async () => {
   assert.match(workflow, /reserves robot and tada reactions for exact evidence/);
   assert.match(agentProtocol, /verify\nthat exact result/);
   assert.match(agentProtocol, /\.smoke-gateway-generation/);
-  assert.match(agentProtocol, /at least four\nseconds/);
+  assert.match(agentProtocol, /at least six\nseconds/);
   for (const use of workflow.matchAll(/uses:\s+([^\s]+)/g)) assert.match(use[1], /@[0-9a-f]{40}$/);
 });

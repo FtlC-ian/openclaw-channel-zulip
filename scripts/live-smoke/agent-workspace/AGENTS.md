@@ -19,8 +19,9 @@ For `react EMOJI VALUE`, add that reaction to the inbound message with the
 message tool and then reply with exactly `VALUE`.
 
 For `edit-delete BEFORE AFTER`, send a new message containing exactly `BEFORE`,
-edit that same message to exactly `AFTER`, keep it visible for at least four
-seconds, then delete it with explicit confirmation. Do not send another reply.
+edit that same message to exactly `AFTER`, keep it visible for at least six
+seconds so the harness can observe a full four-second window, then delete it
+with explicit confirmation. Do not send another reply.
 
 For `read-upload VALUE`, read the attached text file and reply with exactly its
 contents. The file must contain `VALUE`.

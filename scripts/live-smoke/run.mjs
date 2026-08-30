@@ -89,6 +89,16 @@ export function captureMessageIds(events, predicate, target) {
   return matches;
 }
 
+export function captureObservedSmokeBotMessageIds(events, { botEmail, actorEmail, stream, runId }, target, excluded = new Set()) {
+  return captureMessageIds(events, (event) => {
+    if (event?.type !== "message" || event.message?.sender_email !== botEmail || excluded.has(String(event.message?.id))) return false;
+    if (isPrivateBotEvent(event, botEmail, actorEmail)) return true;
+    const content = String(event.message?.content ?? "");
+    return content.includes(runId) || (event.message?.type === "stream" &&
+      event.message?.display_recipient === stream && event.message?.subject === `${runId}-topic`);
+  }, target);
+}
+
 export function isPrivateTypingEvent(event, botEmail, actorEmail, op) {
   if (event?.type !== "typing" || event.op !== op) return false;
   const senderEmail = event.sender?.email ?? event.sender_email;
@@ -444,6 +454,7 @@ async function main() {
   const gateway = new Gateway(env.SMOKE_GATEWAY_PORT || 18789);
   const gatewayGenerationPath = resolve("scripts/live-smoke/agent-workspace/.smoke-gateway-generation");
   const messageIds = { actor: new Set(), bot: new Set() };
+  const deletedBotMessageIds = new Set();
   const report = [];
   let runError;
   const sendDm = async (content, signal) => {
@@ -538,9 +549,9 @@ async function main() {
       const created = await queue.waitFor((e) => isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, before), timeoutMs, "message before edit", signal);
       const id = String(created.message.id); messageIds.bot.add(id);
       await queue.waitFor((e) => e.type === "update_message" && String(e.message_id) === id && isExactRenderedContent(e.content, after), timeoutMs, "message edit", signal);
-      await assertMessageRemainsExact(actor, id, after, 2000, signal);
+      await assertMessageRemainsExact(actor, id, after, 4000, signal);
       await queue.waitFor((e) => e.type === "delete_message" && (e.message_ids ?? [e.message_id]).map(String).includes(id), timeoutMs, "message delete", signal);
-      messageIds.bot.delete(id);
+      messageIds.bot.delete(id); deletedBotMessageIds.add(id);
     });
 
     await scenario("upload-download", async (signal) => {
@@ -614,6 +625,13 @@ async function main() {
   } finally {
     await gateway.stop().catch(() => {});
     await unlink(gatewayGenerationPath).catch(() => {});
+    await queue.poll().catch(() => {});
+    captureObservedSmokeBotMessageIds(queue.events, {
+      botEmail: env.ZULIP_SMOKE_BOT_EMAIL,
+      actorEmail: env.ZULIP_SMOKE_USER_EMAIL,
+      stream: env.ZULIP_SMOKE_STREAM,
+      runId,
+    }, messageIds.bot, deletedBotMessageIds);
     const cleanupFailures =
       await countMessageDeletionFailures(bot, messageIds.bot) +
       await countMessageDeletionFailures(actor, messageIds.actor);

@@ -41,6 +41,6 @@ rather than silently skipping it.
 
 The harness verifies the exact child result in the isolated OpenClaw session
 transcript and reads the edited Zulip message before and after its required
-two-second visibility window. Durable replay uses a random generation value
+four-second visibility window. Durable replay uses a random generation value
 written only after the old gateway process group is fully down; the replacement
 must read and return that value, so a queued pre-restart reply cannot pass.

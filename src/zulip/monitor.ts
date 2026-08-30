@@ -8,7 +8,11 @@ import type {
 } from "../sdk.js";
 import { createChannelPairingController } from "../sdk.js";
 import { resolveControlCommandGate } from "openclaw/plugin-sdk/command-auth-native";
-import { logTypingFailure } from "openclaw/plugin-sdk/channel-feedback";
+import {
+  createStatusReactionController,
+  DEFAULT_TIMING,
+  logTypingFailure,
+} from "openclaw/plugin-sdk/channel-feedback";
 import { formatInboundEnvelope, logInboundDrop } from "openclaw/plugin-sdk/channel-inbound";
 import { mergeDmAllowFromSources, resolveGroupAllowFromSources } from "openclaw/plugin-sdk/allow-from";
 import { readChannelIngressStoreAllowFromForDmPolicy } from "openclaw/plugin-sdk/channel-ingress-runtime";
@@ -46,7 +50,13 @@ import {
 } from "./durable-receive.js";
 import { buildZulipStreamConversation } from "../session-conversation.js";
 import { sendMessageZulip } from "./send.js";
-import { downloadZulipUpload, extractZulipUploadUrls, normalizeZulipEmojiName, sanitizeUploadFilename } from "./uploads.js";
+import { downloadZulipUpload, extractZulipUploadUrls, sanitizeUploadFilename } from "./uploads.js";
+import {
+  createZulipStatusReactionAdapter,
+  resolveZulipReactionSpec,
+  resolveZulipStatusReactionConfig,
+} from "./status-reactions.js";
+import { registerZulipSubagentReactionContext } from "./subagent-reactions.js";
 
 export type MonitorZulipOpts = {
   apiKey?: string;
@@ -358,8 +368,35 @@ async function saveZulipMediaBuffer(params: {
   return { path: filePath, contentType };
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+const ABORTED_INBOUND_MESSAGE = Symbol("aborted-inbound-message");
+const RETRYABLE_INBOUND_MESSAGE = Symbol("retryable-inbound-message");
+
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (timer) {
+        clearTimeout(timer);
+      }
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    };
+    const onAbort = () => finish();
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) {
+      finish();
+      return;
+    }
+    timer = setTimeout(finish, ms);
+  });
 }
 
 export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise<void> {
@@ -413,12 +450,20 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
   const mediaMaxBytes =
     (account.config.mediaMaxMb || cfg.agents?.defaults?.mediaMaxMb || 5) * 1024 * 1024;
 
-  const reactionConfig = account.config.reactions ?? {};
-  const reactionsEnabled = reactionConfig.enabled !== false;
-  const reactionClearOnFinish = reactionConfig.clearOnFinish !== false;
-  const reactionStart = normalizeZulipEmojiName(reactionConfig.onStart ?? "");
-  const reactionSuccess = normalizeZulipEmojiName(reactionConfig.onSuccess ?? "");
-  const reactionError = normalizeZulipEmojiName(reactionConfig.onError ?? "warning");
+  const statusReactionConfig = resolveZulipStatusReactionConfig({
+    accountConfig: account.config,
+    globalStatusReactions: cfg.messages?.statusReactions,
+  });
+  const activeMessageTasks = new Set<Promise<void>>();
+  const activeReactionCleanups = new Set<() => Promise<void>>();
+  let reactionCleanupChain = Promise.resolve();
+  const cleanupActiveReactionLifecycles = (): Promise<void> => {
+    const pending = Array.from(activeReactionCleanups, (cleanup) => cleanup());
+    reactionCleanupChain = Promise.allSettled([reactionCleanupChain, ...pending]).then(
+      () => undefined,
+    );
+    return reactionCleanupChain;
+  };
 
   const pairing = createChannelPairingController({
     core,
@@ -430,6 +475,9 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     message: ZulipMessage,
     options: { skipRecentDedupe?: boolean } = {},
   ) => {
+    if (opts.abortSignal?.aborted) {
+      return ABORTED_INBOUND_MESSAGE;
+    }
     const messageId = String(message.id ?? "");
     if (!messageId) {
       return;
@@ -836,29 +884,107 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       `zulip inbound: from=${ctxPayload.From} len=${bodyText.length} preview="${previewLine}"`,
     );
 
-    const addReactionSafe = async (emojiName: string) => {
-      if (!reactionsEnabled || !emojiName) {
+    const addReactionSafe = async (reaction: {
+      emojiName: string;
+      emojiCode?: string;
+      reactionType?: string;
+    }) => {
+      if (!statusReactionConfig.enabled || !reaction.emojiName) {
         return;
       }
       try {
-        await addZulipReaction(client, { messageId, emojiName });
+        await addZulipReaction(client, { messageId, ...reaction });
       } catch (err) {
-        logVerboseMessage(`zulip: failed to add reaction ${emojiName}: ${String(err)}`);
+        logVerboseMessage(`zulip: failed to add reaction ${reaction.emojiName}: ${String(err)}`);
       }
     };
-    const removeReactionSafe = async (emojiName: string) => {
-      if (!reactionsEnabled || !emojiName) {
+    const addStatusReaction = async (reaction: {
+      emojiName: string;
+      emojiCode?: string;
+      reactionType?: string;
+    }) => {
+      if (statusReactionConfig.enabled && reaction.emojiName) {
+        await addZulipReaction(client, { messageId, ...reaction });
+      }
+    };
+    const removeStatusReaction = async (reaction: {
+      emojiName: string;
+      emojiCode?: string;
+      reactionType?: string;
+    }) => {
+      if (statusReactionConfig.enabled && reaction.emojiName) {
+        await removeZulipReaction(client, { messageId, ...reaction });
+      }
+    };
+    const removeReactionSafe = async (reaction: {
+      emojiName: string;
+      emojiCode?: string;
+      reactionType?: string;
+    }) => {
+      if (!statusReactionConfig.enabled || !reaction.emojiName) {
         return;
       }
       try {
-        await removeZulipReaction(client, { messageId, emojiName });
+        await removeZulipReaction(client, { messageId, ...reaction });
       } catch (err) {
-        logVerboseMessage(`zulip: failed to remove reaction ${emojiName}: ${String(err)}`);
+        logVerboseMessage(`zulip: failed to remove reaction ${reaction.emojiName}: ${String(err)}`);
       }
     };
+    if (opts.abortSignal?.aborted) {
+      return ABORTED_INBOUND_MESSAGE;
+    }
+    const statusReactions = createStatusReactionController({
+      enabled: statusReactionConfig.enabled,
+      adapter: createZulipStatusReactionAdapter({
+        add: addStatusReaction,
+        remove: removeStatusReaction,
+      }),
+      initialEmoji: statusReactionConfig.emojis.queued,
+      emojis: statusReactionConfig.emojis,
+      timing: statusReactionConfig.timing,
+      onError: (err) => {
+        runtime.error?.(`zulip: status reaction update failed: ${String(err)}`);
+      },
+    });
+    statusReactions.setQueued();
 
-    if (reactionsEnabled) {
-      await addReactionSafe(reactionStart);
+    const subagentReaction = resolveZulipReactionSpec(statusReactionConfig.subagent);
+    const subagentContext = registerZulipSubagentReactionContext({
+      requesterSessionKey: String(ctxPayload.SessionKey ?? sessionKey),
+      show: () => addReactionSafe(subagentReaction),
+      hide: () => removeReactionSafe(subagentReaction),
+    });
+    let terminalCleanupTimer: ReturnType<typeof setTimeout> | undefined;
+    let reactionLifecycleCancelled = false;
+    let statusLifecycleSettled = false;
+    let subagentLifecycleSettled = false;
+    const releaseReactionCleanupIfSettled = () => {
+      if (statusLifecycleSettled && subagentLifecycleSettled) {
+        activeReactionCleanups.delete(cancelReactionLifecycle);
+      }
+    };
+    let reactionLifecycleCleanup: Promise<void> | undefined;
+    const cancelReactionLifecycle = () => {
+      reactionLifecycleCleanup ??= (async () => {
+        reactionLifecycleCancelled = true;
+        if (terminalCleanupTimer) {
+          clearTimeout(terminalCleanupTimer);
+          terminalCleanupTimer = undefined;
+        }
+        activeReactionCleanups.delete(cancelReactionLifecycle);
+        await Promise.allSettled([statusReactions.clear(), subagentContext.cancel()]);
+      })();
+      return reactionLifecycleCleanup;
+    };
+    activeReactionCleanups.add(cancelReactionLifecycle);
+    void subagentContext.closed.then(() => {
+      subagentLifecycleSettled = true;
+      releaseReactionCleanupIfSettled();
+    });
+    if (opts.abortSignal?.aborted) {
+      await cancelReactionLifecycle();
+      opts.statusSink?.({ lastInboundAt: Date.now() });
+      return ABORTED_INBOUND_MESSAGE;
     }
 
     const textLimit = core.channel.text.resolveTextChunkLimit(cfg, "zulip", account.accountId, {
@@ -912,10 +1038,14 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       },
     });
 
+    let replyDeliveryCommitted = false;
     const dispatcherOptions = {
       ...prefixOptions,
       humanDelay: core.channel.reply.resolveHumanDelayConfig(cfg, route.agentId),
-      onReplyStart: typingCallbacks.onReplyStart,
+      onReplyStart: async () => {
+        await typingCallbacks.onReplyStart();
+        await statusReactions.setThinking();
+      },
       onIdle: typingCallbacks.onIdle,
       deliver: async (payload: ReplyPayload) => {
         const mediaUrls = payload.mediaUrls ?? (payload.mediaUrl ? [payload.mediaUrl] : []);
@@ -938,6 +1068,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
               presentation: first ? payload.presentation : undefined,
               channelData: first ? payload.channelData : undefined,
             });
+            replyDeliveryCommitted = true;
             first = false;
           }
         } else {
@@ -953,6 +1084,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
               presentation: isFirst ? payload.presentation : undefined,
               channelData: isFirst ? payload.channelData : undefined,
             });
+            replyDeliveryCommitted = true;
             first = false;
           }
         }
@@ -964,34 +1096,102 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     };
 
     let dispatchError: unknown;
+    let dispatchResult:
+      | {
+          counts?: Partial<Record<"tool" | "block" | "final", number>>;
+          failedCounts?: Partial<Record<"tool" | "block" | "final", number>>;
+        }
+      | undefined;
     try {
-      await core.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
-        ctx: ctxPayload,
-        cfg,
-        dispatcherOptions,
-        replyOptions: {
-          disableBlockStreaming:
-            typeof account.blockStreaming === "boolean" ? !account.blockStreaming : undefined,
-          onModelSelected,
-        },
-      });
+      dispatchResult = await subagentContext.run(() =>
+        core.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
+          ctx: ctxPayload,
+          cfg,
+          dispatcherOptions,
+          replyOptions: {
+            disableBlockStreaming:
+              typeof account.blockStreaming === "boolean" ? !account.blockStreaming : undefined,
+            abortSignal: opts.abortSignal,
+            onModelSelected,
+            allowToolLifecycleWhenProgressHidden: statusReactionConfig.enabled ? true : undefined,
+            onToolStart: async (payload) => {
+              if (payload.phase === "end") {
+                statusReactions.cancelPending();
+                await statusReactions.setThinking();
+                return;
+              }
+              await statusReactions.setTool(payload.name);
+            },
+            onCompactionStart: async () => {
+              await statusReactions.setCompacting();
+            },
+            onCompactionEnd: async () => {
+              statusReactions.cancelPending();
+              await statusReactions.setThinking();
+            },
+          },
+        }),
+      );
     } catch (err) {
       dispatchError = err;
       runtime.error?.(`zulip reply failed: ${String(err)}`);
     }
 
-    if (reactionsEnabled) {
-      if (reactionClearOnFinish) {
-        await removeReactionSafe(reactionStart);
-      }
-      if (dispatchError) {
-        await addReactionSafe(reactionError);
-      } else {
-        await addReactionSafe(reactionSuccess);
-      }
+    const successfulReplyCount =
+      (dispatchResult?.counts?.tool ?? 0) +
+      (dispatchResult?.counts?.block ?? 0) +
+      (dispatchResult?.counts?.final ?? 0);
+    replyDeliveryCommitted ||= successfulReplyCount > 0;
+    const abortOutcome = () =>
+      replyDeliveryCommitted ? undefined : ABORTED_INBOUND_MESSAGE;
+
+    if (reactionLifecycleCancelled || opts.abortSignal?.aborted) {
+      await cancelReactionLifecycle();
+      opts.statusSink?.({ lastInboundAt: Date.now() });
+      return abortOutcome();
+    }
+
+    await subagentContext.finish();
+    if (reactionLifecycleCancelled || opts.abortSignal?.aborted) {
+      await cancelReactionLifecycle();
+      opts.statusSink?.({ lastInboundAt: Date.now() });
+      return abortOutcome();
+    }
+    const finalDeliveryFailed = (dispatchResult?.failedCounts?.final ?? 0) > 0;
+    const terminalError = Boolean(dispatchError) || finalDeliveryFailed;
+    const retryableNoDelivery = terminalError && !replyDeliveryCommitted;
+    if (terminalError) {
+      await statusReactions.setError();
+    } else {
+      await statusReactions.setDone();
+    }
+    if (reactionLifecycleCancelled || opts.abortSignal?.aborted) {
+      await cancelReactionLifecycle();
+      opts.statusSink?.({ lastInboundAt: Date.now() });
+      return abortOutcome();
+    }
+    if (account.config.reactions?.clearOnFinish !== false) {
+      const terminalHoldMs = terminalError
+        ? (statusReactionConfig.timing?.errorHoldMs ?? DEFAULT_TIMING.errorHoldMs)
+        : (statusReactionConfig.timing?.doneHoldMs ?? DEFAULT_TIMING.doneHoldMs);
+      terminalCleanupTimer = setTimeout(() => {
+        terminalCleanupTimer = undefined;
+        if (reactionLifecycleCancelled) {
+          return;
+        }
+        void statusReactions.clear().finally(() => {
+          statusLifecycleSettled = true;
+          releaseReactionCleanupIfSettled();
+        });
+      }, terminalHoldMs);
+      terminalCleanupTimer.unref?.();
+    } else {
+      statusLifecycleSettled = true;
+      releaseReactionCleanupIfSettled();
     }
 
     opts.statusSink?.({ lastInboundAt: Date.now() });
+    return retryableNoDelivery ? RETRYABLE_INBOUND_MESSAGE : undefined;
   };
 
   // Register event queue
@@ -1040,7 +1240,23 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     options: { replay?: boolean } = {},
   ): Promise<void> => {
     try {
-      await handleMessage(message, { skipRecentDedupe: options.replay });
+      const outcome = await handleMessage(message, { skipRecentDedupe: options.replay });
+      if (outcome === ABORTED_INBOUND_MESSAGE) {
+        if (durableInboundJournal && durableId) {
+          await durableInboundJournal.release(durableId, {
+            lastError: "Zulip monitor stopped before delivery",
+          });
+        }
+        return;
+      }
+      if (outcome === RETRYABLE_INBOUND_MESSAGE) {
+        if (durableInboundJournal && durableId) {
+          await durableInboundJournal.release(durableId, {
+            lastError: "Zulip reply delivery failed before any visible response",
+          });
+        }
+        return;
+      }
       await completeDurableInboundMessage(durableId, metadata);
     } catch (err) {
       if (durableInboundJournal && durableId) {
@@ -1098,12 +1314,20 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     await deliverDurableInboundMessage(durableId, message, metadata);
   };
 
+  const handleMonitorAbort = () => {
+    void cleanupActiveReactionLifecycles();
+  };
+  opts.abortSignal?.addEventListener("abort", handleMonitorAbort, { once: true });
+
   const replayPendingDurableInboundMessages = async (): Promise<void> => {
     if (!durableInboundJournal) {
       return;
     }
     const pending = await durableInboundJournal.pending();
     for (const record of pending) {
+      if (opts.abortSignal?.aborted) {
+        break;
+      }
       const payload = record.payload as ZulipDurableInboundPayload;
       await deliverDurableInboundMessage(
         record.id,
@@ -1114,29 +1338,90 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     }
   };
 
-  await replayPendingDurableInboundMessages();
+  try {
+    await replayPendingDurableInboundMessages();
 
-  // Long-poll at 90s — nginx proxy_read_timeout is now 120s
-  while (!opts.abortSignal?.aborted) {
-    try {
-      const response = await getZulipEventsWithRetry(client, {
-        queueId,
-        lastEventId,
-        timeoutMs: 90000,
-        retryBaseDelayMs: 1000,
-        signal: opts.abortSignal,
-        dontBlock: false,
-      });
+    // Long-poll at 90s — nginx proxy_read_timeout is now 120s
+    while (!opts.abortSignal?.aborted) {
+      try {
+        const response = await getZulipEventsWithRetry(client, {
+          queueId,
+          lastEventId,
+          timeoutMs: 90000,
+          retryBaseDelayMs: 1000,
+          signal: opts.abortSignal,
+          dontBlock: false,
+        });
 
-      if (response.result === "error") {
-        const msg = response.msg ?? "";
-        const isBadQueue =
-          response.code === "BAD_EVENT_QUEUE_ID" || msg.toLowerCase().includes("bad event queue");
-        if (isBadQueue) {
-          runtime.log?.("zulip: queue expired, re-registering...");
+        if (response.result === "error") {
+          const msg = response.msg ?? "";
+          const isBadQueue =
+            response.code === "BAD_EVENT_QUEUE_ID" || msg.toLowerCase().includes("bad event queue");
+          if (isBadQueue) {
+            runtime.log?.("zulip: queue expired, re-registering...");
+            const newQueue = await registerZulipQueue(client, {
+              eventTypes: ["message"],
+              streams, // Pass ["*"] to trigger all_public_streams=true in registerZulipQueue
+            });
+            queueId = newQueue.queueId;
+            lastEventId = newQueue.lastEventId;
+            runtime.log?.(`zulip event queue re-registered: ${queueId}`);
+            resetPollBackoff();
+            continue;
+          }
+          throw new Error(`Zulip events error: ${response.msg}`);
+        }
+
+        const events = response.events ?? [];
+        runtime.log?.(`zulip: poll ok, ${events.length} events, lastEventId=${lastEventId}`);
+        if (events.length > 0) {
+          opts.statusSink?.({
+            connected: true,
+            lastConnectedAt: Date.now(),
+          });
+        }
+
+        if (events.length === 0) {
+          await delay(200, opts.abortSignal);
+        }
+
+        resetPollBackoff();
+
+        // Process messages with staggered start times for more natural feel
+        for (const event of events) {
+          if (opts.abortSignal?.aborted) {
+            break;
+          }
+          const nextEventId = Number((event as { id?: unknown })?.id);
+          const validEventId =
+            !Number.isNaN(nextEventId) && nextEventId >= 0 ? nextEventId : undefined;
+          if (validEventId !== undefined) {
+            lastEventId = validEventId;
+          }
+
+          if (event.type === "message" && event.message) {
+            // Start processing without awaiting (fire-and-forget with error handling)
+            const messageTask = processMessage(event.message, validEventId).catch((err) => {
+              runtime.error?.(`zulip: message processing failed: ${String(err)}`);
+            });
+            activeMessageTasks.add(messageTask);
+            void messageTask.finally(() => {
+              activeMessageTasks.delete(messageTask);
+            });
+            // Small delay between starting each message for natural pacing
+            await delay(200, opts.abortSignal);
+          }
+        }
+      } catch (err) {
+        if (opts.abortSignal?.aborted) {
+          break;
+        }
+        const errStr = String(err);
+        if (errStr.toLowerCase().includes("bad event queue")) {
+          runtime.log?.("zulip: bad event queue error thrown; re-registering...");
           const newQueue = await registerZulipQueue(client, {
             eventTypes: ["message"],
-            streams, // Pass ["*"] to trigger all_public_streams=true in registerZulipQueue
+            streams,
           });
           queueId = newQueue.queueId;
           lastEventId = newQueue.lastEventId;
@@ -1144,75 +1429,29 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
           resetPollBackoff();
           continue;
         }
-        throw new Error(`Zulip events error: ${response.msg}`);
-      }
-
-      const events = response.events ?? [];
-      runtime.log?.(`zulip: poll ok, ${events.length} events, lastEventId=${lastEventId}`);
-      if (events.length > 0) {
+        const status = (err as { status?: number })?.status;
+        const retryAfterMs = (err as { retryAfterMs?: number })?.retryAfterMs;
+        runtime.error?.(`zulip polling error: ${String(err)}`);
         opts.statusSink?.({
-          connected: true,
-          lastConnectedAt: Date.now(),
+          connected: false,
+          lastError: String(err),
         });
-      }
-
-      if (events.length === 0) {
-        await delay(200);
-      }
-
-      resetPollBackoff();
-
-      // Process messages with staggered start times for more natural feel
-      for (const event of events) {
-        const nextEventId = Number((event as { id?: unknown })?.id);
-        const validEventId = !Number.isNaN(nextEventId) && nextEventId >= 0 ? nextEventId : undefined;
-        if (validEventId !== undefined) {
-          lastEventId = validEventId;
+        const baseDelay = status === 429 ? 10000 : 1000;
+        if (!pollBackoffMs) {
+          pollBackoffMs = baseDelay;
+        } else {
+          pollBackoffMs = Math.min(120000, pollBackoffMs * 2);
         }
-
-        if (event.type === "message" && event.message) {
-          // Start processing without awaiting (fire-and-forget with error handling)
-          processMessage(event.message, validEventId).catch((err) => {
-            runtime.error?.(`zulip: message processing failed: ${String(err)}`);
-          });
-          // Small delay between starting each message for natural pacing
-          await delay(200);
-        }
+        const waitMs =
+          retryAfterMs && retryAfterMs > 0 ? Math.min(120000, retryAfterMs) : pollBackoffMs;
+        await delay(waitMs, opts.abortSignal);
       }
-    } catch (err) {
-      if (opts.abortSignal?.aborted) {
-        break;
-      }
-      const errStr = String(err);
-      if (errStr.toLowerCase().includes("bad event queue")) {
-        runtime.log?.("zulip: bad event queue error thrown; re-registering...");
-        const newQueue = await registerZulipQueue(client, {
-          eventTypes: ["message"],
-          streams,
-        });
-        queueId = newQueue.queueId;
-        lastEventId = newQueue.lastEventId;
-        runtime.log?.(`zulip event queue re-registered: ${queueId}`);
-        resetPollBackoff();
-        continue;
-      }
-      const status = (err as { status?: number })?.status;
-      const retryAfterMs = (err as { retryAfterMs?: number })?.retryAfterMs;
-      runtime.error?.(`zulip polling error: ${String(err)}`);
-      opts.statusSink?.({
-        connected: false,
-        lastError: String(err),
-      });
-      const baseDelay = status === 429 ? 10000 : 1000;
-      if (!pollBackoffMs) {
-        pollBackoffMs = baseDelay;
-      } else {
-        pollBackoffMs = Math.min(120000, pollBackoffMs * 2);
-      }
-      const waitMs =
-        retryAfterMs && retryAfterMs > 0 ? Math.min(120000, retryAfterMs) : pollBackoffMs;
-      await delay(waitMs);
     }
+  } finally {
+    opts.abortSignal?.removeEventListener("abort", handleMonitorAbort);
+    await cleanupActiveReactionLifecycles();
+    await Promise.allSettled(Array.from(activeMessageTasks));
+    await cleanupActiveReactionLifecycles();
   }
 
   // Cleanup

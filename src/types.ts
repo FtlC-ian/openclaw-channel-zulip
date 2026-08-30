@@ -1,5 +1,9 @@
 import type { ChannelSetupInput, DmPolicy, GroupPolicy } from "./sdk.js";
 import type { SecretInput } from "openclaw/plugin-sdk/secret-input";
+import type {
+  StatusReactionEmojis,
+  StatusReactionTiming,
+} from "openclaw/plugin-sdk/channel-feedback";
 
 export type ZulipSetupInput = ChannelSetupInput & {
   apiKey?: string;
@@ -67,13 +71,22 @@ export type ZulipAccountConfig = {
   groupPolicy?: GroupPolicy;
   /** Inbound media max size (MB). Default: 5. */
   mediaMaxMb?: number;
-  /** Optional reaction hooks. Defaults no longer add start/success reactions. */
+  /** Automatic lifecycle reactions on the inbound Zulip message. */
   reactions?: {
     enabled?: boolean;
     clearOnFinish?: boolean;
+    /** Legacy queued-state override. Empty string suppresses the state. */
     onStart?: string;
+    /** Legacy done-state override. Empty string suppresses the state. */
     onSuccess?: string;
+    /** Legacy error-state override. Empty string suppresses the state. */
     onError?: string;
+    /** Lifecycle overrides. Accepts named Zulip emoji, empty string, or supported built-in Unicode values. */
+    emojis?: StatusReactionEmojis;
+    /** Debounce, stall, and terminal timing overrides. */
+    timing?: StatusReactionTiming;
+    /** Dedicated indicator while spawned children are active. Empty string suppresses it. */
+    subagent?: string;
   };
   /** Model prompt guidance for agent-controlled reactions. Does not enable automatic status reactions. Default: "minimal". */
   agentReactionGuidance?: ZulipAgentReactionGuidance;

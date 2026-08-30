@@ -3,6 +3,7 @@
 ## 2026.5.26
 
 ### Features
+- **Truthful lifecycle reactions**: Replace coarse start/success/error hooks with SDK-backed queued, thinking, tool-category, compaction, stall, done, and error states, plus exact-run subagent activity tracking that safely handles concurrent children and overlapping requester turns.
 - **Outbound route hook**: Add native Zulip outbound session routing for DMs and stream topics, preserving raw Zulip topics over sanitized session ids.
 - **Durable inbound receive journal**: Add optional keyed-state journaling with bounded pending/completed stores and replay-before-poll behavior when trusted plugin state is available.
 - **Message reactions**: Add `message(action="react")` support for Zulip add/remove reactions, dry-run handling, current-message defaults, idempotent add/remove behavior, and common emoji normalization.

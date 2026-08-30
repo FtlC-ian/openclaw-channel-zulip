@@ -2,6 +2,7 @@ import { defineChannelPluginEntry } from "openclaw/plugin-sdk/core";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 import { zulipPlugin } from "./src/channel.js";
 import { setZulipRuntime } from "./src/runtime.js";
+import { registerZulipSubagentReactionHooks } from "./src/zulip/subagent-reactions.js";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
@@ -45,8 +46,9 @@ const entry: {
   setRuntime(runtime) {
     setZulipRuntime(runtime);
   },
-  registerFull(_api) {
+  registerFull(api) {
     loadZulipEnv();
+    registerZulipSubagentReactionHooks(api);
   },
 });
 

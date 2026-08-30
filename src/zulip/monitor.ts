@@ -209,6 +209,30 @@ async function resolveCachedZulipStreamMetadata(params: {
   return undefined;
 }
 
+async function resolveFreshZulipStreamMetadata(params: {
+  client: ReturnType<typeof createZulipClient>;
+  accountId: string;
+  streamId: string;
+  log: (message: string) => void;
+}): Promise<ZulipStreamMetadata | undefined> {
+  const streamId = params.streamId.trim();
+  if (!streamId) {
+    return undefined;
+  }
+  try {
+    const stream = await fetchZulipStream(params.client, streamId);
+    const metadata = normalizeZulipStreamMetadata(stream);
+    if (!metadata?.name?.trim()) {
+      return undefined;
+    }
+    cacheZulipStreamMetadata(params.accountId, metadata);
+    return metadata;
+  } catch (err) {
+    params.log(`zulip: fresh stream metadata lookup failed streamId=${streamId}: ${String(err)}`);
+    return undefined;
+  }
+}
+
 function resolveRuntime(opts: MonitorZulipOpts): RuntimeEnv {
   return (
     opts.runtime ?? {
@@ -500,16 +524,24 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         ? message.display_recipient.trim()
         : "";
     let streamName = options.replay ? "" : eventStreamName;
-    if (options.replay || !streamName) {
+    if (options.replay) {
+      const metadata = await resolveFreshZulipStreamMetadata({
+        client,
+        accountId: account.accountId,
+        streamId,
+        log: logVerboseMessage,
+      });
+      if (!metadata?.name?.trim()) {
+        return RETRYABLE_STREAM_POLICY;
+      }
+      streamName = metadata.name.trim();
+    } else if (!streamName) {
       const metadata = await resolveCachedZulipStreamMetadata({
         client,
         accountId: account.accountId,
         streamId,
         log: logVerboseMessage,
       });
-      if (options.replay && !metadata?.name?.trim()) {
-        return RETRYABLE_STREAM_POLICY;
-      }
       streamName = metadata?.name?.trim() || streamName;
     } else {
       const key = streamMetadataCacheKey(account.accountId, streamId);

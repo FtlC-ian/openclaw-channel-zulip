@@ -175,6 +175,12 @@ const fetchZulipStreamMock = vi.fn(async (_client: unknown, streamId: string) =>
   if (result) {
     return result;
   }
+  const subscription = state.streamSubscriptions.find(
+    (entry) => String(entry.stream_id ?? entry.id ?? "") === String(streamId),
+  );
+  if (subscription) {
+    return subscription;
+  }
   throw new Error(`unexpected stream metadata lookup: ${streamId}`);
 });
 
@@ -1414,6 +1420,94 @@ describe("monitorZulipProvider", () => {
     await runMonitorOnce();
 
     expect(fetchZulipStreamMock).not.toHaveBeenCalled();
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    {
+      label: "the fresh lookup fails",
+      lookup: new Error("temporary stream lookup failure"),
+    },
+    {
+      label: "the fresh lookup has a blank name",
+      lookup: { id: 4, name: "   ", invite_only: false },
+    },
+  ])("keeps replay pending with stale cached metadata when $label", async ({ lookup }) => {
+    state.streamSubscriptions = [{ stream_id: 4, name: "old-name", invite_only: false }];
+    await runMonitorOnce();
+
+    enableDurableInboundJournal();
+    fetchZulipSubscriptionsMock.mockRejectedValueOnce(new Error("temporary subscription failure"));
+    state.streamLookups.set("4", lookup);
+    state.account.streams = ["old-name"];
+    state.account.config = {
+      ...state.account.config,
+      streams: ["old-name"],
+    };
+    const {
+      createZulipDurableInboundMessageId,
+      createZulipDurableInboundReceiveJournal,
+      serializeZulipDurableInboundMessage,
+    } = await import("./durable-receive.js");
+    const message = makeChannelMessage(1219);
+    const durableId = createZulipDurableInboundMessageId({
+      accountId: state.account.accountId,
+      messageId: String(message.id),
+    });
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    await journal.accept(durableId, {
+      message: serializeZulipDurableInboundMessage(message),
+      receivedAt: Date.now(),
+    });
+
+    await runMonitorOnce();
+
+    await expect(journal.pending()).resolves.toEqual([
+      expect.objectContaining({
+        id: durableId,
+        lastError: "Zulip stream metadata unavailable during durable replay",
+      }),
+    ]);
+    expect(fetchZulipStreamMock).toHaveBeenCalledWith(state.client, "4");
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+  });
+
+  it("uses a fresh renamed stream lookup for durable replay policy", async () => {
+    state.streamSubscriptions = [{ stream_id: 4, name: "old-name", invite_only: false }];
+    await runMonitorOnce();
+
+    enableDurableInboundJournal();
+    fetchZulipSubscriptionsMock.mockRejectedValueOnce(new Error("temporary subscription failure"));
+    state.streamLookups.set("4", { id: 4, name: "new-name", invite_only: false });
+    state.account.streams = ["new-name"];
+    state.account.config = {
+      ...state.account.config,
+      streams: ["new-name"],
+      streamOverrides: {
+        "old-name": { enabled: false },
+        "new-name": { enabled: true },
+      },
+    };
+    const {
+      createZulipDurableInboundMessageId,
+      createZulipDurableInboundReceiveJournal,
+      serializeZulipDurableInboundMessage,
+    } = await import("./durable-receive.js");
+    const message = makeChannelMessage(1220);
+    const durableId = createZulipDurableInboundMessageId({
+      accountId: state.account.accountId,
+      messageId: String(message.id),
+    });
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    await journal.accept(durableId, {
+      message: serializeZulipDurableInboundMessage(message),
+      receivedAt: Date.now(),
+    });
+
+    await runMonitorOnce();
+
+    await expect(journal.pending()).resolves.toEqual([]);
+    expect(fetchZulipStreamMock).toHaveBeenCalledWith(state.client, "4");
     expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
   });
 

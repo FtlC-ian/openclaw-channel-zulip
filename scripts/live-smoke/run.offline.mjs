@@ -54,16 +54,20 @@ test("requires private bot replies with the expected participants", () => {
   assert.equal(isPrivateBotMessage(event, "bot@example.test", "user@example.test", "marker"), true);
   assert.equal(isPrivateBotMessage({ ...event, message: { ...event.message, type: "stream" } }, "bot@example.test", "user@example.test", "marker"), false);
   assert.equal(isPrivateBotMessage({ ...event, message: { ...event.message, display_recipient: [{ email: "bot@example.test" }] } }, "bot@example.test", "user@example.test", "marker"), false);
+  assert.equal(isPrivateBotMessage({ ...event, message: { ...event.message, display_recipient: [...event.message.display_recipient, { email: "third@example.test" }] } }, "bot@example.test", "user@example.test", "marker"), false);
   const uploadEvent = { ...event, message: { ...event.message, content: "[file](/user_uploads/a.txt)" } };
   assert.equal(isPrivateBotEvent(uploadEvent, "bot@example.test", "user@example.test"), true);
   assert.equal(isPrivateBotEvent({ ...uploadEvent, message: { ...uploadEvent.message, type: "stream" } }, "bot@example.test", "user@example.test"), false);
 });
 
 test("matches private typing events from the configured bot", () => {
-  const event = { type: "typing", op: "start", message_type: "direct", sender: { email: "bot@example.test" }, recipients: [{ email: "user@example.test" }] };
+  const event = { type: "typing", op: "start", message_type: "direct", sender: { email: "bot@example.test" }, recipients: [
+    { email: "bot@example.test" }, { email: "user@example.test" },
+  ] };
   assert.equal(isPrivateTypingEvent(event, "bot@example.test", "user@example.test", "start"), true);
   assert.equal(isPrivateTypingEvent({ ...event, op: "stop" }, "bot@example.test", "user@example.test", "start"), false);
   assert.equal(isPrivateTypingEvent({ ...event, sender: { email: "other@example.test" } }, "bot@example.test", "user@example.test", "start"), false);
+  assert.equal(isPrivateTypingEvent({ ...event, recipients: [...event.recipients, { email: "third@example.test" }] }, "bot@example.test", "user@example.test", "start"), false);
 });
 
 test("matches complete raw or Zulip-rendered content", () => {

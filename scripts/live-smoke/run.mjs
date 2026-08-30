@@ -68,8 +68,7 @@ export function isBotMessage(event, botEmail, marker) {
 export function isPrivateBotEvent(event, botEmail, actorEmail) {
   if (event?.type !== "message" || event.message?.type !== "private" || event.message?.sender_email !== botEmail) return false;
   const recipients = Array.isArray(event.message?.display_recipient) ? event.message.display_recipient : [];
-  const emails = recipients.map((recipient) => recipient?.email).filter(Boolean);
-  return emails.includes(botEmail) && emails.includes(actorEmail);
+  return hasExactDirectParticipants(recipients, botEmail, actorEmail);
 }
 
 export function isPrivateBotMessage(event, botEmail, actorEmail, marker) {
@@ -81,7 +80,12 @@ export function isPrivateTypingEvent(event, botEmail, actorEmail, op) {
   const senderEmail = event.sender?.email ?? event.sender_email;
   if (senderEmail !== botEmail || (event.message_type && !["direct", "private"].includes(event.message_type))) return false;
   const recipients = Array.isArray(event.recipients) ? event.recipients : [];
-  return recipients.length === 0 || recipients.some((recipient) => (recipient?.email ?? recipient) === actorEmail);
+  return hasExactDirectParticipants(recipients, botEmail, actorEmail);
+}
+
+function hasExactDirectParticipants(recipients, botEmail, actorEmail) {
+  const emails = new Set(recipients.map((recipient) => recipient?.email ?? recipient).filter(Boolean));
+  return emails.size === 2 && emails.has(botEmail) && emails.has(actorEmail);
 }
 
 export function isExactRenderedContent(content, expected) {

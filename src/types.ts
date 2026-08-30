@@ -75,17 +75,17 @@ export type ZulipAccountConfig = {
   reactions?: {
     enabled?: boolean;
     clearOnFinish?: boolean;
-    /** Legacy queued-state override. */
+    /** Legacy queued-state override. Empty string suppresses the state. */
     onStart?: string;
-    /** Legacy done-state override. */
+    /** Legacy done-state override. Empty string suppresses the state. */
     onSuccess?: string;
-    /** Legacy error-state override. */
+    /** Legacy error-state override. Empty string suppresses the state. */
     onError?: string;
-    /** Lifecycle emoji overrides. Named Zulip emoji or Unicode are accepted. */
+    /** Lifecycle overrides. Accepts named Zulip emoji, empty string, or supported built-in Unicode values. */
     emojis?: StatusReactionEmojis;
     /** Debounce, stall, and terminal timing overrides. */
     timing?: StatusReactionTiming;
-    /** Dedicated indicator while one or more spawned children are active. */
+    /** Dedicated indicator while spawned children are active. Empty string suppresses it. */
     subagent?: string;
   };
   /** Model prompt guidance for agent-controlled reactions. Does not enable automatic status reactions. Default: "minimal". */

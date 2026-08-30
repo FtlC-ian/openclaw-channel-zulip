@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { buildChannelInboundEventContext } from "openclaw/plugin-sdk/channel-inbound";
+import type { RuntimeEnv } from "../sdk.js";
 
 const state = vi.hoisted(() => {
   const createMemoryKeyedStore = <T>(maxEntries = Number.MAX_SAFE_INTEGER) => {
@@ -290,11 +291,15 @@ function makePrivateMessage(id: number, senderEmail = "user8@zlp.pubnerd.app") {
   };
 }
 
-async function runMonitorOnce(controller = new AbortController()) {
+async function runMonitorOnce(
+  controller = new AbortController(),
+  runtime?: RuntimeEnv,
+) {
   const { monitorZulipProvider } = await import("./monitor.js");
   state.abortController = controller;
   await monitorZulipProvider({
     config: state.core.config,
+    runtime,
     abortSignal: state.abortController.signal,
   });
 }
@@ -639,9 +644,10 @@ describe("monitorZulipProvider", () => {
     expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
   });
 
-  it("continues reply dispatch when the Zulip reaction API fails", async () => {
+  it("reports status adapter failures and continues reply dispatch", async () => {
     state.account.config.reactions = { enabled: true };
     state.addZulipReaction.mockRejectedValueOnce(new Error("reaction unavailable"));
+    const runtimeError = vi.fn();
     state.pollResponses = [
       {
         result: "success",
@@ -649,9 +655,16 @@ describe("monitorZulipProvider", () => {
       },
     ];
 
-    await runMonitorOnce();
+    await runMonitorOnce(new AbortController(), {
+      log: vi.fn(),
+      error: runtimeError,
+      exit: vi.fn(),
+    });
 
     expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+    expect(runtimeError).toHaveBeenCalledWith(
+      expect.stringContaining("zulip: status reaction update failed: Error: reaction unavailable"),
+    );
     expect(state.addZulipReaction).toHaveBeenCalledWith(
       state.client,
       expect.objectContaining({ messageId: "1096", emojiName: "eyes" }),
@@ -1260,7 +1273,10 @@ describe("monitorZulipProvider", () => {
             replyOptions.abortSignal?.addEventListener("abort", () => resolve(), { once: true });
           });
         }
-        return {};
+        return {
+          counts: { tool: 0, block: 0, final: 0 },
+          failedCounts: { tool: 0, block: 0, final: 1 },
+        };
       },
     );
 
@@ -1285,6 +1301,84 @@ describe("monitorZulipProvider", () => {
       expect.objectContaining({ messageId: String(firstMessage.id), emojiName: "eyes" }),
     );
     await expect(journal.pending()).resolves.toHaveLength(2);
+  });
+
+  it("completes a durable reply when abort races post-delivery subagent settlement", async () => {
+    enableDurableInboundJournal();
+    state.autoAbort = false;
+    state.account.config.reactions = { enabled: true, clearOnFinish: false };
+    const {
+      createZulipDurableInboundMessageId,
+      createZulipDurableInboundReceiveJournal,
+      serializeZulipDurableInboundMessage,
+    } = await import("./durable-receive.js");
+    const message = makeChannelMessage(2107);
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    await journal.accept(
+      createZulipDurableInboundMessageId({
+        accountId: state.account.accountId,
+        messageId: String(message.id),
+      }),
+      {
+        message: serializeZulipDurableInboundMessage(message),
+        receivedAt: Date.now(),
+      },
+    );
+    let subagentHideStarted!: () => void;
+    const hideStarted = new Promise<void>((resolve) => {
+      subagentHideStarted = resolve;
+    });
+    let releaseSubagentHide!: () => void;
+    const allowHide = new Promise<void>((resolve) => {
+      releaseSubagentHide = resolve;
+    });
+    state.removeZulipReaction.mockImplementation(async (_client, reaction) => {
+      if (reaction.emojiName === "robot_face") {
+        subagentHideStarted();
+        await allowHide;
+      }
+    });
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
+      async ({ ctx, dispatcherOptions }) => {
+        await dispatcherOptions.deliver({ text: "committed reply" });
+        const { handleZulipSubagentEnded, handleZulipSubagentSpawned } =
+          await import("./subagent-reactions.js");
+        const requesterSessionKey = String(ctx.SessionKey);
+        await handleZulipSubagentSpawned(
+          {
+            runId: "durable-finish-race-run",
+            childSessionKey: "durable-finish-race-child",
+            requester: { channel: "zulip" },
+          },
+          { requesterSessionKey },
+        );
+        void handleZulipSubagentEnded(
+          {
+            runId: "durable-finish-race-run",
+            targetSessionKey: "durable-finish-race-child",
+          },
+          { childSessionKey: "durable-finish-race-child" },
+        );
+        return { counts: { tool: 0, block: 0, final: 1 } };
+      },
+    );
+
+    const monitorPromise = runMonitorOnce();
+    await hideStarted;
+    state.abortController?.abort();
+    releaseSubagentHide();
+    await monitorPromise;
+
+    await expect(journal.pending()).resolves.toEqual([]);
+    const completedStore = Array.from(state.durableStores.entries()).find(([namespace]) =>
+      namespace.includes(".completed."),
+    )?.[1];
+    await expect(completedStore?.entries()).resolves.toHaveLength(1);
+
+    state.removeZulipReaction.mockResolvedValue(undefined);
+    state.autoAbort = true;
+    await runMonitorOnce();
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
   });
 
   it("retries same-process durable replay after a handler failure despite volatile dedupe", async () => {

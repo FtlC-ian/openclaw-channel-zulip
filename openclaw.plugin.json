@@ -28,23 +28,35 @@
           "secretInput": {
             "anyOf": [{ "type": "string" }, { "$ref": "#/$defs/secretRef" }]
           },
+          "zulipReactionEmoji": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?:[A-Za-z0-9][A-Za-z0-9_+-]*|:[A-Za-z0-9][A-Za-z0-9_+-]*:)$"
+              },
+              {
+                "type": "string",
+                "enum": ["", "👀", "🧠", "🛠", "🛠️", "💻", "🌐", "🛫", "🏗", "🏗️", "💁", "✅", "❌", "⏳", "⚠", "⚠️", "🗜", "🗜️", "🤖"]
+              }
+            ]
+          },
           "statusReactionEmojis": {
             "type": "object",
             "additionalProperties": false,
             "properties": {
-              "queued": { "type": "string" },
-              "thinking": { "type": "string" },
-              "tool": { "type": "string" },
-              "coding": { "type": "string" },
-              "web": { "type": "string" },
-              "deploy": { "type": "string" },
-              "build": { "type": "string" },
-              "concierge": { "type": "string" },
-              "done": { "type": "string" },
-              "error": { "type": "string" },
-              "stallSoft": { "type": "string" },
-              "stallHard": { "type": "string" },
-              "compacting": { "type": "string" }
+              "queued": { "$ref": "#/$defs/zulipReactionEmoji" },
+              "thinking": { "$ref": "#/$defs/zulipReactionEmoji" },
+              "tool": { "$ref": "#/$defs/zulipReactionEmoji" },
+              "coding": { "$ref": "#/$defs/zulipReactionEmoji" },
+              "web": { "$ref": "#/$defs/zulipReactionEmoji" },
+              "deploy": { "$ref": "#/$defs/zulipReactionEmoji" },
+              "build": { "$ref": "#/$defs/zulipReactionEmoji" },
+              "concierge": { "$ref": "#/$defs/zulipReactionEmoji" },
+              "done": { "$ref": "#/$defs/zulipReactionEmoji" },
+              "error": { "$ref": "#/$defs/zulipReactionEmoji" },
+              "stallSoft": { "$ref": "#/$defs/zulipReactionEmoji" },
+              "stallHard": { "$ref": "#/$defs/zulipReactionEmoji" },
+              "compacting": { "$ref": "#/$defs/zulipReactionEmoji" }
             }
           },
           "statusReactionTiming": {
@@ -100,12 +112,12 @@
                 "properties": {
                   "enabled": { "type": "boolean" },
                   "clearOnFinish": { "type": "boolean" },
-                  "onStart": { "type": "string" },
-                  "onSuccess": { "type": "string" },
-                  "onError": { "type": "string" },
+                  "onStart": { "$ref": "#/$defs/zulipReactionEmoji" },
+                  "onSuccess": { "$ref": "#/$defs/zulipReactionEmoji" },
+                  "onError": { "$ref": "#/$defs/zulipReactionEmoji" },
                   "emojis": { "$ref": "#/$defs/statusReactionEmojis" },
                   "timing": { "$ref": "#/$defs/statusReactionTiming" },
-                  "subagent": { "type": "string" }
+                  "subagent": { "$ref": "#/$defs/zulipReactionEmoji" }
                 }
               },
               "agentReactionGuidance": { "type": "string", "enum": ["off", "minimal", "extensive"] },
@@ -166,12 +178,12 @@
             "properties": {
               "enabled": { "type": "boolean" },
               "clearOnFinish": { "type": "boolean" },
-              "onStart": { "type": "string" },
-              "onSuccess": { "type": "string" },
-              "onError": { "type": "string" },
+              "onStart": { "$ref": "#/$defs/zulipReactionEmoji" },
+              "onSuccess": { "$ref": "#/$defs/zulipReactionEmoji" },
+              "onError": { "$ref": "#/$defs/zulipReactionEmoji" },
               "emojis": { "$ref": "#/$defs/statusReactionEmojis" },
               "timing": { "$ref": "#/$defs/statusReactionTiming" },
-              "subagent": { "type": "string" }
+              "subagent": { "$ref": "#/$defs/zulipReactionEmoji" }
             }
           },
           "agentReactionGuidance": { "type": "string", "enum": ["off", "minimal", "extensive"] },

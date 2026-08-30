@@ -28,6 +28,21 @@ const unicodeStatusReactions = new Map<string, ZulipReactionSpec>([
   ["🗜", { emojiName: "compression", emojiCode: "1f5dc", reactionType: "unicode_emoji" }],
   ["🤖", { emojiName: "robot_face", emojiCode: "1f916", reactionType: "unicode_emoji" }],
 ]);
+const namedZulipEmojiPattern = /^:?[A-Za-z0-9][A-Za-z0-9_+-]*:?$/;
+
+export function isSupportedZulipReactionValue(raw: string): boolean {
+  if (raw === "") {
+    return true;
+  }
+  const normalizedUnicode = raw.replaceAll("\ufe0f", "");
+  if (unicodeStatusReactions.has(normalizedUnicode)) {
+    return true;
+  }
+  if (!namedZulipEmojiPattern.test(raw)) {
+    return false;
+  }
+  return !(raw.startsWith(":") !== raw.endsWith(":"));
+}
 
 export const ZULIP_STATUS_REACTION_DEFAULTS: Required<StatusReactionEmojis> = {
   queued: "eyes",
@@ -46,6 +61,11 @@ export const ZULIP_STATUS_REACTION_DEFAULTS: Required<StatusReactionEmojis> = {
 };
 
 export function resolveZulipReactionSpec(raw: string): ZulipReactionSpec {
+  if (!isSupportedZulipReactionValue(raw)) {
+    throw new Error(
+      `Unsupported Zulip reaction ${JSON.stringify(raw)}; use a named Zulip emoji or a documented built-in Unicode value.`,
+    );
+  }
   const normalizedUnicode = raw.replaceAll("\ufe0f", "");
   return (
     unicodeStatusReactions.get(normalizedUnicode) ?? {
@@ -73,22 +93,22 @@ export function resolveZulipStatusReactionConfig(params: {
     ...params.globalStatusReactions?.emojis,
     ...local?.emojis,
   };
-  const legacyQueued = normalizeZulipEmojiName(local?.onStart);
-  const legacyDone = normalizeZulipEmojiName(local?.onSuccess);
-  const legacyError = normalizeZulipEmojiName(local?.onError);
+  const resolveLegacy = (value: string | undefined, fallback: string) =>
+    value === undefined ? fallback : normalizeZulipEmojiName(value);
   return {
     enabled: local?.enabled ?? params.globalStatusReactions?.enabled ?? true,
     emojis: {
       ...emojis,
-      queued: legacyQueued || emojis.queued,
-      done: legacyDone || emojis.done,
-      error: legacyError || emojis.error,
+      queued: resolveLegacy(local?.onStart, emojis.queued),
+      done: resolveLegacy(local?.onSuccess, emojis.done),
+      error: resolveLegacy(local?.onError, emojis.error),
     },
     timing: {
       ...params.globalStatusReactions?.timing,
       ...local?.timing,
     },
-    subagent: normalizeZulipEmojiName(local?.subagent) || "robot_face",
+    subagent:
+      local?.subagent === undefined ? "robot_face" : normalizeZulipEmojiName(local.subagent),
   };
 }
 
@@ -97,7 +117,17 @@ export function createZulipStatusReactionAdapter(params: {
   remove: (reaction: ZulipReactionSpec) => Promise<void>;
 }): StatusReactionAdapter {
   return {
-    setReaction: async (emoji) => params.add(resolveZulipReactionSpec(emoji)),
-    removeReaction: async (emoji) => params.remove(resolveZulipReactionSpec(emoji)),
+    setReaction: async (emoji) => {
+      const reaction = resolveZulipReactionSpec(emoji);
+      if (reaction.emojiName) {
+        await params.add(reaction);
+      }
+    },
+    removeReaction: async (emoji) => {
+      const reaction = resolveZulipReactionSpec(emoji);
+      if (reaction.emojiName) {
+        await params.remove(reaction);
+      }
+    },
   };
 }

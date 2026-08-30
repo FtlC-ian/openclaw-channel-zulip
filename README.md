@@ -198,10 +198,14 @@ The dedicated `subagent` reaction is driven only by `subagent_spawned` and
 `subagent_ended` hooks. It remains while at least one child run bound to that
 exact inbound turn is active, including concurrent children and children that
 outlive the requester's reply. The default is `robot_face`. Built-in lifecycle
-Unicode values and named Zulip emoji are supported. Account-level
+Unicode values (`👀`, `🧠`, `🛠️`, `💻`, `🌐`, `🛫`, `🏗️`, `💁`, `✅`, `❌`,
+`⏳`, `⚠️`, `🗜️`, and `🤖`) and named Zulip emoji are supported; arbitrary
+Unicode is rejected because Zulip requires exact reaction metadata. An empty
+string suppresses that state. Account-level
 `reactions.emojis` and `reactions.timing` override global
 `messages.statusReactions` values. The legacy `onStart`, `onSuccess`, and
-`onError` keys remain accepted as queued, done, and error aliases.
+`onError` keys remain accepted as queued, done, and error aliases, and an
+explicit empty legacy value suppresses its state.
 
 This subagent indicator covers children launched through OpenClaw's
 `sessions_spawn` lifecycle, which emits the public hooks above. Codex-native

@@ -897,6 +897,24 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         logVerboseMessage(`zulip: failed to add reaction ${reaction.emojiName}: ${String(err)}`);
       }
     };
+    const addStatusReaction = async (reaction: {
+      emojiName: string;
+      emojiCode?: string;
+      reactionType?: string;
+    }) => {
+      if (statusReactionConfig.enabled && reaction.emojiName) {
+        await addZulipReaction(client, { messageId, ...reaction });
+      }
+    };
+    const removeStatusReaction = async (reaction: {
+      emojiName: string;
+      emojiCode?: string;
+      reactionType?: string;
+    }) => {
+      if (statusReactionConfig.enabled && reaction.emojiName) {
+        await removeZulipReaction(client, { messageId, ...reaction });
+      }
+    };
     const removeReactionSafe = async (reaction: {
       emojiName: string;
       emojiCode?: string;
@@ -917,14 +935,14 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     const statusReactions = createStatusReactionController({
       enabled: statusReactionConfig.enabled,
       adapter: createZulipStatusReactionAdapter({
-        add: addReactionSafe,
-        remove: removeReactionSafe,
+        add: addStatusReaction,
+        remove: removeStatusReaction,
       }),
       initialEmoji: statusReactionConfig.emojis.queued,
       emojis: statusReactionConfig.emojis,
       timing: statusReactionConfig.timing,
       onError: (err) => {
-        logVerboseMessage(`zulip: status reaction update failed: ${String(err)}`);
+        runtime.error?.(`zulip: status reaction update failed: ${String(err)}`);
       },
     });
     statusReactions.setQueued();
@@ -1019,6 +1037,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       },
     });
 
+    let replyDeliveryCommitted = false;
     const dispatcherOptions = {
       ...prefixOptions,
       humanDelay: core.channel.reply.resolveHumanDelayConfig(cfg, route.agentId),
@@ -1048,6 +1067,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
               presentation: first ? payload.presentation : undefined,
               channelData: first ? payload.channelData : undefined,
             });
+            replyDeliveryCommitted = true;
             first = false;
           }
         } else {
@@ -1063,6 +1083,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
               presentation: isFirst ? payload.presentation : undefined,
               channelData: isFirst ? payload.channelData : undefined,
             });
+            replyDeliveryCommitted = true;
             first = false;
           }
         }
@@ -1074,7 +1095,12 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     };
 
     let dispatchError: unknown;
-    let dispatchResult: { failedCounts?: Partial<Record<string, number>> } | undefined;
+    let dispatchResult:
+      | {
+          counts?: Partial<Record<"tool" | "block" | "final", number>>;
+          failedCounts?: Partial<Record<"tool" | "block" | "final", number>>;
+        }
+      | undefined;
     try {
       dispatchResult = await subagentContext.run(() =>
         core.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
@@ -1110,17 +1136,23 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       runtime.error?.(`zulip reply failed: ${String(err)}`);
     }
 
+    const successfulReplyCount =
+      (dispatchResult?.counts?.block ?? 0) + (dispatchResult?.counts?.final ?? 0);
+    replyDeliveryCommitted ||= successfulReplyCount > 0;
+    const abortOutcome = () =>
+      replyDeliveryCommitted ? undefined : ABORTED_INBOUND_MESSAGE;
+
     if (reactionLifecycleCancelled || opts.abortSignal?.aborted) {
       await cancelReactionLifecycle();
       opts.statusSink?.({ lastInboundAt: Date.now() });
-      return ABORTED_INBOUND_MESSAGE;
+      return abortOutcome();
     }
 
     await subagentContext.finish();
     if (reactionLifecycleCancelled || opts.abortSignal?.aborted) {
       await cancelReactionLifecycle();
       opts.statusSink?.({ lastInboundAt: Date.now() });
-      return ABORTED_INBOUND_MESSAGE;
+      return abortOutcome();
     }
     const finalDeliveryFailed = (dispatchResult?.failedCounts?.final ?? 0) > 0;
     const terminalError = Boolean(dispatchError) || finalDeliveryFailed;
@@ -1132,7 +1164,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     if (reactionLifecycleCancelled || opts.abortSignal?.aborted) {
       await cancelReactionLifecycle();
       opts.statusSink?.({ lastInboundAt: Date.now() });
-      return ABORTED_INBOUND_MESSAGE;
+      return abortOutcome();
     }
     if (account.config.reactions?.clearOnFinish !== false) {
       const terminalHoldMs = terminalError

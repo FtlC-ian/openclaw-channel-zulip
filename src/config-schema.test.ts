@@ -16,6 +16,33 @@ describe("Zulip lifecycle reaction config", () => {
     expect(result.success).toBe(true);
   });
 
+  it("accepts named emoji, built-in Unicode mappings, and explicit suppression", () => {
+    const result = zulipChannelConfigSchema.runtime.safeParse({
+      reactions: {
+        onStart: "",
+        onSuccess: "✅",
+        onError: ":warning:",
+        emojis: { thinking: "🧠", done: "" },
+        subagent: "🤖",
+      },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects arbitrary Unicode reaction values", () => {
+    expect(
+      zulipChannelConfigSchema.runtime.safeParse({
+        reactions: { emojis: { thinking: "🦄" } },
+      }).success,
+    ).toBe(false);
+    expect(
+      zulipChannelConfigSchema.runtime.safeParse({
+        reactions: { subagent: "🦄" },
+      }).success,
+    ).toBe(false);
+  });
+
   it("rejects unknown lifecycle reaction keys", () => {
     const result = zulipChannelConfigSchema.runtime.safeParse({
       reactions: { frozenPlaceholder: true },

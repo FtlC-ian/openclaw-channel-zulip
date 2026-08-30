@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { buildJsonChannelConfigSchema } from "openclaw/plugin-sdk/channel-config-schema";
 import { buildOptionalSecretInputSchema } from "openclaw/plugin-sdk/secret-input";
+import { isSupportedZulipReactionValue } from "./zulip/status-reactions.js";
 
 // Inlined from openclaw/plugin-sdk to avoid module resolution issues
 // when installed via npm to ~/.openclaw/extensions/. These are stable
@@ -21,21 +22,24 @@ const BlockStreamingCoalesceSchema = z
 
 const MarkdownTableModeSchema = z.enum(["native", "codeblock", "disabled"]);
 const AgentReactionGuidanceSchema = z.enum(["off", "minimal", "extensive"]);
+const ZulipReactionEmojiSchema = z.string().refine(isSupportedZulipReactionValue, {
+  message: "Use a named Zulip emoji, an explicitly supported built-in Unicode value, or empty string",
+});
 const StatusReactionEmojisSchema = z
   .object({
-    queued: z.string().optional(),
-    thinking: z.string().optional(),
-    tool: z.string().optional(),
-    coding: z.string().optional(),
-    web: z.string().optional(),
-    deploy: z.string().optional(),
-    build: z.string().optional(),
-    concierge: z.string().optional(),
-    done: z.string().optional(),
-    error: z.string().optional(),
-    stallSoft: z.string().optional(),
-    stallHard: z.string().optional(),
-    compacting: z.string().optional(),
+    queued: ZulipReactionEmojiSchema.optional(),
+    thinking: ZulipReactionEmojiSchema.optional(),
+    tool: ZulipReactionEmojiSchema.optional(),
+    coding: ZulipReactionEmojiSchema.optional(),
+    web: ZulipReactionEmojiSchema.optional(),
+    deploy: ZulipReactionEmojiSchema.optional(),
+    build: ZulipReactionEmojiSchema.optional(),
+    concierge: ZulipReactionEmojiSchema.optional(),
+    done: ZulipReactionEmojiSchema.optional(),
+    error: ZulipReactionEmojiSchema.optional(),
+    stallSoft: ZulipReactionEmojiSchema.optional(),
+    stallHard: ZulipReactionEmojiSchema.optional(),
+    compacting: ZulipReactionEmojiSchema.optional(),
   })
   .strict();
 const StatusReactionTimingSchema = z
@@ -110,12 +114,12 @@ const ZulipAccountSchemaBase = z
       .object({
         enabled: z.boolean().optional(),
         clearOnFinish: z.boolean().optional(),
-        onStart: z.string().optional(),
-        onSuccess: z.string().optional(),
-        onError: z.string().optional(),
+        onStart: ZulipReactionEmojiSchema.optional(),
+        onSuccess: ZulipReactionEmojiSchema.optional(),
+        onError: ZulipReactionEmojiSchema.optional(),
         emojis: StatusReactionEmojisSchema.optional(),
         timing: StatusReactionTimingSchema.optional(),
-        subagent: z.string().optional(),
+        subagent: ZulipReactionEmojiSchema.optional(),
       })
       .strict()
       .optional(),

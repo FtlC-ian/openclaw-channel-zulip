@@ -61,4 +61,35 @@ describe("Zulip status reaction configuration", () => {
     expect(add).toHaveBeenCalledWith(expected);
     expect(remove).toHaveBeenCalledWith(expected);
   });
+
+  it("preserves explicit empty legacy and subagent overrides", () => {
+    const result = resolveZulipStatusReactionConfig({
+      accountConfig: {
+        reactions: {
+          onStart: "",
+          onSuccess: "",
+          onError: "",
+          subagent: "",
+        },
+      },
+    });
+
+    expect(result.emojis.queued).toBe("");
+    expect(result.emojis.done).toBe("");
+    expect(result.emojis.error).toBe("");
+    expect(result.subagent).toBe("");
+  });
+
+  it("rejects arbitrary Unicode and treats an empty reaction as suppressed", async () => {
+    expect(() => resolveZulipReactionSpec("🦄")).toThrow(/Unsupported Zulip reaction/);
+    const add = vi.fn(async () => {});
+    const remove = vi.fn(async () => {});
+    const adapter = createZulipStatusReactionAdapter({ add, remove });
+
+    await adapter.setReaction("");
+    await adapter.removeReaction?.("");
+
+    expect(add).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
+  });
 });

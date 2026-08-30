@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { assertMessageRemainsExact, buildApiUrl, countCompletedChildTranscripts, countMessageDeletionFailures, EventQueue, Gateway, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, lifecycleSummary, normalizeScenarioError, redactError, resolveUploadUrl, signalProcessTree, validateEnvironment, waitForProcessTreeExit, writeGatewayGeneration } from "./run.mjs";
+import { assertMessageRemainsExact, buildApiUrl, captureMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, EventQueue, Gateway, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, lifecycleSummary, normalizeScenarioError, redactError, resolveUploadUrl, signalProcessTree, validateEnvironment, waitForProcessTreeExit, writeGatewayGeneration } from "./run.mjs";
 
 const validEnv = {
   ZULIP_URL: "https://zulip.example.test/path",
@@ -89,6 +89,18 @@ test("attributes every configured-bot DM containing the unique durable marker", 
     assert.equal(isDurableReplyEvent({ ...base, message: { ...base.message, content } }, "bot@example.test", "user@example.test", "durable-marker"), true);
   }
   assert.equal(isDurableReplyEvent({ ...base, message: { ...base.message, sender_email: "other@example.test", content: "durable-marker" } }, "bot@example.test", "user@example.test", "durable-marker"), false);
+});
+
+test("captures every attributable reply id before an early failure", () => {
+  const ids = new Set();
+  const events = [
+    { message: { id: 1, content: "wrong" } },
+    { message: { id: 2, content: "valid" } },
+    { message: { id: 3, content: "unrelated" } },
+  ];
+  const matches = captureMessageIds(events, (event) => event.message.content !== "unrelated", ids);
+  assert.equal(matches.length, 2);
+  assert.deepEqual([...ids], ["1", "2"]);
 });
 
 test("compares downloaded upload contents as exact UTF-8 bytes", () => {

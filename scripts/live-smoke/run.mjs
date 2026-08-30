@@ -81,6 +81,14 @@ export function isDurableReplyEvent(event, botEmail, actorEmail, marker) {
   return isPrivateBotEvent(event, botEmail, actorEmail) && String(event.message?.content ?? "").includes(marker);
 }
 
+export function captureMessageIds(events, predicate, target) {
+  const matches = events.filter(predicate);
+  for (const event of matches) {
+    if (event.message?.id !== undefined) target.add(String(event.message.id));
+  }
+  return matches;
+}
+
 export function isPrivateTypingEvent(event, botEmail, actorEmail, op) {
   if (event?.type !== "typing" || event.op !== op) return false;
   const senderEmail = event.sender?.email ?? event.sender_email;
@@ -565,36 +573,40 @@ async function main() {
 
     await scenario("durable-receive-completion-deduplication", async (signal) => {
       const marker = `${runId}:durable-ok`;
-      const oldGeneration = randomBytes(16).toString("hex");
-      await writeGatewayGeneration(gatewayGenerationPath, oldGeneration);
-      const inboundId = await sendDm(command(`durable ${marker}`), signal);
-      await queue.waitFor((e) => e.type === "reaction" && e.op === "add" && String(e.message_id) === inboundId, timeoutMs, "durable accept signal", signal);
-      const prematureReply = queue.events.find((e) => isDurableReplyEvent(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, marker));
-      if (prematureReply) {
-        messageIds.bot.add(String(prematureReply.message.id));
-        throw new Error("Durable reply completed before interruption; replay was not exercised");
-      }
-      await gateway.stop();
-      const replacementGeneration = randomBytes(16).toString("hex");
-      await writeGatewayGeneration(gatewayGenerationPath, replacementGeneration);
-      await gateway.start(signal);
-      const replacementReply = `${marker}:${replacementGeneration}`;
-      const reply = await queue.waitFor((e) => {
-        if (!isDurableReplyEvent(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, marker)) return false;
-        messageIds.bot.add(String(e.message.id));
-        if (!isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, replacementReply)) {
-          throw new Error("Durable reply did not contain the replacement gateway generation");
+      const isAttributable = (event) =>
+        isDurableReplyEvent(event, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, marker);
+      const captureReplies = () => captureMessageIds(queue.events, isAttributable, messageIds.bot);
+      try {
+        const oldGeneration = randomBytes(16).toString("hex");
+        await writeGatewayGeneration(gatewayGenerationPath, oldGeneration);
+        const inboundId = await sendDm(command(`durable ${marker}`), signal);
+        await queue.waitFor((e) => e.type === "reaction" && e.op === "add" && String(e.message_id) === inboundId, timeoutMs, "durable accept signal", signal);
+        if (captureReplies().length) {
+          throw new Error("Durable reply completed before interruption; replay was not exercised");
         }
-        return true;
-      }, timeoutMs, "durable replay reply", signal);
-      messageIds.bot.add(String(reply.message.id));
-      const settleDeadline = Date.now() + 10000;
-      while (Date.now() < settleDeadline) { await queue.poll(signal); await delay(500, undefined, { signal }); }
-      const replies = queue.events.filter((e) => isDurableReplyEvent(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, marker));
-      for (const event of replies) messageIds.bot.add(String(event.message.id));
-      const validReplies = replies.filter((e) => isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, replacementReply));
-      if (replies.length !== 1 || validReplies.length !== 1) {
-        throw new Error(`Durable receive produced ${replies.length} attributable replies (${validReplies.length} valid); expected exactly one valid replacement reply`);
+        await gateway.stop();
+        const replacementGeneration = randomBytes(16).toString("hex");
+        await writeGatewayGeneration(gatewayGenerationPath, replacementGeneration);
+        await gateway.start(signal);
+        const replacementReply = `${marker}:${replacementGeneration}`;
+        const reply = await queue.waitFor((e) => {
+          if (!isAttributable(e)) return false;
+          captureReplies();
+          if (!isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, replacementReply)) {
+            throw new Error("Durable reply did not contain the replacement gateway generation");
+          }
+          return true;
+        }, timeoutMs, "durable replay reply", signal);
+        messageIds.bot.add(String(reply.message.id));
+        const settleDeadline = Date.now() + 10000;
+        while (Date.now() < settleDeadline) { await queue.poll(signal); await delay(500, undefined, { signal }); }
+        const replies = captureReplies();
+        const validReplies = replies.filter((e) => isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, replacementReply));
+        if (replies.length !== 1 || validReplies.length !== 1) {
+          throw new Error(`Durable receive produced ${replies.length} attributable replies (${validReplies.length} valid); expected exactly one valid replacement reply`);
+        }
+      } finally {
+        captureReplies();
       }
     });
   } catch (error) {

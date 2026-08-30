@@ -65,11 +65,15 @@ export function isBotMessage(event, botEmail, marker) {
   return isExactRenderedContent(event.message?.content, marker);
 }
 
-export function isPrivateBotMessage(event, botEmail, actorEmail, marker) {
-  if (!isBotMessage(event, botEmail, marker) || event.message?.type !== "private") return false;
+export function isPrivateBotEvent(event, botEmail, actorEmail) {
+  if (event?.type !== "message" || event.message?.type !== "private" || event.message?.sender_email !== botEmail) return false;
   const recipients = Array.isArray(event.message?.display_recipient) ? event.message.display_recipient : [];
   const emails = recipients.map((recipient) => recipient?.email).filter(Boolean);
   return emails.includes(botEmail) && emails.includes(actorEmail);
+}
+
+export function isPrivateBotMessage(event, botEmail, actorEmail, marker) {
+  return isPrivateBotEvent(event, botEmail, actorEmail) && isExactRenderedContent(event.message?.content, marker);
 }
 
 export function isPrivateTypingEvent(event, botEmail, actorEmail, op) {
@@ -441,7 +445,7 @@ async function main() {
       const inboundReply = await queue.waitFor((e) => isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, inboundMarker), timeoutMs, "inbound upload read", signal);
       messageIds.bot.add(String(inboundReply.message.id));
       const outboundMarker = `${runId}:outbound-upload`; await sendDm(command(`send-upload ${outboundMarker}`), signal);
-      const outbound = await queue.waitFor((e) => e.type === "message" && e.message?.sender_email === env.ZULIP_SMOKE_BOT_EMAIL && /user_uploads\//.test(String(e.message?.content ?? "")), timeoutMs, "outbound upload", signal);
+      const outbound = await queue.waitFor((e) => isPrivateBotEvent(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL) && /user_uploads\//.test(String(e.message?.content ?? "")), timeoutMs, "outbound upload", signal);
       messageIds.bot.add(String(outbound.message.id));
       const match = String(outbound.message.content).match(/(?:href=")?([^"' ]*\/user_uploads\/[^"'< ]+)/);
       if (!match || !isExactUtf8(await actor.download(match[1], signal), outboundMarker)) throw new Error("Downloaded outbound upload did not match its marker");
@@ -451,9 +455,7 @@ async function main() {
       const question = `${runId}:poll`; const optionA = `smoke-choice:${runId}:interactive-ok`; const optionB = `${runId}:beta`;
       await sendDm(command(`poll ${question} ${optionA} ${optionB}`), signal);
       const poll = await queue.waitFor((e) => {
-        if (e.type !== "message" || e.message?.type !== "private" || e.message?.sender_email !== env.ZULIP_SMOKE_BOT_EMAIL) return false;
-        const recipients = Array.isArray(e.message?.display_recipient) ? e.message.display_recipient : [];
-        if (!recipients.some((recipient) => recipient?.email === env.ZULIP_SMOKE_USER_EMAIL)) return false;
+        if (!isPrivateBotEvent(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL)) return false;
         const raw = e.message?.widget_content;
         let widget = raw;
         if (typeof raw === "string") { try { widget = JSON.parse(raw); } catch { return false; } }

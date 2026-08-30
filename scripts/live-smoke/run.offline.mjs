@@ -215,6 +215,18 @@ test("requires the exact child result in an assistant transcript message", async
     ].join("\n"));
     assert.deepEqual(await inspectChildTranscripts(stateDir, marker), { total: 2, completedExact: 1 });
     await rm(join(sessionsDir, "extra-child.jsonl"));
+    await writeFile(join(sessionsDir, "archived-child.jsonl.deleted.2026-08-30T19-00-00.000Z"), [
+      JSON.stringify({ message: { role: "user", content: "[Subagent Task] hidden archived work" } }),
+      JSON.stringify({ message: { role: "assistant", content: [{ type: "text", text: "archived" }] } }),
+    ].join("\n"));
+    assert.deepEqual(await inspectChildTranscripts(stateDir, marker), { total: 2, completedExact: 1 });
+    await rm(join(sessionsDir, "archived-child.jsonl.deleted.2026-08-30T19-00-00.000Z"));
+    await writeFile(join(sessionsDir, "reset-child.jsonl.reset.2026-08-30T19-00-01.000Z"), [
+      JSON.stringify({ message: { role: "user", content: "[Subagent Task] hidden reset work" } }),
+      JSON.stringify({ message: { role: "assistant", content: [{ type: "text", text: "reset" }] } }),
+    ].join("\n"));
+    assert.deepEqual(await inspectChildTranscripts(stateDir, marker), { total: 2, completedExact: 1 });
+    await rm(join(sessionsDir, "reset-child.jsonl.reset.2026-08-30T19-00-01.000Z"));
     await writeFile(join(sessionsDir, "child.jsonl"), [
       JSON.stringify({ message: { role: "user", content: `[Subagent Task] reply ${marker}` } }),
       JSON.stringify({ message: { role: "assistant", content: [

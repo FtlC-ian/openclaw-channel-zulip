@@ -168,7 +168,7 @@ export async function inspectChildTranscripts(stateDir, marker) {
     for (const entry of entries) {
       const path = resolve(directory, entry.name);
       if (entry.isDirectory()) await visit(path);
-      else if (entry.isFile() && entry.name.endsWith(".jsonl")) files.push(path);
+      else if (entry.isFile() && /\.jsonl(?:\.(?:deleted|reset)\..+)?$/.test(entry.name)) files.push(path);
     }
   };
   await visit(resolve(stateDir, "agents"));

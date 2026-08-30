@@ -290,9 +290,9 @@ function makePrivateMessage(id: number, senderEmail = "user8@zlp.pubnerd.app") {
   };
 }
 
-async function runMonitorOnce() {
+async function runMonitorOnce(controller = new AbortController()) {
   const { monitorZulipProvider } = await import("./monitor.js");
-  state.abortController = new AbortController();
+  state.abortController = controller;
   await monitorZulipProvider({
     config: state.core.config,
     abortSignal: state.abortController.signal,
@@ -593,15 +593,20 @@ describe("monitorZulipProvider", () => {
     getZulipEventsWithRetryMock.mockRejectedValueOnce(
       Object.assign(new Error("synthetic rate limit"), { retryAfterMs: 120_000 }),
     );
+    const controller = new AbortController();
+    const originalAddEventListener = controller.signal.addEventListener.bind(controller.signal);
+    let abortListenerRegistrations = 0;
+    vi.spyOn(controller.signal, "addEventListener").mockImplementation(
+      (type, listener, options) => {
+        abortListenerRegistrations += 1;
+        if (abortListenerRegistrations === 2) {
+          controller.abort();
+        }
+        originalAddEventListener(type, listener, options);
+      },
+    );
 
-    const monitorPromise = runMonitorOnce();
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      if (getZulipEventsWithRetryMock.mock.calls.length > 0) {
-        break;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 1));
-    }
-    state.abortController?.abort();
+    const monitorPromise = runMonitorOnce(controller);
 
     await expect(
       Promise.race([
@@ -1217,6 +1222,69 @@ describe("monitorZulipProvider", () => {
     expect(getZulipEventsWithRetryMock).toHaveBeenCalledTimes(1);
     expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(1);
     expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("aborts an active durable replay without starting the next pending record", async () => {
+    enableDurableInboundJournal();
+    state.autoAbort = false;
+    state.account.config.reactions = { enabled: true };
+    const {
+      createZulipDurableInboundMessageId,
+      createZulipDurableInboundReceiveJournal,
+      serializeZulipDurableInboundMessage,
+    } = await import("./durable-receive.js");
+    const firstMessage = makeChannelMessage(2105);
+    const secondMessage = makeChannelMessage(2106);
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    for (const message of [firstMessage, secondMessage]) {
+      await journal.accept(
+        createZulipDurableInboundMessageId({
+          accountId: state.account.accountId,
+          messageId: String(message.id),
+        }),
+        {
+          message: serializeZulipDurableInboundMessage(message),
+          receivedAt: Date.now(),
+        },
+      );
+    }
+    let dispatchStarted!: () => void;
+    const activeReplayStarted = new Promise<void>((resolve) => {
+      dispatchStarted = resolve;
+    });
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
+      async ({ replyOptions }) => {
+        dispatchStarted();
+        if (!replyOptions.abortSignal?.aborted) {
+          await new Promise<void>((resolve) => {
+            replyOptions.abortSignal?.addEventListener("abort", () => resolve(), { once: true });
+          });
+        }
+        return {};
+      },
+    );
+
+    const monitorPromise = runMonitorOnce();
+    await activeReplayStarted;
+    state.abortController?.abort();
+    await expect(
+      Promise.race([
+        monitorPromise.then(() => "stopped"),
+        new Promise<string>((resolve) => setTimeout(() => resolve("timed-out"), 250)),
+      ]),
+    ).resolves.toBe("stopped");
+
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(1);
+    expect(state.addZulipReaction).not.toHaveBeenCalledWith(
+      state.client,
+      expect.objectContaining({ messageId: String(secondMessage.id) }),
+    );
+    expect(state.removeZulipReaction).toHaveBeenCalledWith(
+      state.client,
+      expect.objectContaining({ messageId: String(firstMessage.id), emojiName: "eyes" }),
+    );
+    await expect(journal.pending()).resolves.toHaveLength(2);
   });
 
   it("retries same-process durable replay after a handler failure despite volatile dedupe", async () => {

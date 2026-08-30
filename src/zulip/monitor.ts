@@ -368,21 +368,33 @@ async function saveZulipMediaBuffer(params: {
   return { path: filePath, contentType };
 }
 
+const ABORTED_INBOUND_MESSAGE = Symbol("aborted-inbound-message");
+
 function delay(ms: number, signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) {
     return Promise.resolve();
   }
   return new Promise((resolve) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const finish = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (timer) {
+        clearTimeout(timer);
+      }
       signal?.removeEventListener("abort", onAbort);
       resolve();
     };
-    const timer = setTimeout(finish, ms);
-    const onAbort = () => {
-      clearTimeout(timer);
-      finish();
-    };
+    const onAbort = () => finish();
     signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) {
+      finish();
+      return;
+    }
+    timer = setTimeout(finish, ms);
   });
 }
 
@@ -462,6 +474,9 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     message: ZulipMessage,
     options: { skipRecentDedupe?: boolean } = {},
   ) => {
+    if (opts.abortSignal?.aborted) {
+      return ABORTED_INBOUND_MESSAGE;
+    }
     const messageId = String(message.id ?? "");
     if (!messageId) {
       return;
@@ -896,6 +911,9 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         logVerboseMessage(`zulip: failed to remove reaction ${reaction.emojiName}: ${String(err)}`);
       }
     };
+    if (opts.abortSignal?.aborted) {
+      return ABORTED_INBOUND_MESSAGE;
+    }
     const statusReactions = createStatusReactionController({
       enabled: statusReactionConfig.enabled,
       adapter: createZulipStatusReactionAdapter({
@@ -947,7 +965,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     if (opts.abortSignal?.aborted) {
       await cancelReactionLifecycle();
       opts.statusSink?.({ lastInboundAt: Date.now() });
-      return;
+      return ABORTED_INBOUND_MESSAGE;
     }
 
     const textLimit = core.channel.text.resolveTextChunkLimit(cfg, "zulip", account.accountId, {
@@ -1095,14 +1113,14 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     if (reactionLifecycleCancelled || opts.abortSignal?.aborted) {
       await cancelReactionLifecycle();
       opts.statusSink?.({ lastInboundAt: Date.now() });
-      return;
+      return ABORTED_INBOUND_MESSAGE;
     }
 
     await subagentContext.finish();
     if (reactionLifecycleCancelled || opts.abortSignal?.aborted) {
       await cancelReactionLifecycle();
       opts.statusSink?.({ lastInboundAt: Date.now() });
-      return;
+      return ABORTED_INBOUND_MESSAGE;
     }
     const finalDeliveryFailed = (dispatchResult?.failedCounts?.final ?? 0) > 0;
     const terminalError = Boolean(dispatchError) || finalDeliveryFailed;
@@ -1114,7 +1132,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     if (reactionLifecycleCancelled || opts.abortSignal?.aborted) {
       await cancelReactionLifecycle();
       opts.statusSink?.({ lastInboundAt: Date.now() });
-      return;
+      return ABORTED_INBOUND_MESSAGE;
     }
     if (account.config.reactions?.clearOnFinish !== false) {
       const terminalHoldMs = terminalError
@@ -1185,7 +1203,15 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     options: { replay?: boolean } = {},
   ): Promise<void> => {
     try {
-      await handleMessage(message, { skipRecentDedupe: options.replay });
+      const outcome = await handleMessage(message, { skipRecentDedupe: options.replay });
+      if (outcome === ABORTED_INBOUND_MESSAGE) {
+        if (durableInboundJournal && durableId) {
+          await durableInboundJournal.release(durableId, {
+            lastError: "Zulip monitor stopped before delivery",
+          });
+        }
+        return;
+      }
       await completeDurableInboundMessage(durableId, metadata);
     } catch (err) {
       if (durableInboundJournal && durableId) {
@@ -1243,12 +1269,20 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     await deliverDurableInboundMessage(durableId, message, metadata);
   };
 
+  const handleMonitorAbort = () => {
+    void cleanupActiveReactionLifecycles();
+  };
+  opts.abortSignal?.addEventListener("abort", handleMonitorAbort, { once: true });
+
   const replayPendingDurableInboundMessages = async (): Promise<void> => {
     if (!durableInboundJournal) {
       return;
     }
     const pending = await durableInboundJournal.pending();
     for (const record of pending) {
+      if (opts.abortSignal?.aborted) {
+        break;
+      }
       const payload = record.payload as ZulipDurableInboundPayload;
       await deliverDurableInboundMessage(
         record.id,
@@ -1258,11 +1292,6 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       );
     }
   };
-
-  const handleMonitorAbort = () => {
-    void cleanupActiveReactionLifecycles();
-  };
-  opts.abortSignal?.addEventListener("abort", handleMonitorAbort, { once: true });
 
   try {
     await replayPendingDurableInboundMessages();

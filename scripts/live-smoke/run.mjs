@@ -283,9 +283,12 @@ export function extractExactUploadUrl(content) {
   const rendered = String(content ?? "");
   const anchor = rendered.match(/^<p><a href="([^"<>]*\/user_uploads\/[^"<>]+)">([^<>]+)<\/a><\/p>$/);
   if (anchor) {
-    const label = anchor[2];
-    if (/^(?:file:|\/(?:Users|Volumes|private|tmp)\/|[A-Za-z]:\\)/.test(label)) return undefined;
-    return anchor[1].replaceAll("&amp;", "&");
+    const href = anchor[1].replaceAll("&amp;", "&");
+    const basename = href.split(/[?#]/, 1)[0].split("/").at(-1);
+    let decodedBasename;
+    try { decodedBasename = decodeURIComponent(basename); } catch { decodedBasename = basename; }
+    if (![anchor[1], href, basename, decodedBasename].includes(anchor[2])) return undefined;
+    return href;
   }
   const bare = rendered.match(/^((?:https?:\/\/[^\s<>]+)?\/[^\s<>]*user_uploads\/[^\s<>]+)$/);
   return bare?.[1].replaceAll("&amp;", "&");

@@ -165,34 +165,61 @@ export class EventQueue {
   }
 }
 
-class Gateway {
-  constructor(port) { this.port = String(port); }
-  async start() {
+export class Gateway {
+  constructor(port, { termTimeoutMs = 10000, killTimeoutMs = 5000 } = {}) {
+    this.port = String(port);
+    this.termTimeoutMs = termTimeoutMs;
+    this.killTimeoutMs = killTimeoutMs;
+  }
+  async start(signal) {
+    signal?.throwIfAborted();
+    if (this.process?.exitCode === null) throw new Error("Runner-local OpenClaw gateway is already running");
     this.process = spawn("pnpm", ["exec", "openclaw", "gateway", "run", "--bind", "loopback", "--port", this.port, "--auth", "none", "--compact"], {
       cwd: process.cwd(), env: process.env, stdio: ["ignore", "ignore", "ignore"],
     });
     const deadline = Date.now() + 30000;
     while (Date.now() < deadline) {
+      signal?.throwIfAborted();
       if (this.process.exitCode !== null) throw new Error("Runner-local OpenClaw gateway exited during startup");
       const ok = await new Promise((resolve) => {
         const probe = spawn("pnpm", ["exec", "openclaw", "gateway", "health", "--port", this.port, "--timeout", "2000"], { stdio: "ignore", env: process.env });
         probe.once("exit", (code) => resolve(code === 0));
       });
       if (ok) return;
-      await delay(1000);
+      await delay(1000, undefined, { signal });
     }
     throw new Error("Runner-local OpenClaw gateway did not become healthy within 30s");
   }
   async stop() {
-    if (!this.process || this.process.exitCode !== null) return;
-    this.process.kill("SIGTERM");
-    await new Promise((resolve) => {
-      const timer = setTimeout(resolve, 10000);
-      this.process.once("exit", () => { clearTimeout(timer); resolve(); });
-    });
-    if (this.process.exitCode === null) this.process.kill("SIGKILL");
+    if (this.stopPromise) return this.stopPromise;
+    this.stopPromise = this.stopCurrentProcess().finally(() => { this.stopPromise = undefined; });
+    return this.stopPromise;
   }
-  async restart() { await this.stop(); await this.start(); }
+  async stopCurrentProcess() {
+    const child = this.process;
+    if (!child || child.exitCode !== null) {
+      if (this.process === child) this.process = undefined;
+      return;
+    }
+    child.kill("SIGTERM");
+    if (!await waitForExit(child, this.termTimeoutMs) && child.exitCode === null) {
+      child.kill("SIGKILL");
+      if (!await waitForExit(child, this.killTimeoutMs)) {
+        throw new Error("Runner-local OpenClaw gateway did not exit after SIGKILL");
+      }
+    }
+    if (this.process === child) this.process = undefined;
+  }
+  async restart(signal) { await this.stop(); signal?.throwIfAborted(); await this.start(signal); }
+}
+
+function waitForExit(child, timeoutMs) {
+  if (child.exitCode !== null) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const onExit = () => { clearTimeout(timer); resolve(true); };
+    const timer = setTimeout(() => { child.removeListener("exit", onExit); resolve(false); }, timeoutMs);
+    child.once("exit", onExit);
+  });
 }
 
 function command(value) { return `SMOKE_COMMAND\n${value}\nEND_SMOKE_COMMAND`; }
@@ -274,9 +301,10 @@ async function main() {
     });
 
     await scenario("explicit-reaction", async (signal) => {
-      const inboundId = await sendDm(command("react 🎉"), signal);
+      const marker = `${runId}:reacted`;
+      const inboundId = await sendDm(command(`react 🎉 ${marker}`), signal);
       await queue.waitFor((e) => e.type === "reaction" && e.op === "add" && String(e.message_id) === inboundId && (e.emoji_name === "tada" || e.emoji_code === "1f389"), timeoutMs, "explicit reaction", signal);
-      const reply = await queue.waitFor((e) => isBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, "reacted"), timeoutMs, "reaction acknowledgement", signal);
+      const reply = await queue.waitFor((e) => isBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, marker), timeoutMs, "reaction acknowledgement", signal);
       messageIds.bot.add(String(reply.message.id));
     });
 
@@ -324,7 +352,7 @@ async function main() {
       if (queue.events.some((e) => isBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, marker))) {
         throw new Error("Durable reply completed before interruption; replay was not exercised");
       }
-      await gateway.restart();
+      await gateway.restart(signal);
       const reply = await queue.waitFor((e) => isBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, marker), timeoutMs, "durable replay reply", signal);
       messageIds.bot.add(String(reply.message.id));
       const settleDeadline = Date.now() + 10000;

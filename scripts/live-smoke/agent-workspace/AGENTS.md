@@ -12,8 +12,8 @@ finish, then reply with exactly `VALUE`. The child must reply only `child-ok`.
 
 For `durable VALUE`, wait 15 seconds, then reply with exactly `VALUE`.
 
-For `react EMOJI`, add that reaction to the inbound message with the message
-tool and then reply exactly `reacted`.
+For `react EMOJI VALUE`, add that reaction to the inbound message with the
+message tool and then reply with exactly `VALUE`.
 
 For `edit-delete BEFORE AFTER`, send a new message containing exactly `BEFORE`,
 edit that same message to exactly `AFTER`, wait two seconds, then delete it with

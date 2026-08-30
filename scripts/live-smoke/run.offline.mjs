@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { EventQueue, isBotMessage, isExactPoll, lifecycleSummary, normalizeScenarioError, redactError, validateEnvironment } from "./run.mjs";
+import { EventQueue, Gateway, isBotMessage, isExactPoll, lifecycleSummary, normalizeScenarioError, redactError, validateEnvironment } from "./run.mjs";
 
 const validEnv = {
   ZULIP_URL: "https://zulip.example.test/path",
@@ -74,6 +75,22 @@ test("coalesces concurrent event polls", async () => {
   resolveRequest({ events: [{ id: 1, type: "message" }] });
   await Promise.all([first, second]);
   assert.equal(queue.events.length, 1);
+});
+
+test("waits for gateway exit after escalating to SIGKILL", async () => {
+  const child = new EventEmitter();
+  child.exitCode = null;
+  const signals = [];
+  child.kill = (signal) => {
+    signals.push(signal);
+    if (signal === "SIGKILL") setImmediate(() => { child.exitCode = 137; child.emit("exit", 137); });
+    return true;
+  };
+  const gateway = new Gateway(18789, { termTimeoutMs: 1, killTimeoutMs: 100 });
+  gateway.process = child;
+  await Promise.all([gateway.stop(), gateway.stop()]);
+  assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
+  assert.equal(gateway.process, undefined);
 });
 
 test("workflow is manual, protected, pinned, and bounded", async () => {

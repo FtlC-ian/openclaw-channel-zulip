@@ -427,6 +427,8 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     accountConfig: account.config,
     globalStatusReactions: cfg.messages?.statusReactions,
   });
+  const activeMessageTasks = new Set<Promise<void>>();
+  const activeReactionCleanups = new Set<() => Promise<void>>();
 
   const pairing = createChannelPairingController({
     core,
@@ -893,6 +895,32 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       show: () => addReactionSafe(subagentReaction),
       hide: () => removeReactionSafe(subagentReaction),
     });
+    let terminalCleanupTimer: ReturnType<typeof setTimeout> | undefined;
+    let reactionLifecycleCancelled = false;
+    let statusLifecycleSettled = false;
+    let subagentLifecycleSettled = false;
+    const releaseReactionCleanupIfSettled = () => {
+      if (statusLifecycleSettled && subagentLifecycleSettled) {
+        activeReactionCleanups.delete(cancelReactionLifecycle);
+      }
+    };
+    const cancelReactionLifecycle = async () => {
+      if (reactionLifecycleCancelled) {
+        return;
+      }
+      reactionLifecycleCancelled = true;
+      if (terminalCleanupTimer) {
+        clearTimeout(terminalCleanupTimer);
+        terminalCleanupTimer = undefined;
+      }
+      activeReactionCleanups.delete(cancelReactionLifecycle);
+      await Promise.allSettled([statusReactions.clear(), subagentContext.cancel()]);
+    };
+    activeReactionCleanups.add(cancelReactionLifecycle);
+    void subagentContext.closed.then(() => {
+      subagentLifecycleSettled = true;
+      releaseReactionCleanupIfSettled();
+    });
 
     const textLimit = core.channel.text.resolveTextChunkLimit(cfg, "zulip", account.accountId, {
       fallbackLimit: account.textChunkLimit ?? 4000,
@@ -1000,8 +1028,9 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     };
 
     let dispatchError: unknown;
+    let dispatchResult: { failedCounts?: Partial<Record<string, number>> } | undefined;
     try {
-      await subagentContext.run(() =>
+      dispatchResult = await subagentContext.run(() =>
         core.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
           ctx: ctxPayload,
           cfg,
@@ -1009,6 +1038,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
           replyOptions: {
             disableBlockStreaming:
               typeof account.blockStreaming === "boolean" ? !account.blockStreaming : undefined,
+            abortSignal: opts.abortSignal,
             onModelSelected,
             allowToolLifecycleWhenProgressHidden: statusReactionConfig.enabled ? true : undefined,
             onToolStart: async (payload) => {
@@ -1034,20 +1064,38 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       runtime.error?.(`zulip reply failed: ${String(err)}`);
     }
 
+    if (reactionLifecycleCancelled || opts.abortSignal?.aborted) {
+      await cancelReactionLifecycle();
+      opts.statusSink?.({ lastInboundAt: Date.now() });
+      return;
+    }
+
     await subagentContext.finish();
-    if (dispatchError) {
+    const finalDeliveryFailed = (dispatchResult?.failedCounts?.final ?? 0) > 0;
+    const terminalError = Boolean(dispatchError) || finalDeliveryFailed;
+    if (terminalError) {
       await statusReactions.setError();
     } else {
       await statusReactions.setDone();
     }
     if (account.config.reactions?.clearOnFinish !== false) {
-      const terminalHoldMs = dispatchError
+      const terminalHoldMs = terminalError
         ? (statusReactionConfig.timing?.errorHoldMs ?? DEFAULT_TIMING.errorHoldMs)
         : (statusReactionConfig.timing?.doneHoldMs ?? DEFAULT_TIMING.doneHoldMs);
-      const cleanupTimer = setTimeout(() => {
-        void statusReactions.clear();
+      terminalCleanupTimer = setTimeout(() => {
+        terminalCleanupTimer = undefined;
+        if (reactionLifecycleCancelled) {
+          return;
+        }
+        void statusReactions.clear().finally(() => {
+          statusLifecycleSettled = true;
+          releaseReactionCleanupIfSettled();
+        });
       }, terminalHoldMs);
-      cleanupTimer.unref?.();
+      terminalCleanupTimer.unref?.();
+    } else {
+      statusLifecycleSettled = true;
+      releaseReactionCleanupIfSettled();
     }
 
     opts.statusSink?.({ lastInboundAt: Date.now() });
@@ -1231,8 +1279,12 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
 
         if (event.type === "message" && event.message) {
           // Start processing without awaiting (fire-and-forget with error handling)
-          processMessage(event.message, validEventId).catch((err) => {
+          const messageTask = processMessage(event.message, validEventId).catch((err) => {
             runtime.error?.(`zulip: message processing failed: ${String(err)}`);
+          });
+          activeMessageTasks.add(messageTask);
+          void messageTask.finally(() => {
+            activeMessageTasks.delete(messageTask);
           });
           // Small delay between starting each message for natural pacing
           await delay(200);
@@ -1273,6 +1325,11 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       await delay(waitMs);
     }
   }
+
+  const pendingReactionCleanups = Array.from(activeReactionCleanups, (cleanup) => cleanup());
+  await Promise.allSettled(pendingReactionCleanups);
+  await Promise.allSettled(Array.from(activeMessageTasks));
+  await Promise.allSettled(Array.from(activeReactionCleanups, (cleanup) => cleanup()));
 
   // Cleanup
   await deleteZulipQueue(client, queueId);

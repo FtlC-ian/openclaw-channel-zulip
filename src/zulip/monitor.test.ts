@@ -114,6 +114,7 @@ const state = vi.hoisted(() => {
   return {
     createMemoryKeyedStore,
     abortController: undefined as AbortController | undefined,
+    autoAbort: true,
     durableStores: new Map<string, ReturnType<typeof createMemoryKeyedStore>>(),
     pollResponses: [] as Array<Record<string, unknown>>,
     pairingAllowFrom: [] as string[],
@@ -155,8 +156,9 @@ vi.mock("../runtime.js", () => ({
 const registerZulipQueueMock = vi.fn(async () => ({ queueId: "queue-1", lastEventId: 0 }));
 const getZulipEventsWithRetryMock = vi.fn(async () => {
   const next = state.pollResponses.shift() ?? { result: "success", events: [] };
-  if (state.abortController && state.pollResponses.length === 0) {
-    state.abortController.abort();
+  if (state.autoAbort && state.abortController && state.pollResponses.length === 0) {
+    const controller = state.abortController;
+    setTimeout(() => controller.abort(), 0);
   }
   return next;
 });
@@ -338,6 +340,7 @@ describe("monitorZulipProvider", () => {
     state.downloadedUploads = [];
     state.extractedUploadUrls = [];
     state.abortController = undefined;
+    state.autoAbort = true;
     downloadZulipUploadMock.mockClear();
     extractZulipUploadUrlsMock.mockClear();
     registerZulipQueueMock.mockClear();
@@ -367,13 +370,14 @@ describe("monitorZulipProvider", () => {
   });
 
   it("reports real model, tool, compaction, and terminal lifecycle states", async () => {
+    state.autoAbort = false;
     state.account.config.reactions = {
       enabled: true,
       timing: {
         debounceMs: 0,
         stallSoftMs: 60_000,
         stallHardMs: 120_000,
-        doneHoldMs: 0,
+        doneHoldMs: 500,
       },
     };
     state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
@@ -397,7 +401,15 @@ describe("monitorZulipProvider", () => {
       },
     ];
 
-    await runMonitorOnce();
+    const monitorPromise = runMonitorOnce();
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (state.addZulipReaction.mock.calls.some((call) => call[1].emojiName === "check")) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2));
+    }
+    state.abortController?.abort();
+    await monitorPromise;
 
     const addedNames = state.addZulipReaction.mock.calls.map((call) => call[1].emojiName);
     expect(addedNames).toEqual(expect.arrayContaining([
@@ -434,6 +446,79 @@ describe("monitorZulipProvider", () => {
     expect(state.addZulipReaction).toHaveBeenCalledWith(
       state.client,
       expect.objectContaining({ messageId: "1097", emojiName: "cross_mark" }),
+    );
+  });
+
+  it("uses the terminal error state when final delivery resolves as failed", async () => {
+    state.account.config.reactions = { enabled: true, clearOnFinish: false };
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockResolvedValue({
+      failedCounts: { final: 1 },
+    });
+    state.pollResponses = [
+      {
+        result: "success",
+        events: [{ id: 1, type: "message", message: makeChannelMessage(1095) }],
+      },
+    ];
+
+    await runMonitorOnce();
+
+    expect(state.addZulipReaction).toHaveBeenCalledWith(
+      state.client,
+      expect.objectContaining({ messageId: "1095", emojiName: "cross_mark" }),
+    );
+    expect(state.addZulipReaction).not.toHaveBeenCalledWith(
+      state.client,
+      expect.objectContaining({ messageId: "1095", emojiName: "check" }),
+    );
+  });
+
+  it("aborts active replies and clears reactions when the monitor stops", async () => {
+    state.autoAbort = false;
+    state.account.config.reactions = {
+      enabled: true,
+      timing: { doneHoldMs: 500 },
+    };
+    let dispatched!: () => void;
+    const dispatchStarted = new Promise<void>((resolve) => {
+      dispatched = resolve;
+    });
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
+      async ({ dispatcherOptions, replyOptions }) => {
+        expect(replyOptions.abortSignal).toBe(state.abortController?.signal);
+        await dispatcherOptions.onReplyStart?.();
+        await replyOptions.onToolStart?.({ name: "exec", phase: "start" });
+        await replyOptions.onCompactionStart?.();
+        dispatched();
+        await new Promise<void>((resolve) => {
+          replyOptions.abortSignal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+        return {};
+      },
+    );
+    state.pollResponses = [
+      {
+        result: "success",
+        events: [{ id: 1, type: "message", message: makeChannelMessage(1094) }],
+      },
+    ];
+
+    const monitorPromise = runMonitorOnce();
+    await dispatchStarted;
+    state.abortController?.abort();
+    await monitorPromise;
+
+    expect(state.removeZulipReaction).toHaveBeenCalledWith(
+      state.client,
+      expect.objectContaining({ messageId: "1094", emojiName: "eyes" }),
+    );
+    expect(state.addZulipReaction).not.toHaveBeenCalledWith(
+      state.client,
+      expect.objectContaining({ messageId: "1094", emojiName: "check" }),
+    );
+    expect(state.addZulipReaction).not.toHaveBeenCalledWith(
+      state.client,
+      expect.objectContaining({ messageId: "1094", emojiName: "cross_mark" }),
     );
   });
 

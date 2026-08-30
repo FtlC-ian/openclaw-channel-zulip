@@ -203,6 +203,11 @@ Unicode values and named Zulip emoji are supported. Account-level
 `messages.statusReactions` values. The legacy `onStart`, `onSuccess`, and
 `onError` keys remain accepted as queued, done, and error aliases.
 
+This subagent indicator covers children launched through OpenClaw's
+`sessions_spawn` lifecycle, which emits the public hooks above. Codex-native
+collaboration tasks do not currently expose that lifecycle through OpenClaw's
+public plugin hooks, so they cannot truthfully drive this indicator.
+
 ---
 
 ## How to get a Zulip API key

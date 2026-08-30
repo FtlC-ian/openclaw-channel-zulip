@@ -11,7 +11,7 @@ describe("Zulip subagent reaction correlation", () => {
     await clearZulipSubagentReactionContexts();
   });
 
-  it("keeps the indicator visible until every concurrently bound child ends", async () => {
+  it("tracks concurrent OpenClaw sessions_spawn children through public hook events", async () => {
     const show = vi.fn(async () => {});
     const hide = vi.fn(async () => {});
     const context = registerZulipSubagentReactionContext({ requesterSessionKey: "requester", show, hide });
@@ -115,6 +115,25 @@ describe("Zulip subagent reaction correlation", () => {
     );
 
     await clearZulipSubagentReactionContexts();
+    await handleZulipSubagentEnded({ runId: "run-1" }, {});
+
+    expect(hide).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels active run bindings during account monitor shutdown", async () => {
+    const hide = vi.fn(async () => {});
+    const context = registerZulipSubagentReactionContext({
+      requesterSessionKey: "requester",
+      show: vi.fn(async () => {}),
+      hide,
+    });
+    await handleZulipSubagentSpawned(
+      { runId: "run-1", requester: { channel: "zulip" } },
+      { requesterSessionKey: "requester" },
+    );
+
+    await context.cancel();
+    await expect(context.closed).resolves.toBeUndefined();
     await handleZulipSubagentEnded({ runId: "run-1" }, {});
 
     expect(hide).toHaveBeenCalledTimes(1);

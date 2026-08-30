@@ -8,6 +8,8 @@ type ReactionContext = {
   indicatorShown: boolean;
   indicatorOperation: Promise<void>;
   terminal: boolean;
+  closed: boolean;
+  resolveClosed: () => void;
   show: () => Promise<void>;
   hide: () => Promise<void>;
 };
@@ -39,6 +41,15 @@ function resolveRunId(event: { runId?: string }, ctx: { runId?: string }): strin
   return event.runId?.trim() || ctx.runId?.trim() || "";
 }
 
+function closeContext(context: ReactionContext): void {
+  if (context.closed) {
+    return;
+  }
+  context.closed = true;
+  activeContexts.delete(context);
+  context.resolveClosed();
+}
+
 export function registerZulipSubagentReactionContext(params: {
   requesterSessionKey: string;
   show: () => Promise<void>;
@@ -46,7 +57,13 @@ export function registerZulipSubagentReactionContext(params: {
 }): {
   run: <T>(callback: () => Promise<T>) => Promise<T>;
   finish: () => Promise<void>;
+  cancel: () => Promise<void>;
+  closed: Promise<void>;
 } {
+  let resolveClosed!: () => void;
+  const closed = new Promise<void>((resolve) => {
+    resolveClosed = resolve;
+  });
   const context: ReactionContext = {
     requesterSessionKey: params.requesterSessionKey,
     activeRunIds: new Set(),
@@ -54,6 +71,8 @@ export function registerZulipSubagentReactionContext(params: {
     indicatorShown: false,
     indicatorOperation: Promise.resolve(),
     terminal: false,
+    closed: false,
+    resolveClosed,
     show: params.show,
     hide: params.hide,
   };
@@ -62,6 +81,7 @@ export function registerZulipSubagentReactionContext(params: {
 
   return {
     run: (callback) => reactionContextStorage.run(context, callback),
+    closed,
     finish: async () => {
       if (context.terminal) {
         return;
@@ -71,9 +91,23 @@ export function registerZulipSubagentReactionContext(params: {
         currentContextBySession.delete(context.requesterSessionKey);
       }
       if (context.activeRunIds.size === 0) {
-        activeContexts.delete(context);
         await updateIndicator(context, false);
+        closeContext(context);
       }
+    },
+    cancel: async () => {
+      context.terminal = true;
+      if (currentContextBySession.get(context.requesterSessionKey) === context) {
+        currentContextBySession.delete(context.requesterSessionKey);
+      }
+      for (const runId of context.activeRunIds) {
+        if (contextByRunId.get(runId) === context) {
+          contextByRunId.delete(runId);
+        }
+      }
+      context.activeRunIds.clear();
+      await updateIndicator(context, false);
+      closeContext(context);
     },
   };
 }
@@ -120,10 +154,10 @@ export async function handleZulipSubagentEnded(
   contextByRunId.delete(runId);
   context.activeRunIds.delete(runId);
   if (context.activeRunIds.size === 0) {
-    if (context.terminal) {
-      activeContexts.delete(context);
-    }
     await updateIndicator(context, false);
+    if (context.terminal) {
+      closeContext(context);
+    }
   }
 }
 
@@ -136,6 +170,7 @@ export async function clearZulipSubagentReactionContexts(): Promise<void> {
     context.terminal = true;
     context.activeRunIds.clear();
     await updateIndicator(context, false);
+    closeContext(context);
   }
 }
 

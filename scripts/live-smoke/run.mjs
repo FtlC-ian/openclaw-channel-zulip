@@ -272,10 +272,23 @@ export function subagentCompletedBeforeReply(events, inboundMessageId, replyEven
 
 export function isExactPoll(widget, question, options) {
   const extra = widget?.extra_data;
-  if (extra?.poll !== true || extra.heading !== question || !Array.isArray(extra.choices)) return false;
+  if (widget?.widget_type !== "zform" || extra?.type !== "choices" || extra.poll !== true ||
+      extra.heading !== question || !Array.isArray(extra.choices)) return false;
   if (extra.choices.length !== options.length) return false;
   return extra.choices.every((choice, index) => choice?.type === "multiple_choice" &&
     choice.short_name === options[index] && choice.long_name === options[index] && choice.reply === options[index]);
+}
+
+export function extractExactUploadUrl(content) {
+  const rendered = String(content ?? "");
+  const anchor = rendered.match(/^<p><a href="([^"<>]*\/user_uploads\/[^"<>]+)">([^<>]+)<\/a><\/p>$/);
+  if (anchor) {
+    const label = anchor[2];
+    if (/^(?:file:|\/(?:Users|Volumes|private|tmp)\/|[A-Za-z]:\\)/.test(label)) return undefined;
+    return anchor[1].replaceAll("&amp;", "&");
+  }
+  const bare = rendered.match(/^((?:https?:\/\/[^\s<>]+)?\/[^\s<>]*user_uploads\/[^\s<>]+)$/);
+  return bare?.[1].replaceAll("&amp;", "&");
 }
 
 export function isExactPollMessage(message, question, options) {
@@ -651,10 +664,11 @@ async function main() {
       const inboundReply = await queue.waitFor((e) => isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, inboundMarker), timeoutMs, "inbound upload read", signal);
       messageIds.bot.add(String(inboundReply.message.id));
       const outboundMarker = `${runId}:outbound-upload`; await sendDm(command(`send-upload ${outboundMarker}`), signal);
-      const outbound = await queue.waitFor((e) => isPrivateBotEvent(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL) && /user_uploads\//.test(String(e.message?.content ?? "")), timeoutMs, "outbound upload", signal);
+      const outbound = await queue.waitFor((e) => isPrivateBotEvent(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL) &&
+        Boolean(extractExactUploadUrl(e.message?.content)), timeoutMs, "outbound upload", signal);
       messageIds.bot.add(String(outbound.message.id));
-      const match = String(outbound.message.content).match(/(?:href=")?([^"' ]*\/user_uploads\/[^"'< ]+)/);
-      if (!match || !isExactUtf8(await actor.download(match[1], signal), outboundMarker)) throw new Error("Downloaded outbound upload did not match its marker");
+      const uploadUrl = extractExactUploadUrl(outbound.message.content);
+      if (!uploadUrl || !isExactUtf8(await actor.download(uploadUrl, signal), outboundMarker)) throw new Error("Downloaded outbound upload did not match its marker");
     });
 
     await scenario("poll-and-interactive-reply", async (signal) => {

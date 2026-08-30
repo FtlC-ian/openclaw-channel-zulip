@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { assertFinalPrivateTypingStop, assertMessageRemainsExact, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, drainEventQueueUntilQuiet, eventOccursBefore, EventQueue, Gateway, hasFinalPrivateTypingStop, hasProvableMinimumMessageDelay, inspectChildTranscripts, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactPollMessage, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, isUsageCountedTranscriptName, lifecycleSummary, normalizeScenarioError, redactError, resolveUploadUrl, signalProcessTree, subagentCompletedBeforeReply, validateEnvironment, waitForProcessTreeExit, writeGatewayGeneration } from "./run.mjs";
+import { assertFinalPrivateTypingStop, assertMessageRemainsExact, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, drainEventQueueUntilQuiet, eventOccursBefore, EventQueue, extractExactUploadUrl, Gateway, hasFinalPrivateTypingStop, hasProvableMinimumMessageDelay, inspectChildTranscripts, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactPollMessage, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, isUsageCountedTranscriptName, lifecycleSummary, normalizeScenarioError, redactError, resolveUploadUrl, signalProcessTree, subagentCompletedBeforeReply, validateEnvironment, waitForProcessTreeExit, writeGatewayGeneration } from "./run.mjs";
 
 const validEnv = {
   ZULIP_URL: "https://zulip.example.test/path",
@@ -390,15 +390,25 @@ test("requires subagent lifecycle completion before the parent reply", () => {
 });
 
 test("requires the poll's exact ordered choices and replies", () => {
-  const widget = { extra_data: { poll: true, heading: "question", choices: [
+  const widget = { widget_type: "zform", extra_data: { type: "choices", poll: true, heading: "question", choices: [
     { type: "multiple_choice", short_name: "a", long_name: "a", reply: "a" },
     { type: "multiple_choice", short_name: "b", long_name: "b", reply: "b" },
   ] } };
   assert.equal(isExactPoll(widget, "question", ["a", "b"]), true);
+  assert.equal(isExactPoll({ extra_data: widget.extra_data }, "question", ["a", "b"]), false);
+  assert.equal(isExactPoll({ ...widget, extra_data: { ...widget.extra_data, type: "buttons" } }, "question", ["a", "b"]), false);
   assert.equal(isExactPoll(widget, "question", ["b", "a"]), false);
   assert.equal(isExactPoll({ extra_data: { ...widget.extra_data, choices: [{ ...widget.extra_data.choices[0], reply: "wrong" }, widget.extra_data.choices[1]] } }, "question", ["a", "b"]), false);
   assert.equal(isExactPollMessage({ content: "<p>question</p>", widget_content: JSON.stringify(widget) }, "question", ["a", "b"]), true);
   assert.equal(isExactPollMessage({ content: "<p>question plus prose</p>", widget_content: widget }, "question", ["a", "b"]), false);
+});
+
+test("accepts only a standalone outbound upload without captions or local paths", () => {
+  assert.equal(extractExactUploadUrl('<p><a href="/user_uploads/x/file.txt">file.txt</a></p>'), "/user_uploads/x/file.txt");
+  assert.equal(extractExactUploadUrl("/user_uploads/x/file.txt"), "/user_uploads/x/file.txt");
+  assert.equal(extractExactUploadUrl('<p>unrequested prose <a href="/user_uploads/x/file.txt">file.txt</a></p>'), undefined);
+  assert.equal(extractExactUploadUrl('<p><a href="/user_uploads/x/file.txt">/tmp/file.txt</a></p>'), undefined);
+  assert.equal(extractExactUploadUrl('<p><a href="/user_uploads/x/file.txt">file.txt</a></p><p>extra</p>'), undefined);
 });
 
 test("cancels a timed-out event wait", async () => {

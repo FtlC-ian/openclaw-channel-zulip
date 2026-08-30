@@ -153,6 +153,10 @@ export async function assertMessageRemainsExact(client, id, expected, minimumMs,
 }
 
 export async function countCompletedChildTranscripts(stateDir, marker) {
+  return (await inspectChildTranscripts(stateDir, marker)).completedExact;
+}
+
+export async function inspectChildTranscripts(stateDir, marker) {
   const files = [];
   const visit = async (directory) => {
     let entries;
@@ -168,16 +172,18 @@ export async function countCompletedChildTranscripts(stateDir, marker) {
     }
   };
   await visit(resolve(stateDir, "agents"));
-  let matches = 0;
+  let total = 0;
+  let completedExact = 0;
   for (const file of files) {
     const records = (await readFile(file, "utf8")).split("\n").filter(Boolean).flatMap((line) => {
       try { return [JSON.parse(line)]; } catch { return []; }
     });
-    if (!records.some((record) => JSON.stringify(record).includes(marker))) continue;
+    if (!records.some(isSubagentTaskRecord)) continue;
+    total += 1;
     const results = records.flatMap(assistantMessageTexts);
-    if (results.at(-1) === marker) matches += 1;
+    if (results.at(-1) === marker) completedExact += 1;
   }
-  return matches;
+  return { total, completedExact };
 }
 
 export async function writeGatewayGeneration(path, generation) {
@@ -220,12 +226,36 @@ export function lifecycleSummary(events, inboundMessageId) {
   };
 }
 
+export function subagentCompletedBeforeReply(events, inboundMessageId, replyEvent) {
+  const replyIndex = events.indexOf(replyEvent);
+  if (replyIndex < 0) return false;
+  const active = new Set();
+  let sawSubagent = false;
+  for (const event of events.slice(0, replyIndex)) {
+    if (event?.type !== "reaction" || String(event.message_id) !== String(inboundMessageId) ||
+        (event.emoji_name !== "robot" && event.emoji_code !== "1f916")) continue;
+    sawSubagent = true;
+    const key = reactionKey(event);
+    if (event.op === "add") active.add(key);
+    else if (event.op === "remove") active.delete(key);
+  }
+  return sawSubagent && active.size === 0;
+}
+
 export function isExactPoll(widget, question, options) {
   const extra = widget?.extra_data;
   if (extra?.poll !== true || extra.heading !== question || !Array.isArray(extra.choices)) return false;
   if (extra.choices.length !== options.length) return false;
   return extra.choices.every((choice, index) => choice?.type === "multiple_choice" &&
     choice.short_name === options[index] && choice.long_name === options[index] && choice.reply === options[index]);
+}
+
+export function isExactPollMessage(message, question, options) {
+  let widget = message?.widget_content;
+  if (typeof widget === "string") {
+    try { widget = JSON.parse(widget); } catch { return false; }
+  }
+  return isExactRenderedContent(message?.content, question) && isExactPoll(widget, question, options);
 }
 
 export function normalizeScenarioError(signal, error) {
@@ -250,6 +280,14 @@ function assistantMessageTexts(value) {
     return text ? [text] : [];
   }
   return Object.values(value).flatMap(assistantMessageTexts);
+}
+
+function isSubagentTaskRecord(value) {
+  const message = value?.message;
+  if (message?.role !== "user") return false;
+  const content = typeof message.content === "string" ? message.content :
+    Array.isArray(message.content) ? message.content.map((part) => typeof part === "string" ? part : part?.text ?? "").join("") : "";
+  return content.includes("[Subagent Task]");
 }
 
 function escapeHtml(value) {
@@ -536,14 +574,17 @@ async function main() {
       if (!summary.sawSubagent) throw new Error("No truthful subagent lifecycle reaction was observed");
       if (summary.subagentCount !== 1) throw new Error(`Observed ${summary.subagentCount} subagent lifecycle reactions; expected exactly one`);
       if (!summary.allRemoved) throw new Error("Lifecycle reactions were not cleaned up after completion");
+      if (!subagentCompletedBeforeReply(queue.events, inboundId, reply)) {
+        throw new Error("The child lifecycle did not complete before the parent reply");
+      }
       const transcriptDeadline = Date.now() + timeoutMs;
-      let childTranscriptCount = 0;
-      while (Date.now() < transcriptDeadline && (childTranscriptCount = await countCompletedChildTranscripts(env.OPENCLAW_STATE_DIR, childResult)) === 0) {
+      let childTranscripts;
+      while (Date.now() < transcriptDeadline && (childTranscripts = await inspectChildTranscripts(env.OPENCLAW_STATE_DIR, childResult)).completedExact === 0) {
         await delay(250, undefined, { signal });
       }
-      childTranscriptCount = await countCompletedChildTranscripts(env.OPENCLAW_STATE_DIR, childResult);
-      if (childTranscriptCount !== 1) {
-        throw new Error(`Found ${childTranscriptCount} completed child transcripts with the exact required result; expected one`);
+      childTranscripts = await inspectChildTranscripts(env.OPENCLAW_STATE_DIR, childResult);
+      if (childTranscripts.total !== 1 || childTranscripts.completedExact !== 1) {
+        throw new Error(`Found ${childTranscripts.total} child transcripts and ${childTranscripts.completedExact} exact completed results; expected exactly one of each`);
       }
       await assertFinalPrivateTypingStop(queue, eventStart, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, signal);
     });
@@ -584,10 +625,7 @@ async function main() {
       await sendDm(command(`poll ${question} ${optionA} ${optionB}`), signal);
       const poll = await queue.waitFor((e) => {
         if (!isPrivateBotEvent(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL)) return false;
-        const raw = e.message?.widget_content;
-        let widget = raw;
-        if (typeof raw === "string") { try { widget = JSON.parse(raw); } catch { return false; } }
-        return isExactPoll(widget, question, [optionA, optionB]);
+        return isExactPollMessage(e.message, question, [optionA, optionB]);
       }, timeoutMs, "native poll", signal);
       messageIds.bot.add(String(poll.message.id));
       await sendDm(optionA, signal);

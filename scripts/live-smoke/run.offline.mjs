@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { assertFinalPrivateTypingStop, assertMessageRemainsExact, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, EventQueue, Gateway, hasFinalPrivateTypingStop, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, lifecycleSummary, normalizeScenarioError, redactError, resolveUploadUrl, signalProcessTree, validateEnvironment, waitForProcessTreeExit, writeGatewayGeneration } from "./run.mjs";
+import { assertFinalPrivateTypingStop, assertMessageRemainsExact, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, EventQueue, Gateway, hasFinalPrivateTypingStop, inspectChildTranscripts, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactPollMessage, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, lifecycleSummary, normalizeScenarioError, redactError, resolveUploadUrl, signalProcessTree, subagentCompletedBeforeReply, validateEnvironment, waitForProcessTreeExit, writeGatewayGeneration } from "./run.mjs";
 
 const validEnv = {
   ZULIP_URL: "https://zulip.example.test/path",
@@ -208,6 +208,13 @@ test("requires the exact child result in an assistant transcript message", async
       JSON.stringify({ message: { role: "assistant", content: [{ type: "text", text: marker }] } }),
     ].join("\n"));
     assert.equal(await countCompletedChildTranscripts(stateDir, marker), 1);
+    assert.deepEqual(await inspectChildTranscripts(stateDir, marker), { total: 1, completedExact: 1 });
+    await writeFile(join(sessionsDir, "extra-child.jsonl"), [
+      JSON.stringify({ message: { role: "user", content: "[Subagent Task] do unrelated work" } }),
+      JSON.stringify({ message: { role: "assistant", content: [{ type: "text", text: "unrelated" }] } }),
+    ].join("\n"));
+    assert.deepEqual(await inspectChildTranscripts(stateDir, marker), { total: 2, completedExact: 1 });
+    await rm(join(sessionsDir, "extra-child.jsonl"));
     await writeFile(join(sessionsDir, "child.jsonl"), [
       JSON.stringify({ message: { role: "user", content: `[Subagent Task] reply ${marker}` } }),
       JSON.stringify({ message: { role: "assistant", content: [
@@ -245,6 +252,13 @@ test("requires lifecycle and subagent reactions to be removed", () => {
   assert.equal(lifecycleSummary([{ ...base, op: "add" }, { ...base, user_id: 8, op: "add" }, { ...base, op: "remove" }], "42").allRemoved, false);
 });
 
+test("requires subagent lifecycle completion before the parent reply", () => {
+  const reaction = (id, op) => ({ type: "reaction", message_id: "42", user_id: 7, emoji_name: "robot", emoji_code: "1f916", reaction_type: "unicode_emoji", op, id });
+  const reply = { type: "message", id: 3 };
+  assert.equal(subagentCompletedBeforeReply([reaction(1, "add"), reaction(2, "remove"), reply], "42", reply), true);
+  assert.equal(subagentCompletedBeforeReply([reaction(1, "add"), reply, reaction(3, "remove")], "42", reply), false);
+});
+
 test("requires the poll's exact ordered choices and replies", () => {
   const widget = { extra_data: { poll: true, heading: "question", choices: [
     { type: "multiple_choice", short_name: "a", long_name: "a", reply: "a" },
@@ -253,6 +267,8 @@ test("requires the poll's exact ordered choices and replies", () => {
   assert.equal(isExactPoll(widget, "question", ["a", "b"]), true);
   assert.equal(isExactPoll(widget, "question", ["b", "a"]), false);
   assert.equal(isExactPoll({ extra_data: { ...widget.extra_data, choices: [{ ...widget.extra_data.choices[0], reply: "wrong" }, widget.extra_data.choices[1]] } }, "question", ["a", "b"]), false);
+  assert.equal(isExactPollMessage({ content: "<p>question</p>", widget_content: JSON.stringify(widget) }, "question", ["a", "b"]), true);
+  assert.equal(isExactPollMessage({ content: "<p>question plus prose</p>", widget_content: widget }, "question", ["a", "b"]), false);
 });
 
 test("cancels a timed-out event wait", async () => {

@@ -344,6 +344,7 @@ async function saveZulipMediaBuffer(params: {
 
 const ABORTED_INBOUND_MESSAGE = Symbol("aborted-inbound-message");
 const RETRYABLE_INBOUND_MESSAGE = Symbol("retryable-inbound-message");
+const RETRYABLE_STREAM_POLICY = Symbol("retryable-stream-policy");
 const activeMonitorReactionCleanups = new Set<() => Promise<void>>();
 let monitorReactionShutdownStarted = false;
 
@@ -474,7 +475,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
   const resolveInboundStreamDecision = async (
     message: ZulipMessage,
     options: { replay?: boolean } = {},
-  ): Promise<InboundStreamDecision | undefined> => {
+  ): Promise<InboundStreamDecision | typeof RETRYABLE_STREAM_POLICY | undefined> => {
     if (message.type === "private") {
       return undefined;
     }
@@ -501,6 +502,9 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         streamId,
         log: logVerboseMessage,
       });
+      if (options.replay && !metadata?.name?.trim()) {
+        return RETRYABLE_STREAM_POLICY;
+      }
       streamName = metadata?.name?.trim() || streamName;
     } else {
       const key = streamMetadataCacheKey(account.accountId, streamId);
@@ -591,6 +595,9 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       const streamDecision =
         options.streamDecision ??
         await resolveInboundStreamDecision(message, { replay: options.replay });
+      if (streamDecision === RETRYABLE_STREAM_POLICY) {
+        return RETRYABLE_STREAM_POLICY;
+      }
       if (!streamDecision || !streamDecision.accepted) {
         if (streamDecision) {
           logRejectedStreamDecision(streamDecision, senderIdentity);
@@ -1354,6 +1361,14 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         }
         return;
       }
+      if (outcome === RETRYABLE_STREAM_POLICY) {
+        if (durableInboundJournal && durableId && manageDurableRecord) {
+          await durableInboundJournal.release(durableId, {
+            lastError: "Zulip stream metadata unavailable during durable replay",
+          });
+        }
+        return;
+      }
       if (manageDurableRecord) {
         await completeDurableInboundMessage(durableId, metadata);
       }
@@ -1376,6 +1391,9 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     queueEventId?: number,
   ): Promise<void> => {
     const streamDecision = await resolveInboundStreamDecision(message);
+    if (streamDecision === RETRYABLE_STREAM_POLICY) {
+      return;
+    }
     if (streamDecision && !streamDecision.accepted) {
       logRejectedStreamDecision(
         streamDecision,

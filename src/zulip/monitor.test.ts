@@ -1362,14 +1362,13 @@ describe("monitorZulipProvider", () => {
     expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
   });
 
-  it("does not use a replayed message's stale stream name when metadata is unavailable", async () => {
+  it("keeps a legacy-allowlisted replay pending when authoritative stream metadata is unavailable", async () => {
     enableDurableInboundJournal();
     state.streamSubscriptions = [];
     state.streamLookups.set("4", new Error("stream metadata unavailable"));
     state.account.config = {
       ...state.account.config,
-      streams: ["other"],
-      streamOverrides: { debbie: { enabled: true } },
+      streams: ["debbie"],
     };
     const {
       createZulipDurableInboundMessageId,
@@ -1389,8 +1388,50 @@ describe("monitorZulipProvider", () => {
 
     await runMonitorOnce();
 
-    await expect(journal.pending()).resolves.toEqual([]);
+    const pending = await journal.pending();
+    expect(pending).toHaveLength(1);
+    expect(pending[0]).toMatchObject({
+      lastError: "Zulip stream metadata unavailable during durable replay",
+    });
     expect(fetchZulipStreamMock).toHaveBeenCalledWith(state.client, "4");
+    expect(state.core.channel.inbound.buildContext).not.toHaveBeenCalled();
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+  });
+
+  it("keeps a replay pending rather than bypassing a name disable when metadata is unavailable", async () => {
+    enableDurableInboundJournal();
+    state.streamSubscriptions = [];
+    state.streamLookups.set("4", new Error("stream metadata unavailable"));
+    state.account.config = {
+      ...state.account.config,
+      streams: ["*"],
+      streamOverrides: { debbie: { enabled: false } },
+    };
+    const {
+      createZulipDurableInboundMessageId,
+      createZulipDurableInboundReceiveJournal,
+      serializeZulipDurableInboundMessage,
+    } = await import("./durable-receive.js");
+    const message = makeChannelMessage(1215);
+    const durableId = createZulipDurableInboundMessageId({
+      accountId: state.account.accountId,
+      messageId: String(message.id),
+    });
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    await journal.accept(durableId, {
+      message: serializeZulipDurableInboundMessage(message),
+      receivedAt: Date.now(),
+    });
+
+    await runMonitorOnce();
+
+    const pending = await journal.pending();
+    expect(pending).toHaveLength(1);
+    expect(pending[0]).toMatchObject({
+      lastError: "Zulip stream metadata unavailable during durable replay",
+    });
+    expect(state.addZulipReaction).not.toHaveBeenCalled();
+    expect(state.core.channel.activity.record).not.toHaveBeenCalled();
     expect(state.core.channel.inbound.buildContext).not.toHaveBeenCalled();
     expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
   });

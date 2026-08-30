@@ -119,6 +119,8 @@ const state = vi.hoisted(() => {
     durableStores: new Map<string, ReturnType<typeof createMemoryKeyedStore>>(),
     pollResponses: [] as Array<Record<string, unknown>>,
     pairingAllowFrom: [] as string[],
+    pairingUpsertError: undefined as Error | undefined,
+    upsertPairingRequest: vi.fn(async () => ({ code: "123456", created: false })),
     streamSubscriptions: [] as Array<Record<string, unknown>>,
     streamLookups: new Map<string, Record<string, unknown> | Error>(),
     downloadedUploads: [] as Array<{ buffer: Buffer; contentType: string; filename: string }>,
@@ -230,7 +232,7 @@ const typingCallbacksMock = vi.fn(() => ({
 
 vi.mock("../sdk.js", () => ({
   createChannelPairingController: vi.fn(() => ({
-    upsertPairingRequest: vi.fn(async () => ({ code: "123456", created: false })),
+    upsertPairingRequest: state.upsertPairingRequest,
     readStoreForDmPolicy: vi.fn(async () => state.pairingAllowFrom),
   })),
 }));
@@ -327,6 +329,14 @@ describe("monitorZulipProvider", () => {
     state.core.channel.inbound.buildContext.mockImplementation(buildChannelInboundEventContext);
     state.durableStores = new Map();
     state.pairingAllowFrom = [];
+    state.pairingUpsertError = undefined;
+    state.upsertPairingRequest.mockReset().mockImplementation(async () => {
+      if (state.pairingUpsertError) {
+        throw state.pairingUpsertError;
+      }
+      return { code: "123456", created: false };
+    });
+    state.account.streams = ["debbie"];
     state.account.config = {
       dmPolicy: "open",
       groupPolicy: "open",
@@ -1307,6 +1317,22 @@ describe("monitorZulipProvider", () => {
     }
   });
 
+  it("keeps a narrow queue when an enabled override is already covered by legacy streams", async () => {
+    state.account.streams = ["general"];
+    state.account.config = {
+      ...state.account.config,
+      streams: ["general"],
+      streamOverrides: { GENERAL: { enabled: true } },
+    };
+
+    await runMonitorOnce();
+
+    expect(registerZulipQueueMock).toHaveBeenCalledWith(
+      state.client,
+      { eventTypes: ["message"], streams: ["general"] },
+    );
+  });
+
   it("lets an id override win over a normalized name override for mention and topics", async () => {
     state.account.requireMention = true;
     state.account.config = {
@@ -1360,6 +1386,89 @@ describe("monitorZulipProvider", () => {
     await runMonitorOnce();
 
     expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains the last good stream metadata snapshot when a later seed fails", async () => {
+    state.streamSubscriptions = [{
+      stream_id: 4,
+      name: "retained-name",
+      invite_only: false,
+    }];
+    await runMonitorOnce();
+
+    fetchZulipSubscriptionsMock.mockRejectedValueOnce(new Error("temporary subscription failure"));
+    state.account.streams = ["retained-name"];
+    state.account.config = {
+      ...state.account.config,
+      streams: ["retained-name"],
+    };
+    state.pollResponses = [{
+      result: "success",
+      events: [{
+        id: 1,
+        type: "message",
+        message: { ...makeChannelMessage(1216), display_recipient: null },
+      }],
+    }];
+
+    await runMonitorOnce();
+
+    expect(fetchZulipStreamMock).not.toHaveBeenCalled();
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("durably retries a pairing ingress failure without journaling known policy drops", async () => {
+    enableDurableInboundJournal();
+    state.account.config = {
+      ...state.account.config,
+      dmPolicy: "pairing",
+      streams: ["*"],
+      streamOverrides: { debbie: { enabled: false } },
+    };
+    state.pairingUpsertError = new Error("synthetic pairing persistence failure");
+    const filteredMessage = makeChannelMessage(1217);
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 1, type: "message", message: filteredMessage }],
+    }];
+
+    await runMonitorOnce();
+
+    for (const store of state.durableStores.values()) {
+      await expect(store.entries()).resolves.toEqual([]);
+    }
+
+    state.account.config.streamOverrides = { debbie: { enabled: true } };
+    const message = makePrivateMessage(1218);
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 2, type: "message", message }],
+    }];
+    await runMonitorOnce();
+
+    const {
+      createZulipDurableInboundMessageId,
+      createZulipDurableInboundReceiveJournal,
+    } = await import("./durable-receive.js");
+    const durableId = createZulipDurableInboundMessageId({
+      accountId: state.account.accountId,
+      messageId: String(message.id),
+    });
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    await expect(journal.pending()).resolves.toEqual([
+      expect.objectContaining({
+        id: durableId,
+        lastError: "Error: synthetic pairing persistence failure",
+      }),
+    ]);
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+
+    state.pairingUpsertError = undefined;
+    await runMonitorOnce();
+
+    await expect(journal.pending()).resolves.toEqual([]);
+    expect(state.upsertPairingRequest).toHaveBeenCalledTimes(2);
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
   });
 
   it("keeps a legacy-allowlisted replay pending when authoritative stream metadata is unavailable", async () => {

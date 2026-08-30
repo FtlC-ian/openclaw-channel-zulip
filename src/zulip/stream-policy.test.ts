@@ -3,6 +3,7 @@ import {
   isZulipTopicAllowed,
   normalizeZulipStreamIdSelector,
   resolveZulipInboundStreamPolicy,
+  zulipStreamOverridesExpandLegacySelection,
 } from "./stream-policy.js";
 
 describe("Zulip inbound stream policy", () => {
@@ -151,5 +152,24 @@ describe("Zulip inbound stream policy", () => {
     expect(isZulipTopicAllowed({ topic: "PRIVATE", policy })).toBe(false);
     expect(isZulipTopicAllowed({ topic: "anything", policy: { excludedTopics: ["*"] } })).toBe(false);
     expect(isZulipTopicAllowed({ topic: "anything", policy: { allowedTopics: [] } })).toBe(true);
+  });
+
+  it("broadens queue selection only when enabled overrides add legacy coverage", () => {
+    expect(zulipStreamOverridesExpandLegacySelection({
+      streams: [" General "],
+      streamOverrides: { general: { enabled: true } },
+    })).toBe(false);
+    expect(zulipStreamOverridesExpandLegacySelection({
+      streams: ["general"],
+      streamOverrides: { random: { enabled: true } },
+    })).toBe(true);
+    expect(zulipStreamOverridesExpandLegacySelection({
+      streams: ["general"],
+      streamOverrides: { "17": { enabled: true } },
+    })).toBe(true);
+    expect(zulipStreamOverridesExpandLegacySelection({
+      streams: ["*"],
+      streamOverrides: { random: { enabled: true } },
+    })).toBe(false);
   });
 });

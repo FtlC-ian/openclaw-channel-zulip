@@ -23,6 +23,31 @@ export function normalizeZulipStreamIdSelector(value: string): string | undefine
   return trimmed.replace(/^0+(?=\d)/, "");
 }
 
+export function zulipStreamOverridesExpandLegacySelection(params: {
+  streams: string[] | undefined;
+  streamOverrides: Record<string, ZulipStreamRule> | undefined;
+}): boolean {
+  const streams = params.streams;
+  if (!streams || streams.length === 0 || streams.some((entry) => entry.trim() === "*")) {
+    return false;
+  }
+  const legacyNames = new Set(
+    streams
+      .map(normalizeZulipStreamName)
+      .filter((value): value is string => value !== undefined),
+  );
+  return Object.entries(params.streamOverrides ?? {}).some(([selector, override]) => {
+    if (override.enabled !== true) {
+      return false;
+    }
+    if (normalizeZulipStreamIdSelector(selector) !== undefined) {
+      return true;
+    }
+    const normalizedName = normalizeZulipStreamName(selector);
+    return normalizedName !== undefined && !legacyNames.has(normalizedName);
+  });
+}
+
 function normalizeTopic(value: string): string {
   return value.trim().toLocaleLowerCase("en-US");
 }

@@ -61,6 +61,7 @@ import { registerZulipSubagentReactionContext } from "./subagent-reactions.js";
 import {
   isZulipTopicAllowed,
   resolveZulipInboundStreamPolicy,
+  zulipStreamOverridesExpandLegacySelection,
   type ResolvedZulipInboundStreamPolicy,
 } from "./stream-policy.js";
 
@@ -159,17 +160,21 @@ async function seedZulipStreamMetadataCache(params: {
   accountId: string;
   log: (message: string) => void;
 }): Promise<void> {
-  clearZulipStreamMetadataCache(params.accountId);
   try {
     const subscriptions = await fetchZulipSubscriptions(params.client, {
       includeAllPublic: true,
       includeSubscribers: true,
     });
+    const metadataSnapshot: ZulipStreamMetadata[] = [];
     for (const subscription of subscriptions) {
       const metadata = normalizeZulipStreamMetadata(subscription);
       if (metadata) {
-        cacheZulipStreamMetadata(params.accountId, metadata);
+        metadataSnapshot.push(metadata);
       }
+    }
+    clearZulipStreamMetadataCache(params.accountId);
+    for (const metadata of metadataSnapshot) {
+      cacheZulipStreamMetadata(params.accountId, metadata);
     }
   } catch (err) {
     params.log(`zulip: stream metadata seed failed: ${String(err)}`);
@@ -1284,9 +1289,10 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
 
   // Register event queue
   const streams = account.streams ?? ["*"];
-  const registrationStreams = Object.values(account.config.streamOverrides ?? {}).some(
-    (override) => override.enabled === true,
-  ) ? ["*"] : streams;
+  const registrationStreams = zulipStreamOverridesExpandLegacySelection({
+    streams: account.streams,
+    streamOverrides: account.config.streamOverrides,
+  }) ? ["*"] : streams;
   const durableInboundJournal = (() => {
     try {
       return createZulipDurableInboundReceiveJournal(account.accountId);
@@ -1376,6 +1382,14 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       if (
         durableInboundJournal &&
         durableId &&
+        options.acceptInbound &&
+        options.durableAccepted?.() !== true
+      ) {
+        await options.acceptInbound();
+      }
+      if (
+        durableInboundJournal &&
+        durableId &&
         (!options.acceptInbound || options.durableAccepted?.() === true)
       ) {
         await durableInboundJournal.release(durableId, {
@@ -1390,7 +1404,54 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     message: ZulipMessage,
     queueEventId?: number,
   ): Promise<void> => {
-    const streamDecision = await resolveInboundStreamDecision(message);
+    const messageId = String(message.id ?? "");
+    const metadata: ZulipDurableInboundMetadata | undefined =
+      queueEventId !== undefined ? { queueEventId } : undefined;
+    let durableId: string | undefined;
+    let durableAccepted = false;
+    let acceptInbound: (() => Promise<boolean>) | undefined;
+    if (durableInboundJournal && messageId) {
+      const acceptedDurableId = createZulipDurableInboundMessageId({
+        accountId: account.accountId,
+        messageId,
+      });
+      durableId = acceptedDurableId;
+      acceptInbound = async (): Promise<boolean> => {
+        try {
+          const accepted = await durableInboundJournal.accept(
+            acceptedDurableId,
+            {
+              message: serializeZulipDurableInboundMessage(message),
+              receivedAt: Date.now(),
+            },
+            {
+              ...(metadata ? { metadata } : {}),
+              receivedAt:
+                typeof message.timestamp === "number" ? message.timestamp * 1000 : Date.now(),
+            },
+          );
+          durableAccepted = accepted.kind === "accepted";
+          return durableAccepted;
+        } catch (err) {
+          runtime.log?.(`zulip: failed persisting durable inbound; delivering live: ${String(err)}`);
+          return true;
+        }
+      };
+    }
+
+    let streamDecision: InboundStreamDecision | typeof RETRYABLE_STREAM_POLICY | undefined;
+    try {
+      streamDecision = await resolveInboundStreamDecision(message);
+    } catch (err) {
+      if (acceptInbound) {
+        await acceptInbound();
+      }
+      if (durableInboundJournal && durableId && durableAccepted) {
+        await durableInboundJournal.release(durableId, { lastError: String(err) });
+      }
+      runtime.error?.(`zulip ingress policy evaluation failed: ${String(err)}`);
+      return;
+    }
     if (streamDecision === RETRYABLE_STREAM_POLICY) {
       return;
     }
@@ -1401,45 +1462,6 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       );
       return;
     }
-    if (!durableInboundJournal) {
-      await deliverDurableInboundMessage(undefined, message, undefined, { streamDecision });
-      return;
-    }
-
-    const messageId = String(message.id ?? "");
-    if (!messageId) {
-      await deliverDurableInboundMessage(undefined, message, undefined, { streamDecision });
-      return;
-    }
-
-    const durableId = createZulipDurableInboundMessageId({
-      accountId: account.accountId,
-      messageId,
-    });
-    const metadata: ZulipDurableInboundMetadata | undefined =
-      queueEventId !== undefined ? { queueEventId } : undefined;
-    let durableAccepted = false;
-    const acceptInbound = async (): Promise<boolean> => {
-      try {
-        const accepted = await durableInboundJournal.accept(
-          durableId,
-          {
-            message: serializeZulipDurableInboundMessage(message),
-            receivedAt: Date.now(),
-          },
-          {
-            ...(metadata ? { metadata } : {}),
-            receivedAt:
-              typeof message.timestamp === "number" ? message.timestamp * 1000 : Date.now(),
-          },
-        );
-        durableAccepted = accepted.kind === "accepted";
-        return durableAccepted;
-      } catch (err) {
-        runtime.log?.(`zulip: failed persisting durable inbound; delivering live: ${String(err)}`);
-        return true;
-      }
-    };
 
     await deliverDurableInboundMessage(durableId, message, metadata, {
       streamDecision,

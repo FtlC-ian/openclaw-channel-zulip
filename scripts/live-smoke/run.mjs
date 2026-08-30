@@ -594,9 +594,13 @@ async function main() {
       if (childTranscripts.total !== 1 || childTranscripts.completedExact !== 1) {
         throw new Error(`Found ${childTranscripts.total} child transcripts and ${childTranscripts.completedExact} exact completed results; expected exactly one of each`);
       }
-      await assertFinalPrivateTypingStop(queue, eventStart, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, signal);
-      await drainEventQueueUntilQuiet(queue, signal, 500, timeoutMs, 100, () => lifecycleSummary(queue.events, inboundId).allRemoved);
+      await drainEventQueueUntilQuiet(queue, signal, 500, timeoutMs, 100, () =>
+        lifecycleSummary(queue.events, inboundId).allRemoved &&
+        hasFinalPrivateTypingStop(queue.events.slice(eventStart), env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL));
       summary = lifecycleSummary(queue.events, inboundId);
+      if (!hasFinalPrivateTypingStop(queue.events.slice(eventStart), env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL)) {
+        throw new Error("Final direct typing state was not stopped after lifecycle completion");
+      }
       if (!summary.added.length) throw new Error("No lifecycle reaction was observed on the inbound message");
       if (!summary.sawSubagent) throw new Error("No truthful subagent lifecycle reaction was observed");
       if (summary.subagentCount !== 1) throw new Error(`Observed ${summary.subagentCount} subagent lifecycle reactions; expected exactly one`);

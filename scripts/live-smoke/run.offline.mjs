@@ -164,6 +164,33 @@ test("waits through the locked default terminal hold until lifecycle cleanup", a
   assert.equal(Date.now() - started >= 2000, true);
 });
 
+test("does not settle when a late typing start follows the earlier stop", async () => {
+  const reaction = { type: "reaction", message_id: 42, user_id: 7, reaction_type: "unicode_emoji", emoji_name: "robot", emoji_code: "1f916" };
+  const typing = { type: "typing", message_type: "direct", sender: { email: "bot@example.test" }, recipients: [
+    { email: "bot@example.test" }, { email: "user@example.test" },
+  ] };
+  const events = [{ ...reaction, op: "add" }, { ...reaction, op: "remove" }, { ...typing, op: "start" }, { ...typing, op: "stop" }];
+  const started = Date.now();
+  let lateStartSent = false;
+  const queue = { events, async poll() {
+    if (!lateStartSent && Date.now() - started >= 20) {
+      lateStartSent = true;
+      const event = { ...typing, op: "start" };
+      this.events.push(event);
+      return [event];
+    }
+    return [];
+  } };
+  await assert.rejects(
+    drainEventQueueUntilQuiet(queue, undefined, 30, 100, 5, () =>
+      lifecycleSummary(queue.events, "42").allRemoved &&
+      hasFinalPrivateTypingStop(queue.events, "bot@example.test", "user@example.test")),
+    /stable quiet window/,
+  );
+  assert.equal(lateStartSent, true);
+  assert.equal(hasFinalPrivateTypingStop(queue.events, "bot@example.test", "user@example.test"), false);
+});
+
 test("matches complete raw or Zulip-rendered content", () => {
   assert.equal(isExactRenderedContent("after", "after"), true);
   assert.equal(isExactRenderedContent("<p>after</p>", "after"), true);

@@ -40,8 +40,13 @@ export function isBotMessage(event, botEmail, marker) {
 }
 
 export function isExactRenderedContent(content, expected) {
-  const rendered = String(content ?? "").trim();
+  const rendered = String(content ?? "");
   return rendered === expected || rendered === `<p>${escapeHtml(expected)}</p>`;
+}
+
+export function isExactUtf8(bytes, expected) {
+  const expectedBytes = new TextEncoder().encode(expected);
+  return bytes.length === expectedBytes.length && bytes.every((value, index) => value === expectedBytes[index]);
 }
 
 export function lifecycleSummary(events, inboundMessageId) {
@@ -126,7 +131,7 @@ class ZulipClient {
     const requestSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(30000)]) : AbortSignal.timeout(30000);
     const response = await fetch(url, { headers: { Authorization: this.authorization }, signal: requestSignal });
     if (!response.ok) throw new Error(`Zulip download failed (${response.status})`);
-    return response.text();
+    return new Uint8Array(await response.arrayBuffer());
   }
 }
 
@@ -380,7 +385,7 @@ async function main() {
       const outbound = await queue.waitFor((e) => e.type === "message" && e.message?.sender_email === env.ZULIP_SMOKE_BOT_EMAIL && /user_uploads\//.test(String(e.message?.content ?? "")), timeoutMs, "outbound upload", signal);
       messageIds.bot.add(String(outbound.message.id));
       const match = String(outbound.message.content).match(/(?:href=")?([^"' ]*\/user_uploads\/[^"'< ]+)/);
-      if (!match || await actor.download(match[1], signal) !== outboundMarker) throw new Error("Downloaded outbound upload did not match its marker");
+      if (!match || !isExactUtf8(await actor.download(match[1], signal), outboundMarker)) throw new Error("Downloaded outbound upload did not match its marker");
     });
 
     await scenario("poll-and-interactive-reply", async (signal) => {

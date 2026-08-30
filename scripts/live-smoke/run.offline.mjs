@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { EventEmitter, once } from "node:events";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { EventQueue, Gateway, isBotMessage, isChildRunning, isExactPoll, isExactRenderedContent, lifecycleSummary, normalizeScenarioError, redactError, signalProcessTree, validateEnvironment, waitForProcessTreeExit } from "./run.mjs";
+import { EventQueue, Gateway, isBotMessage, isChildRunning, isExactPoll, isExactRenderedContent, isExactUtf8, lifecycleSummary, normalizeScenarioError, redactError, signalProcessTree, validateEnvironment, waitForProcessTreeExit } from "./run.mjs";
 
 const validEnv = {
   ZULIP_URL: "https://zulip.example.test/path",
@@ -39,6 +39,15 @@ test("matches complete raw or Zulip-rendered content", () => {
   assert.equal(isExactRenderedContent("after", "after"), true);
   assert.equal(isExactRenderedContent("<p>after</p>", "after"), true);
   assert.equal(isExactRenderedContent("<p>prefix after suffix</p>", "after"), false);
+  assert.equal(isExactRenderedContent(" after ", "after"), false);
+  assert.equal(isExactRenderedContent("\n<p>after</p>\n", "after"), false);
+});
+
+test("compares downloaded upload contents as exact UTF-8 bytes", () => {
+  const exact = new TextEncoder().encode("marker");
+  assert.equal(isExactUtf8(exact, "marker"), true);
+  assert.equal(isExactUtf8(Uint8Array.from([0xef, 0xbb, 0xbf, ...exact]), "marker"), false);
+  assert.equal(isExactUtf8(Uint8Array.from([...exact, 0x0a]), "marker"), false);
 });
 
 test("requires lifecycle and subagent reactions to be removed", () => {

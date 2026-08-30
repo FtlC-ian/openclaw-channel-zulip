@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   createZulipStatusReactionAdapter,
+  isSupportedZulipReactionValue,
   resolveZulipReactionSpec,
   resolveZulipStatusReactionConfig,
 } from "./status-reactions.js";
@@ -92,4 +93,22 @@ describe("Zulip status reaction configuration", () => {
     expect(add).not.toHaveBeenCalled();
     expect(remove).not.toHaveBeenCalled();
   });
+
+  it.each(["+1", "-1", ":+1:", ":-1:"])(
+    "accepts leading-sign Zulip emoji name %s",
+    (emoji) => {
+      expect(isSupportedZulipReactionValue(emoji)).toBe(true);
+      expect(resolveZulipReactionSpec(emoji)).toEqual({
+        emojiName: emoji.replaceAll(":", ""),
+      });
+    },
+  );
+
+  it.each(["+", "-", ":+:", ":-:", ":+1", "+1:", "white space", "🦄"])(
+    "rejects invalid Zulip emoji value %s",
+    (emoji) => {
+      expect(isSupportedZulipReactionValue(emoji)).toBe(false);
+      expect(() => resolveZulipReactionSpec(emoji)).toThrow(/Unsupported Zulip reaction/);
+    },
+  );
 });

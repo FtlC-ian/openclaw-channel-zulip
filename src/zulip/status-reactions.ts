@@ -28,7 +28,8 @@ const unicodeStatusReactions = new Map<string, ZulipReactionSpec>([
   ["🗜", { emojiName: "compression", emojiCode: "1f5dc", reactionType: "unicode_emoji" }],
   ["🤖", { emojiName: "robot_face", emojiCode: "1f916", reactionType: "unicode_emoji" }],
 ]);
-const namedZulipEmojiPattern = /^:?[A-Za-z0-9][A-Za-z0-9_+-]*:?$/;
+const namedZulipEmojiPattern =
+  /^:?(?:[A-Za-z0-9][A-Za-z0-9_+-]*|[+-][A-Za-z0-9][A-Za-z0-9_+-]*):?$/;
 
 export function isSupportedZulipReactionValue(raw: string): boolean {
   if (raw === "") {

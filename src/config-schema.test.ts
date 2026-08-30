@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { describe, expect, it } from "vitest";
 import { zulipChannelConfigSchema } from "./config-schema.js";
 
@@ -28,6 +29,60 @@ describe("Zulip lifecycle reaction config", () => {
     });
 
     expect(result.success).toBe(true);
+  });
+
+  it.each(["+1", "-1", ":+1:", ":-1:"])(
+    "accepts leading-sign named emoji %s",
+    (emoji) => {
+      expect(
+        zulipChannelConfigSchema.runtime.safeParse({
+          reactions: { onStart: emoji, emojis: { thinking: emoji }, subagent: emoji },
+        }).success,
+      ).toBe(true);
+    },
+  );
+
+  it.each(["+", "-", ":+:", ":-:", ":+1", "+1:", "white space"])(
+    "rejects invalid named emoji %s",
+    (emoji) => {
+      expect(
+        zulipChannelConfigSchema.runtime.safeParse({
+          reactions: { onStart: emoji },
+        }).success,
+      ).toBe(false);
+    },
+  );
+
+  it("keeps manifest named-emoji validation aligned with runtime validation", () => {
+    const manifest = JSON.parse(
+      fs.readFileSync(new URL("../openclaw.plugin.json", import.meta.url), "utf8"),
+    ) as {
+      channelConfigs: {
+        zulip: {
+          schema: {
+            $defs: {
+              zulipReactionEmoji: {
+                anyOf: Array<{ pattern?: string; enum?: string[] }>;
+              };
+            };
+          };
+        };
+      };
+    };
+    const variants = manifest.channelConfigs.zulip.schema.$defs.zulipReactionEmoji.anyOf;
+    const accepts = (value: string) =>
+      variants.some(
+        (variant) =>
+          variant.enum?.includes(value) ||
+          (variant.pattern !== undefined && new RegExp(variant.pattern).test(value)),
+      );
+
+    for (const value of ["+1", "-1", ":+1:", ":-1:"]) {
+      expect(accepts(value)).toBe(true);
+    }
+    for (const value of ["+", "-", ":+:", ":-:", ":+1", "+1:", "white space", "🦄"]) {
+      expect(accepts(value)).toBe(false);
+    }
   });
 
   it("rejects arbitrary Unicode reaction values", () => {

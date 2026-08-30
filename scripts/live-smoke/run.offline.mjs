@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { EventEmitter, once } from "node:events";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { EventQueue, Gateway, isBotMessage, isChildRunning, isExactPoll, lifecycleSummary, normalizeScenarioError, redactError, signalProcessTree, validateEnvironment, waitForProcessTreeExit } from "./run.mjs";
+import { EventQueue, Gateway, isBotMessage, isChildRunning, isExactPoll, isExactRenderedContent, lifecycleSummary, normalizeScenarioError, redactError, signalProcessTree, validateEnvironment, waitForProcessTreeExit } from "./run.mjs";
 
 const validEnv = {
   ZULIP_URL: "https://zulip.example.test/path",
@@ -33,6 +33,12 @@ test("matches only marked messages from the configured bot", () => {
   assert.equal(isBotMessage({ ...event, message: { ...event.message, content: "<p>marker</p>" } }, "bot@example.test", "marker"), true);
   assert.equal(isBotMessage({ ...event, message: { ...event.message, content: "prefix marker" } }, "bot@example.test", "marker"), false);
   assert.equal(isBotMessage(event, "other@example.test", "marker"), false);
+});
+
+test("matches complete raw or Zulip-rendered content", () => {
+  assert.equal(isExactRenderedContent("after", "after"), true);
+  assert.equal(isExactRenderedContent("<p>after</p>", "after"), true);
+  assert.equal(isExactRenderedContent("<p>prefix after suffix</p>", "after"), false);
 });
 
 test("requires lifecycle and subagent reactions to be removed", () => {

@@ -36,8 +36,12 @@ export function redactError(error) {
 
 export function isBotMessage(event, botEmail, marker) {
   if (event?.type !== "message" || event.message?.sender_email !== botEmail) return false;
-  const content = String(event.message?.content ?? "").trim();
-  return content === marker || content === `<p>${escapeHtml(marker)}</p>`;
+  return isExactRenderedContent(event.message?.content, marker);
+}
+
+export function isExactRenderedContent(content, expected) {
+  const rendered = String(content ?? "").trim();
+  return rendered === expected || rendered === `<p>${escapeHtml(expected)}</p>`;
 }
 
 export function lifecycleSummary(events, inboundMessageId) {
@@ -362,7 +366,7 @@ async function main() {
       await sendDm(command(`edit-delete ${before} ${after}`), signal);
       const created = await queue.waitFor((e) => isBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, before), timeoutMs, "message before edit", signal);
       const id = String(created.message.id); messageIds.bot.add(id);
-      await queue.waitFor((e) => e.type === "update_message" && String(e.message_id) === id && String(e.content ?? "").includes(after), timeoutMs, "message edit", signal);
+      await queue.waitFor((e) => e.type === "update_message" && String(e.message_id) === id && isExactRenderedContent(e.content, after), timeoutMs, "message edit", signal);
       await queue.waitFor((e) => e.type === "delete_message" && (e.message_ids ?? [e.message_id]).map(String).includes(id), timeoutMs, "message delete", signal);
       messageIds.bot.delete(id);
     });
@@ -376,7 +380,7 @@ async function main() {
       const outbound = await queue.waitFor((e) => e.type === "message" && e.message?.sender_email === env.ZULIP_SMOKE_BOT_EMAIL && /user_uploads\//.test(String(e.message?.content ?? "")), timeoutMs, "outbound upload", signal);
       messageIds.bot.add(String(outbound.message.id));
       const match = String(outbound.message.content).match(/(?:href=")?([^"' ]*\/user_uploads\/[^"'< ]+)/);
-      if (!match || (await actor.download(match[1], signal)).trim() !== outboundMarker) throw new Error("Downloaded outbound upload did not match its marker");
+      if (!match || await actor.download(match[1], signal) !== outboundMarker) throw new Error("Downloaded outbound upload did not match its marker");
     });
 
     await scenario("poll-and-interactive-reply", async (signal) => {

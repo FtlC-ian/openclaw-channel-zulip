@@ -284,27 +284,35 @@ export function extractExactUploadUrl(content) {
   const anchor = rendered.match(/^<p><a href="([^"<>]*\/user_uploads\/[^"<>]+)">([^<>]+)<\/a><\/p>$/);
   if (anchor) {
     const href = anchor[1].replaceAll("&amp;", "&");
-    if (/[?#]/.test(href)) return undefined;
-    const basename = href.split(/[?#]/, 1)[0].split("/").at(-1);
-    let decodedBasename = basename;
-    let fullyDecodedBasename = basename;
-    for (let depth = 0; depth < 100; depth += 1) {
-      if (/%(?:2f|5c|00)/i.test(fullyDecodedBasename)) return undefined;
-      let decoded;
-      try { decoded = decodeURIComponent(fullyDecodedBasename); } catch { return undefined; }
-      if (depth === 0) decodedBasename = decoded;
-      if (decoded === fullyDecodedBasename) break;
-      fullyDecodedBasename = decoded;
-      if (depth === 99) return undefined;
-    }
-    if (/[\\/\0]/.test(fullyDecodedBasename) || /^file:/i.test(fullyDecodedBasename) ||
-        fullyDecodedBasename === "." || fullyDecodedBasename === "..") return undefined;
+    const canonical = canonicalUploadUrl(href);
+    if (!canonical) return undefined;
+    const { basename, decodedBasename } = canonical;
     if (![anchor[1], href, basename, decodedBasename].includes(anchor[2])) return undefined;
     return href;
   }
   const bare = rendered.match(/^((?:https?:\/\/[^\s<>]+)?\/[^\s<>]*user_uploads\/[^\s<>]+)$/);
   const bareUrl = bare?.[1].replaceAll("&amp;", "&");
-  return bareUrl && !/[?#]/.test(bareUrl) ? bareUrl : undefined;
+  return bareUrl && canonicalUploadUrl(bareUrl) ? bareUrl : undefined;
+}
+
+function canonicalUploadUrl(href) {
+  if (/[?#]/.test(href)) return undefined;
+  const basename = href.split("/").at(-1);
+  if (!basename) return undefined;
+  let decodedBasename = basename;
+  let fullyDecodedBasename = basename;
+  for (let depth = 0; depth < 100; depth += 1) {
+    if (/%(?:2f|5c|00)/i.test(fullyDecodedBasename)) return undefined;
+    let decoded;
+    try { decoded = decodeURIComponent(fullyDecodedBasename); } catch { return undefined; }
+    if (depth === 0) decodedBasename = decoded;
+    if (decoded === fullyDecodedBasename) break;
+    fullyDecodedBasename = decoded;
+    if (depth === 99) return undefined;
+  }
+  if (/[\\/\0]/.test(fullyDecodedBasename) || /^file:/i.test(fullyDecodedBasename) ||
+      fullyDecodedBasename === "." || fullyDecodedBasename === "..") return undefined;
+  return { basename, decodedBasename };
 }
 
 export function isExactPollMessage(message, question, options) {

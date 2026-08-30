@@ -357,6 +357,7 @@ describe("monitorZulipProvider", () => {
     fetchZulipStreamMock.mockClear();
     state.addZulipReaction.mockReset().mockResolvedValue(undefined);
     state.removeZulipReaction.mockReset().mockResolvedValue(undefined);
+    typingCallbacksMock.mockClear();
   });
 
   it("wires typing idle cleanup into the reply dispatcher", async () => {
@@ -1221,6 +1222,177 @@ describe("monitorZulipProvider", () => {
 
     expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(1);
     expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops disabled stream overrides before durable acceptance or observable inbound work", async () => {
+    enableDurableInboundJournal();
+    state.account.config = {
+      ...state.account.config,
+      streams: ["*"],
+      streamOverrides: { debbie: { enabled: false } },
+      reactions: { enabled: true },
+    };
+    state.extractedUploadUrls = ["https://zlp.pubnerd.app/user_uploads/2/aa/report.pdf"];
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 1, type: "message", message: makeChannelMessage(1210) }],
+    }];
+
+    await runMonitorOnce();
+
+    expect(extractZulipUploadUrlsMock).not.toHaveBeenCalled();
+    expect(downloadZulipUploadMock).not.toHaveBeenCalled();
+    expect(state.addZulipReaction).not.toHaveBeenCalled();
+    expect(typingCallbacksMock).not.toHaveBeenCalled();
+    expect(state.core.channel.activity.record).not.toHaveBeenCalled();
+    expect(state.core.channel.inbound.buildContext).not.toHaveBeenCalled();
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+    for (const store of state.durableStores.values()) {
+      await expect(store.entries()).resolves.toEqual([]);
+    }
+  });
+
+  it("drops mention-gated stream messages before durable acceptance or attachment work", async () => {
+    enableDurableInboundJournal();
+    state.account.requireMention = false;
+    state.account.config = {
+      ...state.account.config,
+      streamOverrides: { "4": { requireMention: true } },
+      reactions: { enabled: true },
+    };
+    state.core.channel.groups.resolveRequireMention.mockImplementation(
+      ({ requireMentionOverride }: { requireMentionOverride?: boolean }) =>
+        requireMentionOverride ?? false,
+    );
+    state.extractedUploadUrls = ["https://zlp.pubnerd.app/user_uploads/2/aa/report.pdf"];
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 1, type: "message", message: makeChannelMessage(1213) }],
+    }];
+
+    await runMonitorOnce();
+
+    expect(extractZulipUploadUrlsMock).not.toHaveBeenCalled();
+    expect(downloadZulipUploadMock).not.toHaveBeenCalled();
+    expect(state.core.channel.media.saveMediaBuffer).not.toHaveBeenCalled();
+    expect(state.addZulipReaction).not.toHaveBeenCalled();
+    expect(typingCallbacksMock).not.toHaveBeenCalled();
+    expect(state.core.channel.activity.record).not.toHaveBeenCalled();
+    expect(state.core.channel.routing.resolveAgentRoute).not.toHaveBeenCalled();
+    expect(state.core.channel.inbound.buildContext).not.toHaveBeenCalled();
+    expect(state.core.channel.session.updateLastRoute).not.toHaveBeenCalled();
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+    for (const store of state.durableStores.values()) {
+      await expect(store.entries()).resolves.toEqual([]);
+    }
+  });
+
+  it("broadens initial and replacement queues when overrides can enable other streams", async () => {
+    state.account.streams = ["debbie"];
+    state.account.config = {
+      ...state.account.config,
+      streams: ["debbie"],
+      streamOverrides: { random: { enabled: true } },
+    };
+    state.pollResponses = [
+      { result: "error", code: "BAD_EVENT_QUEUE_ID", msg: "expired" },
+      { result: "success", events: [] },
+    ];
+
+    await runMonitorOnce();
+
+    expect(registerZulipQueueMock).toHaveBeenCalledTimes(2);
+    for (const call of registerZulipQueueMock.mock.calls) {
+      expect(call[1]).toEqual({ eventTypes: ["message"], streams: ["*"] });
+    }
+  });
+
+  it("lets an id override win over a normalized name override for mention and topics", async () => {
+    state.account.requireMention = true;
+    state.account.config = {
+      ...state.account.config,
+      streams: ["other"],
+      topics: ["blocked-by-account-default"],
+      streamOverrides: {
+        " DEBBIE ": { enabled: true, requireMention: true, allowedTopics: ["wrong-topic"] },
+        "4": { requireMention: false, allowedTopics: ["zulip-plugin-pr"] },
+      },
+    };
+    state.core.channel.groups.resolveRequireMention.mockImplementation(
+      ({ requireMentionOverride }: { requireMentionOverride?: boolean }) =>
+        requireMentionOverride ?? true,
+    );
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 1, type: "message", message: makeChannelMessage(1211) }],
+    }];
+
+    await runMonitorOnce();
+
+    expect(state.core.channel.groups.resolveRequireMention).toHaveBeenCalledWith(
+      expect.objectContaining({ requireMentionOverride: false }),
+    );
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the event's authoritative stream name after a cached stream rename", async () => {
+    state.streamSubscriptions = [{
+      stream_id: 4,
+      name: "old-name",
+      invite_only: false,
+    }];
+    state.account.config = {
+      ...state.account.config,
+      streamOverrides: {
+        "old-name": { enabled: false },
+        "new-name": { enabled: true },
+      },
+    };
+    state.pollResponses = [{
+      result: "success",
+      events: [{
+        id: 1,
+        type: "message",
+        message: { ...makeChannelMessage(1212), display_recipient: "new-name" },
+      }],
+    }];
+
+    await runMonitorOnce();
+
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not use a replayed message's stale stream name when metadata is unavailable", async () => {
+    enableDurableInboundJournal();
+    state.streamSubscriptions = [];
+    state.streamLookups.set("4", new Error("stream metadata unavailable"));
+    state.account.config = {
+      ...state.account.config,
+      streams: ["other"],
+      streamOverrides: { debbie: { enabled: true } },
+    };
+    const {
+      createZulipDurableInboundMessageId,
+      createZulipDurableInboundReceiveJournal,
+      serializeZulipDurableInboundMessage,
+    } = await import("./durable-receive.js");
+    const message = makeChannelMessage(1214);
+    const durableId = createZulipDurableInboundMessageId({
+      accountId: state.account.accountId,
+      messageId: String(message.id),
+    });
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    await journal.accept(durableId, {
+      message: serializeZulipDurableInboundMessage(message),
+      receivedAt: Date.now(),
+    });
+
+    await runMonitorOnce();
+
+    await expect(journal.pending()).resolves.toEqual([]);
+    expect(fetchZulipStreamMock).toHaveBeenCalledWith(state.client, "4");
+    expect(state.core.channel.inbound.buildContext).not.toHaveBeenCalled();
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
   });
 
   it("ignores duplicate inbound message ids on repeat processing", async () => {

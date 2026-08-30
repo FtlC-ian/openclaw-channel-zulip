@@ -58,6 +58,11 @@ import {
   resolveZulipStatusReactionConfig,
 } from "./status-reactions.js";
 import { registerZulipSubagentReactionContext } from "./subagent-reactions.js";
+import {
+  isZulipTopicAllowed,
+  resolveZulipInboundStreamPolicy,
+  type ResolvedZulipInboundStreamPolicy,
+} from "./stream-policy.js";
 
 export type MonitorZulipOpts = {
   apiKey?: string;
@@ -125,6 +130,15 @@ function cacheZulipStreamMetadata(accountId: string, metadata: ZulipStreamMetada
   streamMetadataCache.set(streamMetadataCacheKey(accountId, metadata.streamId), metadata);
 }
 
+function clearZulipStreamMetadataCache(accountId: string): void {
+  const prefix = `${accountId}:`;
+  for (const key of streamMetadataCache.keys()) {
+    if (key.startsWith(prefix)) {
+      streamMetadataCache.delete(key);
+    }
+  }
+}
+
 function resolveZulipStreamPrivacy(
   metadata: ZulipStreamMetadata | undefined,
 ): ZulipStreamPrivacy {
@@ -145,6 +159,7 @@ async function seedZulipStreamMetadataCache(params: {
   accountId: string;
   log: (message: string) => void;
 }): Promise<void> {
+  clearZulipStreamMetadataCache(params.accountId);
   try {
     const subscriptions = await fetchZulipSubscriptions(params.client, {
       includeAllPublic: true,
@@ -224,48 +239,6 @@ function normalizeMention(text: string, mention: string | undefined): string {
 function resolveOncharPrefixes(prefixes: string[] | undefined): string[] {
   const cleaned = prefixes?.map((entry) => entry.trim()).filter(Boolean) ?? DEFAULT_ONCHAR_PREFIXES;
   return cleaned.length > 0 ? cleaned : DEFAULT_ONCHAR_PREFIXES;
-}
-
-function normalizeTopicFilterValue(value: string): string {
-  return value.trim().toLowerCase();
-}
-
-function normalizeTopicFilterList(values?: string[]): Set<string> | undefined {
-  const normalized = (values ?? [])
-    .map(normalizeTopicFilterValue)
-    .filter(Boolean);
-  if (normalized.length === 0 || normalized.includes("*")) {
-    return undefined;
-  }
-  return new Set(normalized);
-}
-
-function shouldMonitorTopic(params: {
-  topic: string;
-  streamName?: string;
-  streamId?: string;
-  topics?: string[];
-  streamTopics?: Record<string, string[]>;
-}): boolean {
-  const topic = normalizeTopicFilterValue(params.topic);
-  const globalTopics = normalizeTopicFilterList(params.topics);
-  if (globalTopics && !globalTopics.has(topic)) {
-    return false;
-  }
-
-  const streamTopics = params.streamTopics ?? {};
-  const candidateKeys = [params.streamName, params.streamId]
-    .map((value) => value?.trim())
-    .filter((value): value is string => Boolean(value));
-  const matchingStreamFilter = Object.entries(streamTopics).find(([key]) =>
-    candidateKeys.some((candidate) => normalizeTopicFilterValue(candidate) === normalizeTopicFilterValue(key)),
-  );
-  if (!matchingStreamFilter) {
-    return true;
-  }
-
-  const allowedTopics = normalizeTopicFilterList(matchingStreamFilter[1]);
-  return !allowedTopics || allowedTopics.has(topic);
 }
 
 function stripOncharPrefix(
@@ -490,9 +463,93 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     accountId: account.accountId,
   });
 
+  type InboundStreamDecision = {
+    accepted: boolean;
+    streamId: string;
+    streamName: string;
+    topic: string;
+    policy: ResolvedZulipInboundStreamPolicy;
+  };
+
+  const resolveInboundStreamDecision = async (
+    message: ZulipMessage,
+    options: { replay?: boolean } = {},
+  ): Promise<InboundStreamDecision | undefined> => {
+    if (message.type === "private") {
+      return undefined;
+    }
+    const streamId = String(message.stream_id ?? "").trim();
+    if (!streamId) {
+      return {
+        accepted: false,
+        streamId,
+        streamName: "",
+        topic: message.subject?.trim() || defaultTopic,
+        policy: { enabled: false },
+      };
+    }
+
+    const eventStreamName =
+      typeof message.display_recipient === "string"
+        ? message.display_recipient.trim()
+        : "";
+    let streamName = options.replay ? "" : eventStreamName;
+    if (options.replay || !streamName) {
+      const metadata = await resolveCachedZulipStreamMetadata({
+        client,
+        accountId: account.accountId,
+        streamId,
+        log: logVerboseMessage,
+      });
+      streamName = metadata?.name?.trim() || streamName;
+    } else {
+      const key = streamMetadataCacheKey(account.accountId, streamId);
+      const cached = streamMetadataCache.get(key);
+      if (cached) {
+        cacheZulipStreamMetadata(account.accountId, {
+          ...cached,
+          name: streamName,
+        });
+      }
+    }
+
+    const topic = message.subject?.trim() || defaultTopic;
+    const policy = resolveZulipInboundStreamPolicy({
+      config: account.config,
+      streamName,
+      streamId,
+    });
+    return {
+      accepted: policy.enabled && isZulipTopicAllowed({ topic, policy }),
+      streamId,
+      streamName,
+      topic,
+      policy,
+    };
+  };
+
+  const logRejectedStreamDecision = (
+    decision: InboundStreamDecision,
+    senderIdentity: string,
+  ): void => {
+    logInboundDrop({
+      log: logVerboseMessage,
+      channel: "zulip",
+      reason: decision.policy.enabled
+        ? `topic filter (${decision.streamName || decision.streamId}:${decision.topic})`
+        : `stream disabled (${decision.streamName || decision.streamId})`,
+      target: senderIdentity,
+    });
+  };
+
   const handleMessage = async (
     message: ZulipMessage,
-    options: { skipRecentDedupe?: boolean } = {},
+    options: {
+      skipRecentDedupe?: boolean;
+      streamDecision?: InboundStreamDecision;
+      replay?: boolean;
+      acceptInbound?: () => Promise<boolean>;
+    } = {},
   ) => {
     if (opts.abortSignal?.aborted || monitorReactionShutdownStarted) {
       return ABORTED_INBOUND_MESSAGE;
@@ -526,78 +583,30 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     let streamId = "";
     let topic = defaultTopic;
     let channelId = "";
+    let inboundStreamPolicy: ResolvedZulipInboundStreamPolicy | undefined;
 
     if (isDM) {
       channelId = dmTargetIdentity;
     } else {
-      streamId = String(message.stream_id ?? "");
-      channelId = streamId;
-      if (typeof message.display_recipient === "string") {
-        streamName = message.display_recipient;
-      }
-      topic = message.subject?.trim() || defaultTopic;
-      if (
-        !shouldMonitorTopic({
-          topic,
-          streamName,
-          streamId,
-          topics: account.config.topics,
-          streamTopics: account.config.streamTopics,
-        })
-      ) {
-        logInboundDrop({
-          log: logVerboseMessage,
-          channel: "zulip",
-          reason: `topic filter (${streamName || streamId}:${topic})`,
-          target: senderIdentity,
-        });
+      const streamDecision =
+        options.streamDecision ??
+        await resolveInboundStreamDecision(message, { replay: options.replay });
+      if (!streamDecision || !streamDecision.accepted) {
+        if (streamDecision) {
+          logRejectedStreamDecision(streamDecision, senderIdentity);
+        }
         return;
       }
+      streamId = streamDecision.streamId;
+      channelId = streamId;
+      streamName = streamDecision.streamName;
+      topic = streamDecision.topic;
+      inboundStreamPolicy = streamDecision.policy;
     }
 
     const rawText = stripHtmlToText(message.content ?? "");
     const oncharResult = stripOncharPrefix(rawText, oncharPrefixes);
 
-    const uploadUrls = extractZulipUploadUrls(message.content ?? "", baseUrl);
-    const mediaPaths: string[] = [];
-    const mediaTypes: string[] = [];
-    const mediaUrls: string[] = [];
-    if (uploadUrls.length > 0) {
-      logVerboseMessage(
-        `zulip: discovered ${uploadUrls.length} upload${uploadUrls.length === 1 ? "" : "s"} for message ${messageId} maxBytes=${mediaMaxBytes}`,
-      );
-      for (const uploadUrl of uploadUrls) {
-        try {
-          logVerboseMessage(`zulip: downloading upload ${uploadUrl}`);
-          const downloaded = await downloadZulipUpload(
-            uploadUrl,
-            baseUrl,
-            client.authHeader,
-            mediaMaxBytes,
-          );
-          logVerboseMessage(
-            `zulip: downloaded upload filename=${downloaded.filename} type=${downloaded.contentType} bytes=${downloaded.buffer.length}`,
-          );
-          const saved = await saveZulipMediaBuffer({
-            core,
-            buffer: downloaded.buffer,
-            contentType: downloaded.contentType,
-            filename: downloaded.filename,
-            maxBytes: mediaMaxBytes,
-          });
-          if (saved) {
-            mediaPaths.push(saved.path);
-            mediaTypes.push(saved.contentType);
-            mediaUrls.push(saved.path);
-            logVerboseMessage(
-              `zulip: saved upload filename=${downloaded.filename} path=${saved.path} type=${saved.contentType}`,
-            );
-          }
-        } catch (err) {
-          logVerboseMessage(`zulip: failed to download/save upload ${uploadUrl}: ${String(err)}`);
-        }
-      }
-    }
     const oncharTriggered = oncharEnabled && oncharResult.triggered;
 
     const mentionRegexes = core.channel.mentions.buildMentionRegexes(cfg, "main");
@@ -730,7 +739,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         channel: "zulip",
         accountId: account.accountId,
         groupId: channelId,
-        requireMentionOverride: account.requireMention,
+        requireMentionOverride: inboundStreamPolicy?.requireMention ?? account.requireMention,
       });
     const shouldBypassMention =
       isControlCommand && shouldRequireMention && !wasMentioned && commandAuthorized;
@@ -751,6 +760,51 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     const bodyText = normalizeMention(bodySource, botUsername);
     if (!bodyText) {
       return;
+    }
+
+    if (options.acceptInbound && !await options.acceptInbound()) {
+      return;
+    }
+
+    const uploadUrls = extractZulipUploadUrls(message.content ?? "", baseUrl);
+    const mediaPaths: string[] = [];
+    const mediaTypes: string[] = [];
+    const mediaUrls: string[] = [];
+    if (uploadUrls.length > 0) {
+      logVerboseMessage(
+        `zulip: discovered ${uploadUrls.length} upload${uploadUrls.length === 1 ? "" : "s"} for message ${messageId} maxBytes=${mediaMaxBytes}`,
+      );
+      for (const uploadUrl of uploadUrls) {
+        try {
+          logVerboseMessage(`zulip: downloading upload ${uploadUrl}`);
+          const downloaded = await downloadZulipUpload(
+            uploadUrl,
+            baseUrl,
+            client.authHeader,
+            mediaMaxBytes,
+          );
+          logVerboseMessage(
+            `zulip: downloaded upload filename=${downloaded.filename} type=${downloaded.contentType} bytes=${downloaded.buffer.length}`,
+          );
+          const saved = await saveZulipMediaBuffer({
+            core,
+            buffer: downloaded.buffer,
+            contentType: downloaded.contentType,
+            filename: downloaded.filename,
+            maxBytes: mediaMaxBytes,
+          });
+          if (saved) {
+            mediaPaths.push(saved.path);
+            mediaTypes.push(saved.contentType);
+            mediaUrls.push(saved.path);
+            logVerboseMessage(
+              `zulip: saved upload filename=${downloaded.filename} path=${saved.path} type=${saved.contentType}`,
+            );
+          }
+        } catch (err) {
+          logVerboseMessage(`zulip: failed to download/save upload ${uploadUrl}: ${String(err)}`);
+        }
+      }
     }
 
     core.channel.activity.record({
@@ -1223,6 +1277,9 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
 
   // Register event queue
   const streams = account.streams ?? ["*"];
+  const registrationStreams = Object.values(account.config.streamOverrides ?? {}).some(
+    (override) => override.enabled === true,
+  ) ? ["*"] : streams;
   const durableInboundJournal = (() => {
     try {
       return createZulipDurableInboundReceiveJournal(account.accountId);
@@ -1233,7 +1290,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
   })();
   const queue = await registerZulipQueue(client, {
     eventTypes: ["message"],
-    streams, // Pass ["*"] to trigger all_public_streams=true in registerZulipQueue
+    streams: registrationStreams,
   });
   let queueId = queue.queueId;
   let lastEventId = queue.lastEventId;
@@ -1264,12 +1321,25 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     durableId: string | undefined,
     message: ZulipMessage,
     metadata?: ZulipDurableInboundMetadata,
-    options: { replay?: boolean } = {},
+    options: {
+      replay?: boolean;
+      streamDecision?: InboundStreamDecision;
+      acceptInbound?: () => Promise<boolean>;
+      durableAccepted?: () => boolean;
+    } = {},
   ): Promise<void> => {
     try {
-      const outcome = await handleMessage(message, { skipRecentDedupe: options.replay });
+      const outcome = await handleMessage(message, {
+        skipRecentDedupe: options.replay,
+        replay: options.replay,
+        streamDecision: options.streamDecision,
+        acceptInbound: options.acceptInbound,
+      });
+      const manageDurableRecord =
+        Boolean(durableId) &&
+        (!options.acceptInbound || options.durableAccepted?.() === true);
       if (outcome === ABORTED_INBOUND_MESSAGE) {
-        if (durableInboundJournal && durableId) {
+        if (durableInboundJournal && durableId && manageDurableRecord) {
           await durableInboundJournal.release(durableId, {
             lastError: "Zulip monitor stopped before delivery",
           });
@@ -1277,16 +1347,22 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         return;
       }
       if (outcome === RETRYABLE_INBOUND_MESSAGE) {
-        if (durableInboundJournal && durableId) {
+        if (durableInboundJournal && durableId && manageDurableRecord) {
           await durableInboundJournal.release(durableId, {
             lastError: "Zulip reply delivery failed before any visible response",
           });
         }
         return;
       }
-      await completeDurableInboundMessage(durableId, metadata);
+      if (manageDurableRecord) {
+        await completeDurableInboundMessage(durableId, metadata);
+      }
     } catch (err) {
-      if (durableInboundJournal && durableId) {
+      if (
+        durableInboundJournal &&
+        durableId &&
+        (!options.acceptInbound || options.durableAccepted?.() === true)
+      ) {
         await durableInboundJournal.release(durableId, {
           lastError: String(err),
         });
@@ -1299,14 +1375,22 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     message: ZulipMessage,
     queueEventId?: number,
   ): Promise<void> => {
+    const streamDecision = await resolveInboundStreamDecision(message);
+    if (streamDecision && !streamDecision.accepted) {
+      logRejectedStreamDecision(
+        streamDecision,
+        message.sender_email?.trim() || String(message.sender_id ?? ""),
+      );
+      return;
+    }
     if (!durableInboundJournal) {
-      await deliverDurableInboundMessage(undefined, message);
+      await deliverDurableInboundMessage(undefined, message, undefined, { streamDecision });
       return;
     }
 
     const messageId = String(message.id ?? "");
     if (!messageId) {
-      await deliverDurableInboundMessage(undefined, message);
+      await deliverDurableInboundMessage(undefined, message, undefined, { streamDecision });
       return;
     }
 
@@ -1316,29 +1400,34 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     });
     const metadata: ZulipDurableInboundMetadata | undefined =
       queueEventId !== undefined ? { queueEventId } : undefined;
-    try {
-      const accepted = await durableInboundJournal.accept(
-        durableId,
-        {
-          message: serializeZulipDurableInboundMessage(message),
-          receivedAt: Date.now(),
-        },
-        {
-          ...(metadata ? { metadata } : {}),
-          receivedAt:
-            typeof message.timestamp === "number" ? message.timestamp * 1000 : Date.now(),
-        },
-      );
-      if (accepted.kind !== "accepted") {
-        return;
+    let durableAccepted = false;
+    const acceptInbound = async (): Promise<boolean> => {
+      try {
+        const accepted = await durableInboundJournal.accept(
+          durableId,
+          {
+            message: serializeZulipDurableInboundMessage(message),
+            receivedAt: Date.now(),
+          },
+          {
+            ...(metadata ? { metadata } : {}),
+            receivedAt:
+              typeof message.timestamp === "number" ? message.timestamp * 1000 : Date.now(),
+          },
+        );
+        durableAccepted = accepted.kind === "accepted";
+        return durableAccepted;
+      } catch (err) {
+        runtime.log?.(`zulip: failed persisting durable inbound; delivering live: ${String(err)}`);
+        return true;
       }
-    } catch (err) {
-      runtime.log?.(`zulip: failed persisting durable inbound; delivering live: ${String(err)}`);
-      await deliverDurableInboundMessage(undefined, message);
-      return;
-    }
+    };
 
-    await deliverDurableInboundMessage(durableId, message, metadata);
+    await deliverDurableInboundMessage(durableId, message, metadata, {
+      streamDecision,
+      acceptInbound,
+      durableAccepted: () => durableAccepted,
+    });
   };
 
   const handleMonitorAbort = () => {
@@ -1389,7 +1478,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
             runtime.log?.("zulip: queue expired, re-registering...");
             const newQueue = await registerZulipQueue(client, {
               eventTypes: ["message"],
-              streams, // Pass ["*"] to trigger all_public_streams=true in registerZulipQueue
+              streams: registrationStreams,
             });
             queueId = newQueue.queueId;
             lastEventId = newQueue.lastEventId;
@@ -1449,7 +1538,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
           runtime.log?.("zulip: bad event queue error thrown; re-registering...");
           const newQueue = await registerZulipQueue(client, {
             eventTypes: ["message"],
-            streams,
+            streams: registrationStreams,
           });
           queueId = newQueue.queueId;
           lastEventId = newQueue.lastEventId;

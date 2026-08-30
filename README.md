@@ -124,6 +124,18 @@ Add the plugin id to `plugins.allow` in `~/.openclaw/openclaw.json`:
         "42": ["bot help"]
       },
 
+      // Optional inbound-only policy overrides. ASCII decimal keys select
+      // stream IDs; every other key selects a normalized stream name.
+      "streamOverrides": {
+        "general": {
+          "enabled": true,
+          "requireMention": false,
+          "allowedTopics": ["support", "bot help"],
+          "excludedTopics": ["private"]
+        },
+        "42": { "enabled": false }
+      },
+
       // Default topic for outbound messages with no explicit topic
       "defaultTopic": "bot replies",
 
@@ -184,6 +196,39 @@ Then restart the Gateway:
 ```sh
 openclaw gateway restart
 ```
+
+### Per-stream inbound policy and migration
+
+Existing configurations do not need changes. `streams`, `topics`, and
+`streamTopics` keep their previous behavior. `streams` remains the legacy
+inbound allowlist, while `streamTopics` further restricts the account-level
+`topics` allowlist.
+
+`streamOverrides` adds field-by-field inbound overrides with this precedence:
+
+1. Account defaults (`requireMention`/`chatmode` and `topics`).
+2. Legacy `streams` activation and the additional `streamTopics` restriction.
+3. A matching normalized stream-name override.
+4. A matching decimal stream-ID override.
+
+An omitted field inherits the lower-precedence value. An explicit
+`enabled: true` may activate a stream outside `streams`; `enabled: false`
+disables inbound handling. `allowedTopics` replaces lower-precedence allowed
+topic filters when set. Empty `allowedTopics`, or one containing `"*"`, allows
+all topics. `excludedTopics` is applied afterward, so exclusions win;
+`["*"]` excludes every topic.
+
+Names are trimmed and matched case-insensitively against the authoritative
+name on the Zulip message. Keys containing only ASCII digits are always IDs;
+leading zeroes are canonicalized, so `"017"` selects ID 17. Values such as
+`"1e3"`, `"0x11"`, and `"+17"` are names, never coerced IDs. Duplicate keys
+after normalization are rejected. ID rules are the safest choice across
+stream renames. A replayed message never uses its historical name when current
+stream metadata is unavailable.
+
+These rules govern inbound activation only. Outbound send, read, search, and
+administrative actions remain available according to their existing access
+controls.
 
 ### Lifecycle reactions
 
@@ -249,6 +294,7 @@ Common setups that intentionally produce no visible stream reply:
 - `groupPolicy: "allowlist"` requires the sender to match `groupAllowFrom`; if the sender is not allowed, the message is ignored.
 - `chatmode: "oncall"` or `requireMention: true` means the bot only replies when it is mentioned.
 - `topics` or `streamTopics` filters only allow matching topics; messages in other topics are ignored.
+- A matching `streamOverrides` rule can disable the stream, change its mention requirement, or allow/exclude topics.
 
 For the simplest “reply in monitored streams” setup, use `groupPolicy: "open"` with the stream listed in `streams`, then add mention or topic filters only after the basic path works.
 

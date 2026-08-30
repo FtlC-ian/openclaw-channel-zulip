@@ -3,6 +3,38 @@ import { describe, expect, it } from "vitest";
 import { zulipChannelConfigSchema } from "./config-schema.js";
 
 describe("Zulip lifecycle reaction config", () => {
+  it("accepts strict per-stream inbound policy fields", () => {
+    const result = zulipChannelConfigSchema.runtime.safeParse({
+      streamOverrides: {
+        General: {
+          enabled: false,
+          requireMention: true,
+          allowedTopics: ["support"],
+          excludedTopics: ["private"],
+        },
+        "42": { enabled: true },
+      },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects unknown per-stream inbound policy fields", () => {
+    expect(
+      zulipChannelConfigSchema.runtime.safeParse({
+        streamOverrides: { general: { outboundEnabled: false } },
+      }).success,
+    ).toBe(false);
+  });
+
+  it.each([
+    { " ": { enabled: true } },
+    { General: { enabled: true }, " general ": { enabled: false } },
+    { "17": { enabled: true }, "017": { enabled: false } },
+  ])("rejects empty or canonically duplicate stream selectors", (streamOverrides) => {
+    expect(zulipChannelConfigSchema.runtime.safeParse({ streamOverrides }).success).toBe(false);
+  });
+
   it("accepts lifecycle emoji, timing, and subagent overrides", () => {
     const result = zulipChannelConfigSchema.runtime.safeParse({
       reactions: {
@@ -83,6 +115,32 @@ describe("Zulip lifecycle reaction config", () => {
     for (const value of ["+", "-", ":+:", ":-:", ":+1", "+1:", "white space", "🦄"]) {
       expect(accepts(value)).toBe(false);
     }
+  });
+
+  it("keeps manifest stream override fields aligned with runtime validation", () => {
+    const manifest = JSON.parse(
+      fs.readFileSync(new URL("../openclaw.plugin.json", import.meta.url), "utf8"),
+    ) as {
+      channelConfigs: {
+        zulip: {
+          schema: {
+            $defs: { zulipAccount: { properties: Record<string, unknown> }; zulipStreamRule: { properties: Record<string, unknown> } };
+            properties: Record<string, unknown>;
+          };
+          uiHints: Record<string, unknown>;
+        };
+      };
+    };
+    const channelConfig = manifest.channelConfigs.zulip;
+    expect(Object.keys(channelConfig.schema.$defs.zulipStreamRule.properties).sort()).toEqual([
+      "allowedTopics",
+      "enabled",
+      "excludedTopics",
+      "requireMention",
+    ]);
+    expect(channelConfig.schema.properties).toHaveProperty("streamOverrides");
+    expect(channelConfig.schema.$defs.zulipAccount.properties).toHaveProperty("streamOverrides");
+    expect(channelConfig.uiHints).toHaveProperty("streamOverrides");
   });
 
   it("rejects arbitrary Unicode reaction values", () => {

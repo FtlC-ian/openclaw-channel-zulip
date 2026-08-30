@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Features
+- **Per-stream inbound policy**: Add deterministic name/ID `streamOverrides` for inbound activation, mention requirements, and allowed/excluded topics while preserving legacy `streams`, `topics`, and `streamTopics` behavior.
+- **Early inbound filtering**: Resolve stream policy before durable acceptance, attachment downloads, reactions, typing, routing, or agent dispatch. Outbound access remains independent.
+
 ## 2026.5.26
 
 ### Features

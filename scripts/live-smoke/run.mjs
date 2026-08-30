@@ -285,8 +285,18 @@ export function extractExactUploadUrl(content) {
   if (anchor) {
     const href = anchor[1].replaceAll("&amp;", "&");
     const basename = href.split(/[?#]/, 1)[0].split("/").at(-1);
-    let decodedBasename;
-    try { decodedBasename = decodeURIComponent(basename); } catch { decodedBasename = basename; }
+    let decodedBasename = basename;
+    let fullyDecodedBasename = basename;
+    for (let depth = 0; depth < 100; depth += 1) {
+      let decoded;
+      try { decoded = decodeURIComponent(fullyDecodedBasename); } catch { break; }
+      if (depth === 0) decodedBasename = decoded;
+      if (decoded === fullyDecodedBasename) break;
+      fullyDecodedBasename = decoded;
+      if (depth === 99) return undefined;
+    }
+    if (/[\\/\0]/.test(fullyDecodedBasename) || /^file:/i.test(fullyDecodedBasename) ||
+        fullyDecodedBasename === "." || fullyDecodedBasename === "..") return undefined;
     if (![anchor[1], href, basename, decodedBasename].includes(anchor[2])) return undefined;
     return href;
   }

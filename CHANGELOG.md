@@ -10,6 +10,7 @@
 - **Agent reaction guidance**: Advertise model-controlled Zulip reactions through prompt guidance, defaulting to extensive while keeping lifecycle/status indicators separate.
 
 ### Bug Fixes
+- **Lifecycle reaction metadata**: Send every built-in lifecycle and subagent default as a fully specified Unicode reaction so Zulip realms do not reject SDK emoji names such as the soft-stall hourglass.
 - **Reply routing**: Store canonical last-route delivery context for Zulip DMs and stream topics so final replies and follow-ups stay on the right conversation.
 - **Replay dedupe**: Durable replay bypasses volatile in-memory duplicate suppression after handler failures.
 

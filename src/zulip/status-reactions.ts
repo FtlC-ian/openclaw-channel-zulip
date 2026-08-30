@@ -46,19 +46,19 @@ export function isSupportedZulipReactionValue(raw: string): boolean {
 }
 
 export const ZULIP_STATUS_REACTION_DEFAULTS: Required<StatusReactionEmojis> = {
-  queued: "eyes",
-  thinking: "brain",
-  tool: "hammer_and_wrench",
-  coding: "computer",
-  web: "globe_with_meridians",
-  deploy: "airplane_departure",
-  build: "building_construction",
-  concierge: "information_desk_person",
-  done: "check",
-  error: "cross_mark",
-  stallSoft: "hourglass_flowing_sand",
-  stallHard: "warning",
-  compacting: "compression",
+  queued: "👀",
+  thinking: "🧠",
+  tool: "🛠️",
+  coding: "💻",
+  web: "🌐",
+  deploy: "🛫",
+  build: "🏗️",
+  concierge: "💁",
+  done: "✅",
+  error: "❌",
+  stallSoft: "⏳",
+  stallHard: "⚠️",
+  compacting: "🗜️",
 };
 
 export function resolveZulipReactionSpec(raw: string): ZulipReactionSpec {
@@ -108,8 +108,7 @@ export function resolveZulipStatusReactionConfig(params: {
       ...params.globalStatusReactions?.timing,
       ...local?.timing,
     },
-    subagent:
-      local?.subagent === undefined ? "robot_face" : normalizeZulipEmojiName(local.subagent),
+    subagent: local?.subagent === undefined ? "🤖" : normalizeZulipEmojiName(local.subagent),
   };
 }
 

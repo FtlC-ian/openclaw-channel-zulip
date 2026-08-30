@@ -201,7 +201,9 @@ outlive the requester's reply. The default is `robot_face`. Built-in lifecycle
 Unicode values (`👀`, `🧠`, `🛠️`, `💻`, `🌐`, `🛫`, `🏗️`, `💁`, `✅`, `❌`,
 `⏳`, `⚠️`, `🗜️`, and `🤖`) and named Zulip emoji are supported; arbitrary
 Unicode is rejected because Zulip requires exact reaction metadata. An empty
-string suppresses that state. Account-level
+string suppresses that state. The built-in defaults use these Unicode values
+so the plugin always sends Zulip's required emoji code and reaction type.
+Account-level
 `reactions.emojis` and `reactions.timing` override global
 `messages.statusReactions` values. The legacy `onStart`, `onSuccess`, and
 `onError` keys remain accepted as queued, done, and error aliases, and an

@@ -4,6 +4,7 @@ import {
   isSupportedZulipReactionValue,
   resolveZulipReactionSpec,
   resolveZulipStatusReactionConfig,
+  ZULIP_STATUS_REACTION_DEFAULTS,
 } from "./status-reactions.js";
 
 describe("Zulip status reaction configuration", () => {
@@ -61,6 +62,22 @@ describe("Zulip status reaction configuration", () => {
     };
     expect(add).toHaveBeenCalledWith(expected);
     expect(remove).toHaveBeenCalledWith(expected);
+  });
+
+  it("uses fully specified Unicode reactions for every built-in lifecycle default", () => {
+    for (const emoji of Object.values(ZULIP_STATUS_REACTION_DEFAULTS)) {
+      expect(resolveZulipReactionSpec(emoji)).toMatchObject({
+        emojiCode: expect.any(String),
+        reactionType: "unicode_emoji",
+      });
+    }
+
+    const result = resolveZulipStatusReactionConfig({ accountConfig: {} });
+    expect(resolveZulipReactionSpec(result.subagent)).toMatchObject({
+      emojiName: "robot_face",
+      emojiCode: "1f916",
+      reactionType: "unicode_emoji",
+    });
   });
 
   it("preserves explicit empty legacy and subagent overrides", () => {

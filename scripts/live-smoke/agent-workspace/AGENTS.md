@@ -24,8 +24,9 @@ message tool and then reply with exactly `VALUE`.
 
 For `edit-delete BEFORE AFTER`, send a new message containing exactly `BEFORE`,
 edit that same message to exactly `AFTER`, keep it visible for at least six
-seconds so the harness can observe a full four-second window, then delete it
-with explicit confirmation. Do not send another reply.
+seconds so the harness can observe a full four-second window. Do not delete it
+and do not send another reply; the harness probes deletion separately because
+some protected Zulip realms disallow delete even when edit is permitted.
 
 For `read-upload VALUE`, read the attached text file and reply with exactly its
 contents. The file must contain `VALUE`.

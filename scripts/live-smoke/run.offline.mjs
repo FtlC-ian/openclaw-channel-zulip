@@ -475,6 +475,150 @@ test("coalesces concurrent event polls", async () => {
   assert.equal(queue.events.length, 1);
 });
 
+test("reconciles a placeholder update into cached message matching and cleanup attribution", async () => {
+  const messageEvent = { id: 1, type: "message", message: {
+    id: 100,
+    type: "private",
+    sender_id: Number(BOT_USER_ID),
+    display_recipient: [{ id: Number(BOT_USER_ID) }, { id: Number(ACTOR_USER_ID) }],
+    content: "<p>Thinking…</p>",
+  } };
+  const updateEvent = {
+    id: 2,
+    type: "update_message",
+    message_id: 100,
+    content: "final-marker",
+    rendered_content: "<p>final-marker</p>",
+    edit_timestamp: 1_750_000_001,
+  };
+  const batches = [[messageEvent], [updateEvent]];
+  const queue = new EventQueue({ request: async () => ({ events: batches.shift() ?? [] }) });
+
+  await queue.poll();
+  assert.equal(messageEvent.message.content, "<p>Thinking…</p>");
+  await queue.poll();
+  const matched = await queue.waitFor(
+    (event) => isPrivateBotMessage(event, BOT_USER_ID, ACTOR_USER_ID, "final-marker"),
+    1,
+    "updated DM",
+  );
+
+  assert.equal(matched, messageEvent);
+  assert.equal(messageEvent.message.content, "<p>final-marker</p>");
+  assert.equal(messageEvent.message.edit_timestamp, 1_750_000_001);
+  assert.equal(queue.events[1], updateEvent);
+  const cleanupIds = new Set();
+  captureObservedSmokeBotMessageIds(queue.events, {
+    botUserId: BOT_USER_ID,
+    actorUserId: ACTOR_USER_ID,
+    stream: "smoke",
+    runId: "run-id",
+  }, cleanupIds);
+  assert.deepEqual([...cleanupIds], ["100"]);
+});
+
+test("does not mutate a cached message for an unrelated update", async () => {
+  const messageEvent = { id: 1, type: "message", message: {
+    id: 100,
+    content: "<p>Thinking…</p>",
+  } };
+  const updateEvent = {
+    id: 2,
+    type: "update_message",
+    message_id: 999,
+    content: "<p>unrelated final</p>",
+  };
+  const queue = new EventQueue({ request: async () => ({ events: [messageEvent, updateEvent] }) });
+
+  await queue.poll();
+
+  assert.equal(messageEvent.message.content, "<p>Thinking…</p>");
+  assert.deepEqual(queue.events, [messageEvent, updateEvent]);
+});
+
+test("scopes an official propagated update across cached messages", async () => {
+  const primaryEvent = { id: 1, type: "message", message: {
+    id: 100,
+    content: "<p>primary before</p>",
+    subject: "old-topic",
+    topic_links: [],
+    stream_id: 5,
+  } };
+  const secondaryEvent = { id: 2, type: "message", message: {
+    id: 101,
+    content: "<p>secondary before</p>",
+    subject: "old-topic",
+    topic_links: [],
+    stream_id: 5,
+  } };
+  const topicLinks = [{ text: "docs", url: "https://example.com/docs" }];
+  const updateEvent = {
+    id: 3,
+    type: "update_message",
+    message_id: 100,
+    message_ids: [100, 101],
+    content: "**primary after**",
+    rendered_content: "<p><strong>primary after</strong></p>",
+    flags: ["read"],
+    edit_timestamp: 1_750_000_002,
+    is_me_message: false,
+    stream_id: 5,
+    stream_name: "Old channel",
+    new_stream_id: 9,
+    subject: "new-topic",
+    topic_links: topicLinks,
+    propagate_mode: "change_all",
+  };
+  const queue = new EventQueue({
+    request: async () => ({ events: [primaryEvent, secondaryEvent, updateEvent] }),
+  });
+
+  await queue.poll();
+
+  assert.equal(primaryEvent.message.content, "<p><strong>primary after</strong></p>");
+  assert.deepEqual(primaryEvent.message.flags, ["read"]);
+  assert.equal(primaryEvent.message.edit_timestamp, 1_750_000_002);
+  assert.equal(primaryEvent.message.is_me_message, false);
+  assert.equal(secondaryEvent.message.content, "<p>secondary before</p>");
+  assert.equal(Object.hasOwn(secondaryEvent.message, "flags"), false);
+  assert.equal(Object.hasOwn(secondaryEvent.message, "edit_timestamp"), false);
+  for (const event of [primaryEvent, secondaryEvent]) {
+    assert.equal(event.message.subject, "new-topic");
+    assert.equal(event.message.topic_links, topicLinks);
+    assert.equal(event.message.stream_id, 9);
+  }
+  assert.equal(queue.events[2], updateEvent);
+});
+
+test("preserves raw update and delete evidence after reconciling an edit", async () => {
+  const messageEvent = { id: 1, type: "message", message: {
+    id: 100,
+    content: "<p>before-edit</p>",
+    subject: "old-topic",
+  } };
+  const updateEvent = {
+    id: 2,
+    type: "update_message",
+    message_id: 100,
+    message_ids: [100],
+    content: "after-edit",
+    rendered_content: "<p>after-edit</p>",
+    subject: "new-topic",
+  };
+  const deleteEvent = { id: 3, type: "delete_message", message_ids: [100] };
+  const queue = new EventQueue({
+    request: async () => ({ events: [messageEvent, updateEvent, deleteEvent] }),
+  });
+
+  await queue.poll();
+
+  assert.equal(messageEvent.message.content, "<p>after-edit</p>");
+  assert.equal(messageEvent.message.subject, "new-topic");
+  assert.equal(queue.events.find((event) => event.type === "update_message"), updateEvent);
+  assert.equal(queue.events.find((event) => event.type === "delete_message"), deleteEvent);
+  assert.equal(queue.events.length, 3);
+});
+
 test("waits for gateway exit after escalating to SIGKILL", async () => {
   const child = new EventEmitter();
   child.exitCode = null;

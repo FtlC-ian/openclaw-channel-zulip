@@ -427,7 +427,13 @@ class ZulipClient {
 }
 
 export class EventQueue {
-  constructor(client) { this.client = client; this.events = []; this.lastEventId = -1; this.pollPromise = undefined; }
+  constructor(client) {
+    this.client = client;
+    this.events = [];
+    this.lastEventId = -1;
+    this.pollPromise = undefined;
+    this.messageEventsById = new Map();
+  }
   async open() {
     const result = await this.client.request("register", { method: "POST", body: {
       event_types: JSON.stringify(["message", "typing", "reaction", "update_message", "delete_message"]),
@@ -443,7 +449,13 @@ export class EventQueue {
     }, signal }).then((result) => {
       for (const event of result.events ?? []) {
         this.lastEventId = Math.max(this.lastEventId, event.id ?? this.lastEventId);
-        if (event.type !== "heartbeat") this.events.push(event);
+        if (event.type === "heartbeat") continue;
+        if (event.type === "message" && event.message?.id !== undefined) {
+          this.messageEventsById.set(String(event.message.id), event);
+        } else if (event.type === "update_message") {
+          this.reconcileMessageUpdate(event);
+        }
+        this.events.push(event);
       }
       return result.events ?? [];
     }).finally(() => { this.pollPromise = undefined; });
@@ -462,6 +474,37 @@ export class EventQueue {
   }
   async close() {
     if (this.queueId) await this.client.request("events", { method: "DELETE", params: { queue_id: this.queueId } }).catch(() => {});
+  }
+  reconcileMessageUpdate(event) {
+    const nestedMessage = event.message && typeof event.message === "object" ? event.message : undefined;
+    const primaryMessageId = event.message_id ?? nestedMessage?.id;
+    const primaryMessage = primaryMessageId === undefined || primaryMessageId === null
+      ? undefined
+      : this.messageEventsById.get(String(primaryMessageId))?.message;
+    if (primaryMessage) {
+      const renderedContent = Object.hasOwn(event, "rendered_content")
+        ? event.rendered_content
+        : nestedMessage && Object.hasOwn(nestedMessage, "rendered_content")
+          ? nestedMessage.rendered_content
+          : nestedMessage && Object.hasOwn(nestedMessage, "content")
+            ? nestedMessage.content
+            : Object.hasOwn(event, "content")
+              ? event.content
+              : undefined;
+      if (renderedContent !== undefined) primaryMessage.content = renderedContent;
+      for (const field of ["flags", "edit_timestamp", "last_edit_timestamp", "is_me_message"]) {
+        if (nestedMessage && Object.hasOwn(nestedMessage, field)) primaryMessage[field] = nestedMessage[field];
+        if (Object.hasOwn(event, field)) primaryMessage[field] = event[field];
+      }
+    }
+
+    for (const messageId of Array.isArray(event.message_ids) ? event.message_ids : []) {
+      const cachedMessage = this.messageEventsById.get(String(messageId))?.message;
+      if (!cachedMessage) continue;
+      if (Object.hasOwn(event, "subject")) cachedMessage.subject = event.subject;
+      if (Object.hasOwn(event, "topic_links")) cachedMessage.topic_links = event.topic_links;
+      if (Object.hasOwn(event, "new_stream_id")) cachedMessage.stream_id = event.new_stream_id;
+    }
   }
 }
 

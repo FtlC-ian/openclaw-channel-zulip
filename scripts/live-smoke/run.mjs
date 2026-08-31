@@ -524,7 +524,12 @@ export class Gateway {
     if (!isChildRunning(child)) {
       throw new Error("Runner-local OpenClaw gateway exited during startup stabilization");
     }
-    if (!await this.isHealthy()) {
+    const healthy = await this.isHealthy();
+    signal?.throwIfAborted();
+    if (!isChildRunning(child)) {
+      throw new Error("Runner-local OpenClaw gateway exited during final startup health probe");
+    }
+    if (!healthy) {
       throw new Error("Runner-local OpenClaw gateway became unhealthy during startup stabilization");
     }
   }

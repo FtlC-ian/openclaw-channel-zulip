@@ -1064,6 +1064,56 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         logVerboseMessage(`zulip: failed to remove reaction ${reaction.emojiName}: ${String(err)}`);
       }
     };
+    let replyDeliveryCommitted = false;
+    let placeholderMessageId: string | undefined;
+    let placeholderCreationPromise: Promise<void> | undefined;
+    let placeholderRemovedForDelivery = false;
+    let deliveredReply = false;
+
+    const deletePlaceholder = async (forDelivery = false): Promise<boolean> => {
+      const placeholderId = placeholderMessageId;
+      if (!placeholderId) {
+        return false;
+      }
+      placeholderMessageId = undefined;
+      try {
+        await deleteZulipMessage(client, { messageId: placeholderId });
+        if (forDelivery) {
+          placeholderRemovedForDelivery = true;
+        }
+        return true;
+      } catch (err) {
+        placeholderMessageId ??= placeholderId;
+        logVerboseMessage(`zulip: failed to delete thinking placeholder: ${String(err)}`);
+        return false;
+      }
+    };
+
+    const replacePlaceholder = async (content: string): Promise<boolean> => {
+      const placeholderId = placeholderMessageId;
+      if (!placeholderId) {
+        return false;
+      }
+      placeholderMessageId = undefined;
+      try {
+        await editZulipMessage(client, { messageId: placeholderId, content });
+        core.channel.activity.record({
+          channel: "zulip",
+          accountId: account.accountId,
+          direction: "outbound",
+        });
+        return true;
+      } catch (err) {
+        placeholderMessageId ??= placeholderId;
+        logVerboseMessage(`zulip: failed to replace thinking placeholder: ${String(err)}`);
+        return false;
+      }
+    };
+
+    const cleanupPlaceholderLifecycle = async (): Promise<void> => {
+      await placeholderCreationPromise;
+      await deletePlaceholder();
+    };
     if (opts.abortSignal?.aborted || monitorReactionShutdownStarted) {
       return ABORTED_INBOUND_MESSAGE;
     }
@@ -1106,7 +1156,11 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
           terminalCleanupTimer = undefined;
         }
         activeReactionCleanups.delete(cancelReactionLifecycle);
-        await Promise.allSettled([statusReactions.clear(), subagentContext.cancel()]);
+        await Promise.allSettled([
+          statusReactions.clear(),
+          subagentContext.cancel(),
+          cleanupPlaceholderLifecycle(),
+        ]);
       })();
       return reactionLifecycleCleanup;
     };
@@ -1172,63 +1226,31 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       },
     });
 
-    let replyDeliveryCommitted = false;
-    let placeholderMessageId: string | undefined;
-    let placeholderRemovedForDelivery = false;
-    let deliveredReply = false;
-
-    const deletePlaceholder = async (forDelivery = false): Promise<boolean> => {
-      const placeholderId = placeholderMessageId;
-      if (!placeholderId) {
-        return false;
-      }
-      try {
-        await deleteZulipMessage(client, { messageId: placeholderId });
-        placeholderMessageId = undefined;
-        if (forDelivery) {
-          placeholderRemovedForDelivery = true;
+    if (
+      thinkingPlaceholderEnabled &&
+      !reactionLifecycleCancelled &&
+      !monitorReactionShutdownStarted &&
+      !opts.abortSignal?.aborted
+    ) {
+      placeholderCreationPromise = (async () => {
+        try {
+          const placeholder = await sendMessageZulip(to, thinkingPlaceholderText, {
+            cfg,
+            accountId: account.accountId,
+            topic,
+          });
+          if (placeholder.messageId !== "unknown") {
+            placeholderMessageId = placeholder.messageId;
+          } else {
+            logVerboseMessage("zulip: thinking placeholder send returned no message id");
+          }
+        } catch (err) {
+          logVerboseMessage(`zulip: failed to create thinking placeholder: ${String(err)}`);
         }
-        return true;
-      } catch (err) {
-        logVerboseMessage(`zulip: failed to delete thinking placeholder: ${String(err)}`);
-        return false;
-      }
-    };
-
-    const replacePlaceholder = async (content: string): Promise<boolean> => {
-      const placeholderId = placeholderMessageId;
-      if (!placeholderId) {
-        return false;
-      }
-      try {
-        await editZulipMessage(client, { messageId: placeholderId, content });
-        placeholderMessageId = undefined;
-        core.channel.activity.record({
-          channel: "zulip",
-          accountId: account.accountId,
-          direction: "outbound",
-        });
-        return true;
-      } catch (err) {
-        logVerboseMessage(`zulip: failed to replace thinking placeholder: ${String(err)}`);
-        return false;
-      }
-    };
-
-    if (thinkingPlaceholderEnabled) {
-      try {
-        const placeholder = await sendMessageZulip(to, thinkingPlaceholderText, {
-          cfg,
-          accountId: account.accountId,
-          topic,
-        });
-        if (placeholder.messageId !== "unknown") {
-          placeholderMessageId = placeholder.messageId;
-        } else {
-          logVerboseMessage("zulip: thinking placeholder send returned no message id");
-        }
-      } catch (err) {
-        logVerboseMessage(`zulip: failed to create thinking placeholder: ${String(err)}`);
+      })();
+      await placeholderCreationPromise;
+      if (reactionLifecycleCancelled || monitorReactionShutdownStarted || opts.abortSignal?.aborted) {
+        await deletePlaceholder();
       }
     }
     let deliveryError: unknown;
@@ -1386,13 +1408,18 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     }
     const finalDeliveryFailed = (dispatchResult?.failedCounts?.final ?? 0) > 0;
     const terminalError = Boolean(dispatchError) || finalDeliveryFailed;
-    const retryableNoDelivery = terminalError && !replyDeliveryCommitted;
     if (placeholderMessageId) {
       const cancelled = dispatchError instanceof Error && dispatchError.name === "AbortError";
       if (!terminalError || cancelled || deliveredReply) {
         await deletePlaceholder();
-      } else if (!(await replacePlaceholder(thinkingPlaceholderErrorText))) {
-        await deletePlaceholder();
+      } else {
+        const errorFeedbackCommitted = await replacePlaceholder(thinkingPlaceholderErrorText);
+        if (errorFeedbackCommitted) {
+          replyDeliveryCommitted = true;
+          opts.statusSink?.({ lastOutboundAt: Date.now() });
+        } else {
+          await deletePlaceholder();
+        }
       }
     } else if (
       dispatchError &&
@@ -1411,11 +1438,13 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
           accountId: account.accountId,
           direction: "outbound",
         });
+        replyDeliveryCommitted = true;
         opts.statusSink?.({ lastOutboundAt: Date.now() });
       } catch (err) {
         logVerboseMessage(`zulip: failed to send thinking placeholder error: ${String(err)}`);
       }
     }
+    const retryableNoDelivery = terminalError && !replyDeliveryCommitted;
     if (terminalError) {
       await statusReactions.setError();
     } else {

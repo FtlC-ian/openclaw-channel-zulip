@@ -20,6 +20,32 @@ const bindingsByChildSessionKey = new Map<string, Map<string, ReactionContext>>(
 const activeContexts = new Set<ReactionContext>();
 const reactionContextStorage = new AsyncLocalStorage<ReactionContext>();
 
+type ZulipSubagentDiagnosticEvent =
+  | "context_registered"
+  | "spawn_rejected_channel"
+  | "spawn_rejected_run"
+  | "spawn_correlated"
+  | "spawn_rejected_context"
+  | "indicator_shown"
+  | "run_ended"
+  | "reaction_add_succeeded"
+  | "reaction_add_failed"
+  | "reaction_remove_succeeded"
+  | "reaction_remove_failed";
+
+export function recordZulipSubagentDiagnostic(
+  event: ZulipSubagentDiagnosticEvent,
+  fields: Record<string, number | boolean> = {},
+): void {
+  if (process.env.ZULIP_SUBAGENT_DIAGNOSTICS !== "1") {
+    return;
+  }
+  const details = Object.entries(fields)
+    .map(([key, value]) => `${key}=${String(value)}`)
+    .join(" ");
+  process.stderr.write(`ZULIP_SUBAGENT_DIAGNOSTIC event=${event}${details ? ` ${details}` : ""}\n`);
+}
+
 function updateIndicator(context: ReactionContext, visible: boolean): Promise<void> {
   context.indicatorDesired = visible;
   const applyDesiredState = async () => {
@@ -123,6 +149,10 @@ export function registerZulipSubagentReactionContext(params: {
     currentContextBySession.set(requesterSessionKey, context);
   }
   activeContexts.add(context);
+  recordZulipSubagentDiagnostic("context_registered", {
+    key_count: requesterSessionKeys.length,
+    active_contexts: activeContexts.size,
+  });
 
   return {
     run: (callback) => reactionContextStorage.run(context, callback),
@@ -158,17 +188,35 @@ export async function handleZulipSubagentSpawned(
 ): Promise<void> {
   const requesterChannel = event.requester?.channel;
   if (requesterChannel && requesterChannel !== "zulip") {
+    recordZulipSubagentDiagnostic("spawn_rejected_channel", { active_contexts: activeContexts.size });
     return;
   }
   const runId = resolveRunId(event, ctx);
   const childSessionKey = resolveChildSessionKey(event, ctx);
   const requesterSessionKey = ctx.requesterSessionKey?.trim() ?? "";
   if (!runId || bindingByRunId.has(runId)) {
+    recordZulipSubagentDiagnostic("spawn_rejected_run", {
+      has_run_id: Boolean(runId),
+      duplicate_run: Boolean(runId && bindingByRunId.has(runId)),
+    });
     return;
   }
   const asyncContext = requesterChannel === "zulip" ? reactionContextStorage.getStore() : undefined;
-  const context = asyncContext ?? currentContextBySession.get(requesterSessionKey);
+  const exactContext = currentContextBySession.get(requesterSessionKey);
+  const context = asyncContext ?? exactContext;
+  recordZulipSubagentDiagnostic("spawn_correlated", {
+    channel_zulip: requesterChannel === "zulip",
+    channel_missing: requesterChannel === undefined,
+    async_match: Boolean(asyncContext),
+    exact_match: Boolean(exactContext),
+    selected: Boolean(context),
+    active_contexts: activeContexts.size,
+  });
   if (!context || context.terminal) {
+    recordZulipSubagentDiagnostic("spawn_rejected_context", {
+      has_context: Boolean(context),
+      terminal: Boolean(context?.terminal),
+    });
     return;
   }
   bindingByRunId.set(runId, { context, childSessionKey });
@@ -180,6 +228,7 @@ export async function handleZulipSubagentSpawned(
   context.activeRunIds.add(runId);
   if (context.activeRunIds.size === 1) {
     await updateIndicator(context, true);
+    recordZulipSubagentDiagnostic("indicator_shown");
   }
 }
 
@@ -190,6 +239,7 @@ export async function handleZulipSubagentEnded(
   const runId = resolveRunId(event, ctx);
   if (runId) {
     const context = removeRunBinding(runId);
+    recordZulipSubagentDiagnostic("run_ended", { binding_found: Boolean(context) });
     if (!context) {
       return;
     }

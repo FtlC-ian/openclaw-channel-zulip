@@ -59,7 +59,10 @@ import {
   resolveZulipReactionSpec,
   resolveZulipStatusReactionConfig,
 } from "./status-reactions.js";
-import { registerZulipSubagentReactionContext } from "./subagent-reactions.js";
+import {
+  recordZulipSubagentDiagnostic,
+  registerZulipSubagentReactionContext,
+} from "./subagent-reactions.js";
 import {
   isZulipTopicAllowed,
   resolveZulipInboundStreamPolicy,
@@ -1032,7 +1035,9 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       }
       try {
         await addZulipReaction(client, { messageId, ...reaction });
+        recordZulipSubagentDiagnostic("reaction_add_succeeded");
       } catch (err) {
+        recordZulipSubagentDiagnostic("reaction_add_failed");
         logVerboseMessage(`zulip: failed to add reaction ${reaction.emojiName}: ${String(err)}`);
       }
     };
@@ -1068,7 +1073,9 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       }
       try {
         await removeZulipReaction(client, { messageId, ...reaction });
+        recordZulipSubagentDiagnostic("reaction_remove_succeeded");
       } catch (err) {
+        recordZulipSubagentDiagnostic("reaction_remove_failed");
         logVerboseMessage(`zulip: failed to remove reaction ${reaction.emojiName}: ${String(err)}`);
       }
     };

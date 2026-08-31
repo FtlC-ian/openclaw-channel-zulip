@@ -508,6 +508,49 @@ export class EventQueue {
   }
 }
 
+const zulipSubagentDiagnosticSchemas = Object.freeze({
+  context_registered: { key_count: 8, active_contexts: 100 },
+  spawn_rejected_channel: { active_contexts: 100 },
+  spawn_rejected_run: { has_run_id: "boolean", duplicate_run: "boolean" },
+  spawn_correlated: {
+    channel_zulip: "boolean",
+    channel_missing: "boolean",
+    async_match: "boolean",
+    exact_match: "boolean",
+    selected: "boolean",
+    active_contexts: 100,
+  },
+  spawn_rejected_context: { has_context: "boolean", terminal: "boolean" },
+  indicator_shown: {},
+  run_ended: { binding_found: "boolean" },
+  reaction_add_succeeded: {},
+  reaction_add_failed: {},
+  reaction_remove_succeeded: {},
+  reaction_remove_failed: {},
+});
+
+export function parseZulipSubagentDiagnostic(line) {
+  if (Buffer.byteLength(line, "utf8") > 512 || !line.startsWith("ZULIP_SUBAGENT_DIAGNOSTIC ")) return undefined;
+  const tokens = line.split(" ");
+  const eventToken = tokens[1]?.match(/^event=([a-z_]+)$/);
+  if (tokens[0] !== "ZULIP_SUBAGENT_DIAGNOSTIC" || !eventToken) return undefined;
+  const schema = zulipSubagentDiagnosticSchemas[eventToken[1]];
+  if (!schema || tokens.length !== Object.keys(schema).length + 2) return undefined;
+  const observed = new Set();
+  for (const token of tokens.slice(2)) {
+    const field = token.match(/^([a-z_]+)=(true|false|[0-9]+)$/);
+    if (!field || observed.has(field[1]) || !Object.hasOwn(schema, field[1])) return undefined;
+    const domain = schema[field[1]];
+    if (domain === "boolean") {
+      if (field[2] !== "true" && field[2] !== "false") return undefined;
+    } else if (!/^[0-9]+$/.test(field[2]) || Number(field[2]) > domain) {
+      return undefined;
+    }
+    observed.add(field[1]);
+  }
+  return observed.size === Object.keys(schema).length ? line : undefined;
+}
+
 export class Gateway {
   constructor(port, {
     termTimeoutMs = 10000,
@@ -530,14 +573,54 @@ export class Gateway {
     this.spawnImpl = spawnImpl;
     this.wait = wait;
     this.now = now;
+    this.diagnostics = [];
+    this.diagnosticStreamGeneration = 0;
+    this.diagnosticStreamState = this.createDiagnosticStreamState();
+  }
+  createDiagnosticStreamState() {
+    return { remainder: "", discardingOversizedLine: false };
+  }
+  attachDiagnosticStream(child) {
+    const generation = ++this.diagnosticStreamGeneration;
+    const state = this.createDiagnosticStreamState();
+    this.diagnosticStreamState = state;
+    child.stderr?.on?.("data", (chunk) => {
+      if (this.diagnosticStreamGeneration === generation) this.captureDiagnostics(chunk, state);
+    });
+  }
+  captureDiagnostics(chunk, state = this.diagnosticStreamState) {
+    const text = String(chunk);
+    let cursor = 0;
+    while (cursor < text.length) {
+      const newline = text.indexOf("\n", cursor);
+      const segment = text.slice(cursor, newline < 0 ? text.length : newline);
+      if (!state.discardingOversizedLine) {
+        const candidate = state.remainder + segment;
+        if (Buffer.byteLength(candidate, "utf8") > 512) {
+          state.remainder = "";
+          state.discardingOversizedLine = newline < 0;
+        } else if (newline < 0) {
+          state.remainder = candidate;
+        } else {
+          const diagnostic = parseZulipSubagentDiagnostic(candidate);
+          if (diagnostic && this.diagnostics.length < 200) this.diagnostics.push(diagnostic);
+          state.remainder = "";
+        }
+      } else if (newline >= 0) {
+        state.discardingOversizedLine = false;
+      }
+      if (newline < 0) break;
+      cursor = newline + 1;
+    }
   }
   async start(signal) {
     signal?.throwIfAborted();
     if (this.process && isProcessTreeRunning(this.process)) throw new Error("Runner-local OpenClaw gateway is already running");
     this.process = this.spawnImpl("pnpm", ["exec", "openclaw", "gateway", "run", "--bind", "loopback", "--port", this.port, "--auth", "none", "--compact"], {
-      cwd: process.cwd(), env: process.env, stdio: ["ignore", "ignore", "ignore"], detached: process.platform !== "win32",
+      cwd: process.cwd(), env: process.env, stdio: ["ignore", "ignore", "pipe"], detached: process.platform !== "win32",
     });
     const child = this.process;
+    this.attachDiagnosticStream(child);
     const deadline = this.now() + 30000;
     while (this.now() < deadline) {
       signal?.throwIfAborted();
@@ -892,6 +975,9 @@ async function main() {
       await countMessageDeletionFailures(actor, messageIds.actor);
     await queue.close().catch(() => {});
     for (const item of report) console.log(`${item.ok ? "PASS" : "FAIL"} ${item.name} (${item.ms}ms)${item.error ? `: ${item.error}` : ""}`);
+    if (runError && gateway.diagnostics.length) {
+      for (const diagnostic of gateway.diagnostics) console.error(diagnostic);
+    }
     console.log(`Evidence: tested commit ${env.SMOKE_TESTED_SHA}; run identifier ${runId}`);
     console.log(`Cleanup: message deletion failures=${cleanupFailures}; Zulip exposes no public API for deleting uploaded files.`);
     if (cleanupFailures > 0) {

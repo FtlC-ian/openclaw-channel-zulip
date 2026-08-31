@@ -365,7 +365,7 @@ export function normalizeScenarioError(signal, error) {
 function reactionKey(event) {
   const name = String(event.emoji_name ?? "").trim().toLowerCase();
   const code = String(event.emoji_code ?? "").trim().toLowerCase();
-  return `${name}:${code}`;
+  return name ? `name:${name}` : `code:${code}`;
 }
 
 function applyReactionEvent(active, event) {

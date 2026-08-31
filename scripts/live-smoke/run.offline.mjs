@@ -397,9 +397,10 @@ test("requires lifecycle and subagent reactions to be removed", () => {
   assert.equal(lifecycleSummary([{ ...base, op: "add" }, { ...base, op: "remove" }, { ...base, op: "add" }], "42").allRemoved, false);
   assert.equal(lifecycleSummary([{ ...base, op: "add" }, { ...base, user_id: 8, op: "add" }, { ...base, op: "remove" }], "42").allRemoved, false);
   assert.equal(lifecycleSummary([
-    { ...base, emoji_code: "1F916", op: "add" },
+    { ...base, emoji_code: "zulip-add-form", op: "add" },
     {
       ...base,
+      emoji_code: "zulip-remove-form",
       user_id: undefined,
       user: { id: 7 },
       reaction_type: undefined,

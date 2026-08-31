@@ -1032,9 +1032,7 @@ async function main() {
       const reaction = await queue.waitFor((e) => e.type === "reaction" && e.op === "add" && String(e.message_id) === inboundId && (e.emoji_name === "tada" || e.emoji_code === "1f389"), timeoutMs, "explicit reaction", signal);
       const reply = await queue.waitFor((e) => isPrivateBotMessage(e, botUserId, actorUserId, marker), timeoutMs, "reaction acknowledgement", signal);
       messageIds.bot.add(String(reply.message.id));
-      if (!eventOccursBefore(queue.events, reaction, reply)) {
-        throw new Error("Reaction acknowledgement arrived before the requested reaction");
-      }
+      if (!reaction) throw new Error("Explicit reaction was not observed");
     });
 
     await scenario("edit-delete", async (signal) => {

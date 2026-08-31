@@ -1126,6 +1126,7 @@ async function main() {
           String(e.message?.id) === inboundId && sameUserId(e.message?.sender_id, actorUserId),
         timeoutMs, "durable command event", signal);
         await queue.waitFor((e) => e.type === "reaction" && e.op === "add" && String(e.message_id) === inboundId, timeoutMs, "durable accept signal", signal);
+        await delay(2000, undefined, { signal });
         if (captureReplies().length) {
           throw new Error("Durable reply completed before interruption; replay was not exercised");
         }

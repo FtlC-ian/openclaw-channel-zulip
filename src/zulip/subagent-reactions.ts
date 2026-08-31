@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { OpenClawPluginApi } from "../sdk.js";
 
 type ReactionContext = {
-  requesterSessionKey: string;
+  requesterSessionKeys: readonly string[];
   activeRunIds: Set<string>;
   indicatorDesired: boolean;
   indicatorShown: boolean;
@@ -80,8 +80,17 @@ function closeContext(context: ReactionContext): void {
   context.resolveClosed();
 }
 
+function removeCurrentSessionBindings(context: ReactionContext): void {
+  for (const requesterSessionKey of context.requesterSessionKeys) {
+    if (currentContextBySession.get(requesterSessionKey) === context) {
+      currentContextBySession.delete(requesterSessionKey);
+    }
+  }
+}
+
 export function registerZulipSubagentReactionContext(params: {
   requesterSessionKey: string;
+  requesterSessionKeyAliases?: readonly string[];
   show: () => Promise<void>;
   hide: () => Promise<void>;
 }): {
@@ -90,12 +99,16 @@ export function registerZulipSubagentReactionContext(params: {
   cancel: () => Promise<void>;
   closed: Promise<void>;
 } {
+  const requesterSessionKeys = Array.from(new Set([
+    params.requesterSessionKey,
+    ...(params.requesterSessionKeyAliases ?? []),
+  ].map((value) => value.trim()).filter(Boolean)));
   let resolveClosed!: () => void;
   const closed = new Promise<void>((resolve) => {
     resolveClosed = resolve;
   });
   const context: ReactionContext = {
-    requesterSessionKey: params.requesterSessionKey,
+    requesterSessionKeys,
     activeRunIds: new Set(),
     indicatorDesired: false,
     indicatorShown: false,
@@ -106,7 +119,9 @@ export function registerZulipSubagentReactionContext(params: {
     show: params.show,
     hide: params.hide,
   };
-  currentContextBySession.set(params.requesterSessionKey, context);
+  for (const requesterSessionKey of requesterSessionKeys) {
+    currentContextBySession.set(requesterSessionKey, context);
+  }
   activeContexts.add(context);
 
   return {
@@ -117,9 +132,7 @@ export function registerZulipSubagentReactionContext(params: {
         return;
       }
       context.terminal = true;
-      if (currentContextBySession.get(context.requesterSessionKey) === context) {
-        currentContextBySession.delete(context.requesterSessionKey);
-      }
+      removeCurrentSessionBindings(context);
       if (context.activeRunIds.size === 0) {
         await updateIndicator(context, false);
         closeContext(context);
@@ -127,9 +140,7 @@ export function registerZulipSubagentReactionContext(params: {
     },
     cancel: async () => {
       context.terminal = true;
-      if (currentContextBySession.get(context.requesterSessionKey) === context) {
-        currentContextBySession.delete(context.requesterSessionKey);
-      }
+      removeCurrentSessionBindings(context);
       for (const runId of Array.from(context.activeRunIds)) {
         if (bindingByRunId.get(runId)?.context === context) {
           removeRunBinding(runId);

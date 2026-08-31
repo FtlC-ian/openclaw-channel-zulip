@@ -261,15 +261,12 @@ export function lifecycleSummary(events, inboundMessageId) {
     event?.type === "reaction" && String(event.message_id) === String(inboundMessageId),
   );
   const added = [];
-  const active = new Set();
+  const active = new Map();
   for (const event of relevant) {
-    const key = reactionKey(event);
     if (event.op === "add") {
       added.push(event);
-      active.add(key);
-    } else if (event.op === "remove") {
-      active.delete(key);
     }
+    applyReactionEvent(active, event);
   }
   return {
     added,
@@ -297,15 +294,13 @@ export function lifecycleEvidenceCounts(events, inboundMessageId) {
 export function subagentCompletedBeforeReply(events, inboundMessageId, replyEvent) {
   const replyIndex = events.indexOf(replyEvent);
   if (replyIndex < 0) return false;
-  const active = new Set();
+  const active = new Map();
   let sawSubagent = false;
   for (const event of events.slice(0, replyIndex)) {
     if (event?.type !== "reaction" || String(event.message_id) !== String(inboundMessageId) ||
         (event.emoji_name !== "robot" && event.emoji_code !== "1f916")) continue;
     sawSubagent = true;
-    const key = reactionKey(event);
-    if (event.op === "add") active.add(key);
-    else if (event.op === "remove") active.delete(key);
+    applyReactionEvent(active, event);
   }
   return sawSubagent && active.size === 0;
 }
@@ -368,8 +363,18 @@ export function normalizeScenarioError(signal, error) {
 }
 
 function reactionKey(event) {
-  const user = event.user_id ?? event.user?.user_id ?? event.user?.email ?? event.user?.full_name ?? "";
-  return `${user}:${event.emoji_name ?? ""}:${event.emoji_code ?? ""}:${event.reaction_type ?? ""}`;
+  return `${event.emoji_name ?? ""}:${event.emoji_code ?? ""}:${event.reaction_type ?? ""}`;
+}
+
+function applyReactionEvent(active, event) {
+  const key = reactionKey(event);
+  if (event.op === "add") {
+    active.set(key, (active.get(key) ?? 0) + 1);
+  } else if (event.op === "remove") {
+    const remaining = (active.get(key) ?? 0) - 1;
+    if (remaining > 0) active.set(key, remaining);
+    else active.delete(key);
+  }
 }
 
 function assistantMessageTexts(value) {

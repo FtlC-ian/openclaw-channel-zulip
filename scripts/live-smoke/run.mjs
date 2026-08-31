@@ -363,7 +363,7 @@ export function normalizeScenarioError(signal, error) {
 }
 
 function reactionKey(event) {
-  return `${event.emoji_name ?? ""}:${event.emoji_code ?? ""}:${event.reaction_type ?? ""}`;
+  return `${event.emoji_name ?? ""}:${event.emoji_code ?? ""}`;
 }
 
 function applyReactionEvent(active, event) {

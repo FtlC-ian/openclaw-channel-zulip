@@ -120,8 +120,20 @@ export function createZulipDurableInboundReceiveJournal(accountId: string) {
         metadata: completed.metadata,
         completedAt: completed.completedAt,
       });
-    } catch {
       return;
+    } catch {
+      let tombstoneExtended = false;
+      try {
+        await legacyCompletedStore.register(id, completed, {
+          ttlMs: ZULIP_DURABLE_INBOUND_PENDING_TTL_MS,
+        });
+        tombstoneExtended = true;
+      } catch {}
+      if (tombstoneExtended) {
+        try {
+          await queueJournal.deletePending(id);
+        } catch {}
+      }
     }
   };
 
@@ -134,6 +146,9 @@ export function createZulipDurableInboundReceiveJournal(accountId: string) {
       const key = normalizeId(id);
       const completed = await legacyCompletedStore.lookup(key);
       if (completed) {
+        try {
+          await reconcileLegacyCompletion(key, completed);
+        } catch {}
         return { kind: "completed" as const, duplicate: true as const, record: completed };
       }
       const pending = await legacyPendingStore.lookup(key);
@@ -141,11 +156,26 @@ export function createZulipDurableInboundReceiveJournal(accountId: string) {
         return { kind: "pending" as const, duplicate: true as const, record: pending };
       }
       const result = await queueJournal.accept(key, payload, options);
-      const completedAfterAccept = await legacyCompletedStore.lookup(key);
+      let completedAfterAccept: LegacyCompletedRecord | undefined;
+      try {
+        completedAfterAccept = await legacyCompletedStore.lookup(key);
+      } catch {
+        if (result.kind === "accepted") {
+          return {
+            kind: "pending" as const,
+            duplicate: true as const,
+            record: result.record,
+            retryInProcess: true as const,
+          };
+        }
+        return result;
+      }
       if (!completedAfterAccept) {
         return result;
       }
-      await reconcileLegacyCompletion(key, completedAfterAccept);
+      try {
+        await reconcileLegacyCompletion(key, completedAfterAccept);
+      } catch {}
       return {
         kind: "completed" as const,
         duplicate: true as const,

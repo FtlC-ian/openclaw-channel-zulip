@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { EventEmitter, once } from "node:events";
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { assertFinalPrivateTypingStop, assertMessageRemainsExact, authenticatedUserId, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, drainEventQueueUntilQuiet, eventOccursBefore, EventQueue, extractExactUploadUrl, Gateway, hasFinalPrivateTypingStop, hasProvableMinimumMessageDelay, inspectChildTranscripts, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactPollMessage, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, isUsageCountedTranscriptName, lifecycleEvidenceCounts, lifecycleSummary, normalizeScenarioError, parseZulipSubagentDiagnostic, probeRunnerLocalGatewayHealth, redactError, resolveUploadUrl, signalProcessTree, subagentCompletedBeforeReply, validateEnvironment, waitForProcessTreeExit, writeGatewayGeneration } from "./run.mjs";
+import { assertFinalPrivateTypingStop, assertMessageRemainsExact, authenticatedUserId, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, drainEventQueueUntilQuiet, eventOccursBefore, EventQueue, extractExactUploadUrl, Gateway, hasFinalPrivateTypingStop, hasProvableMinimumMessageDelay, inspectChildTranscripts, inspectLifecycleTurnEvidence, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactPollMessage, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, isUsageCountedTranscriptName, lifecycleEvidenceCounts, lifecycleSummary, normalizeScenarioError, parseZulipSubagentDiagnostic, probeRunnerLocalGatewayHealth, redactError, resolveUploadUrl, signalProcessTree, subagentCompletedBeforeReply, validateEnvironment, waitForProcessTreeExit, writeGatewayGeneration } from "./run.mjs";
 
 const ACTOR_USER_ID = "42";
 const BOT_USER_ID = "91";
@@ -360,6 +360,56 @@ test("requires the exact child result in an assistant transcript message", async
     assert.equal(await countCompletedChildTranscripts(stateDir, marker), 0);
   } finally {
     await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("reports only count-based lifecycle parent-turn evidence", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "zulip-smoke-parent-turn-"));
+  const sessionsDir = join(stateDir, "agents", "main", "sessions");
+  await mkdir(sessionsDir, { recursive: true });
+  try {
+    await writeFile(join(sessionsDir, "parent.jsonl"), [
+      JSON.stringify({ message: { role: "user", content: "lifecycle parent-marker child-marker" } }),
+      JSON.stringify({ message: { role: "assistant", content: [{ type: "toolCall", name: "sessions_spawn" }] } }),
+      JSON.stringify({ message: { role: "assistant", content: [{ type: "tool_use", name: "sessions_yield" }] } }),
+      JSON.stringify({ message: { role: "user", content: "completion child-marker" } }),
+      JSON.stringify({ message: { role: "assistant", content: [{ type: "text", text: "parent-marker" }] } }),
+    ].join("\n"));
+    assert.deepEqual(await inspectLifecycleTurnEvidence(stateDir, "parent-marker", "child-marker"), {
+      parentTranscripts: 1, spawnCalls: 1, yieldCalls: 1, completionEvents: 1, exactReplies: 1,
+    });
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("bounds and confines lifecycle transcript evidence", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "zulip-smoke-evidence-bounds-"));
+  const externalDir = await mkdtemp(join(tmpdir(), "zulip-smoke-evidence-external-"));
+  try {
+    await symlink(externalDir, join(stateDir, "agents"));
+    await assert.rejects(
+      inspectLifecycleTurnEvidence(stateDir, "parent", "child"),
+      (error) => error?.message === "Transcript evidence is unavailable",
+    );
+    await rm(join(stateDir, "agents"));
+    const sessionsDir = join(stateDir, "agents", "main", "sessions");
+    await mkdir(sessionsDir, { recursive: true });
+    await writeFile(join(sessionsDir, "oversized.jsonl"), "x".repeat(2 * 1024 * 1024 + 1));
+    await assert.rejects(
+      inspectLifecycleTurnEvidence(stateDir, "parent", "child"),
+      (error) => error?.message === "Transcript scan limit exceeded",
+    );
+    await rm(join(sessionsDir, "oversized.jsonl"));
+    await Promise.all(Array.from({ length: 513 }, (_, index) =>
+      writeFile(join(sessionsDir, `irrelevant-${index}.txt`), "x")));
+    await assert.rejects(
+      inspectLifecycleTurnEvidence(stateDir, "parent", "child"),
+      (error) => error?.message === "Transcript scan limit exceeded",
+    );
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+    await rm(externalDir, { recursive: true, force: true });
   }
 });
 

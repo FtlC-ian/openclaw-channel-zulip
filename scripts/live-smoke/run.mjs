@@ -2,9 +2,10 @@
 
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmod, readdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { chmod, lstat, open, opendir, realpath, unlink, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
-import { resolve } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 
@@ -203,33 +204,131 @@ export async function countCompletedChildTranscripts(stateDir, marker) {
 }
 
 export async function inspectChildTranscripts(stateDir, marker) {
-  const files = [];
-  const visit = async (directory) => {
-    let entries;
-    try { entries = await readdir(directory, { withFileTypes: true }); }
-    catch (error) {
-      if (error?.code === "ENOENT") return;
-      throw error;
-    }
-    for (const entry of entries) {
-      const path = resolve(directory, entry.name);
-      if (entry.isDirectory()) await visit(path);
-      else if (entry.isFile() && isUsageCountedTranscriptName(entry.name)) files.push(path);
-    }
-  };
-  await visit(resolve(stateDir, "agents"));
+  const files = await listAgentTranscriptFiles(stateDir);
   let total = 0;
   let completedExact = 0;
   for (const file of files) {
-    const records = (await readFile(file, "utf8")).split("\n").filter(Boolean).flatMap((line) => {
-      try { return [JSON.parse(line)]; } catch { return []; }
-    });
+    const records = await readTranscriptRecords(file);
     if (!records.some(isSubagentTaskRecord)) continue;
     total += 1;
     const results = records.flatMap(assistantMessageTexts);
     if (results.at(-1) === marker) completedExact += 1;
   }
   return { total, completedExact };
+}
+
+async function listAgentTranscriptFiles(stateDir) {
+  const maxDepth = 8;
+  const maxDirectories = 128;
+  const maxEntries = 512;
+  const maxFiles = 256;
+  const maxFileBytes = 2 * 1024 * 1024;
+  const maxTotalBytes = 16 * 1024 * 1024;
+  const files = [];
+  let totalBytes = 0;
+  let visitedDirectories = 0;
+  let inspectedEntries = 0;
+  const root = resolve(stateDir, "agents");
+  let canonicalRoot;
+  try {
+    const rootStats = await lstat(root);
+    if (!rootStats.isDirectory() || rootStats.isSymbolicLink()) throw new Error("Transcript evidence is unavailable");
+    canonicalRoot = await realpath(root);
+  }
+  catch (error) {
+    if (error?.code === "ENOENT") return files;
+    throw new Error("Transcript evidence is unavailable");
+  }
+  const visit = async (directory, depth) => {
+    if (depth > maxDepth) throw new Error("Transcript scan limit exceeded");
+    visitedDirectories += 1;
+    if (visitedDirectories > maxDirectories) throw new Error("Transcript scan limit exceeded");
+    let canonicalDirectory;
+    try { canonicalDirectory = await realpath(directory); }
+    catch { throw new Error("Transcript evidence is unavailable"); }
+    const rootRelative = relative(canonicalRoot, canonicalDirectory);
+    if (rootRelative.startsWith("..") || isAbsolute(rootRelative)) {
+      throw new Error("Transcript evidence is unavailable");
+    }
+    let directoryHandle;
+    try { directoryHandle = await opendir(canonicalDirectory); }
+    catch { throw new Error("Transcript evidence is unavailable"); }
+    try { for await (const entry of directoryHandle) {
+      inspectedEntries += 1;
+      if (inspectedEntries > maxEntries) throw new Error("Transcript scan limit exceeded");
+      const path = resolve(canonicalDirectory, entry.name);
+      if (entry.isDirectory()) await visit(path, depth + 1);
+      else if (entry.isFile() && isUsageCountedTranscriptName(entry.name)) {
+        if (files.length >= maxFiles) throw new Error("Transcript scan limit exceeded");
+        let handle;
+        try {
+          handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+          const stats = await handle.stat();
+          if (!stats.isFile()) throw new Error("Transcript evidence is unavailable");
+          const chunks = [];
+          let bytesRead = 0;
+          while (bytesRead <= maxFileBytes) {
+            const buffer = Buffer.allocUnsafe(Math.min(64 * 1024, maxFileBytes + 1 - bytesRead));
+            const result = await handle.read(buffer, 0, buffer.length, null);
+            if (result.bytesRead === 0) break;
+            chunks.push(buffer.subarray(0, result.bytesRead));
+            bytesRead += result.bytesRead;
+          }
+          if (bytesRead > maxFileBytes || totalBytes + bytesRead > maxTotalBytes) {
+            throw new Error("Transcript scan limit exceeded");
+          }
+          totalBytes += bytesRead;
+          files.push({ contents: Buffer.concat(chunks, bytesRead).toString("utf8") });
+        } catch (error) {
+          if (error?.message === "Transcript scan limit exceeded") throw error;
+          throw new Error("Transcript evidence is unavailable");
+        } finally { await handle?.close().catch(() => {}); }
+      }
+    } } catch (error) {
+      if (error?.message === "Transcript scan limit exceeded" || error?.message === "Transcript evidence is unavailable") {
+        throw error;
+      }
+      throw new Error("Transcript evidence is unavailable");
+    } finally { await directoryHandle.close().catch(() => {}); }
+  };
+  await visit(canonicalRoot, 0);
+  return files;
+}
+
+async function readTranscriptRecords(file) {
+  const lines = file.contents.split("\n").filter(Boolean);
+  if (lines.length > 5000) throw new Error("Transcript scan limit exceeded");
+  return lines.flatMap((line) => {
+    try { return [JSON.parse(line)]; } catch { return []; }
+  });
+}
+
+export async function inspectLifecycleTurnEvidence(stateDir, parentMarker, childMarker) {
+  let parentTranscripts = 0;
+  let spawnCalls = 0;
+  let yieldCalls = 0;
+  let completionEvents = 0;
+  let exactReplies = 0;
+  const toolNames = (record) => record?.message?.role === "assistant" && Array.isArray(record.message.content)
+    ? record.message.content.filter((part) => part?.type === "toolCall" || part?.type === "tool_use").map((part) => part.name)
+    : [];
+  const userText = (record) => record?.message?.role === "user"
+    ? (typeof record.message.content === "string" ? record.message.content : JSON.stringify(record.message.content ?? ""))
+    : "";
+  for (const file of await listAgentTranscriptFiles(stateDir)) {
+    const records = await readTranscriptRecords(file);
+    if (!records.some((record) => userText(record).includes(parentMarker))) continue;
+    parentTranscripts += 1;
+    const names = records.flatMap(toolNames);
+    spawnCalls += names.filter((name) => name === "sessions_spawn").length;
+    yieldCalls += names.filter((name) => name === "sessions_yield").length;
+    completionEvents += records.filter((record) => {
+      const text = userText(record);
+      return text.includes(childMarker) && !text.includes(parentMarker);
+    }).length;
+    exactReplies += records.flatMap(assistantMessageTexts).filter((text) => text === parentMarker).length;
+  }
+  return { parentTranscripts, spawnCalls, yieldCalls, completionEvents, exactReplies };
 }
 
 export function isUsageCountedTranscriptName(name) {
@@ -808,6 +907,7 @@ async function main() {
   let runError;
   let lifecycleInboundId;
   let lifecyclePhase = "not_started";
+  let lifecycleMarkers;
   const sendDm = async (content, signal) => {
     const result = await actor.request("messages", { method: "POST", body: { type: "private", to: JSON.stringify([env.ZULIP_SMOKE_BOT_EMAIL]), content }, signal });
     messageIds.actor.add(String(result.id)); return String(result.id);
@@ -855,6 +955,7 @@ async function main() {
     await scenario("typing-and-lifecycle-reactions", async (signal) => {
       lifecyclePhase = "waiting_for_reply";
       const marker = `${runId}:lifecycle-ok`; const childResult = `${runId}:child-ok`; const eventStart = queue.events.length;
+      lifecycleMarkers = { marker, childResult };
       const inboundId = await sendDm(command(`lifecycle ${marker} ${childResult}`), signal);
       lifecycleInboundId = inboundId;
       const reply = await queue.waitFor((e) => isPrivateBotMessage(e, botUserId, actorUserId, marker), timeoutMs, "lifecycle reply", signal);
@@ -1009,6 +1110,14 @@ async function main() {
       const evidence = lifecycleEvidenceCounts(queue.events, lifecycleInboundId);
       console.error(`Lifecycle reaction evidence counts: total=${evidence.total} add=${evidence.add} remove=${evidence.remove} other_op=${evidence.otherOp} with_name=${evidence.withName} with_code=${evidence.withCode} robot_name=${evidence.robotName} robot_code=${evidence.robotCode}`);
       console.error(`Lifecycle phase evidence: phase=${lifecyclePhase}`);
+      if (lifecycleMarkers) {
+        try {
+          const turn = await inspectLifecycleTurnEvidence(env.OPENCLAW_STATE_DIR, lifecycleMarkers.marker, lifecycleMarkers.childResult);
+          console.error(`Lifecycle turn evidence: available=true parent_transcripts=${turn.parentTranscripts} spawn_calls=${turn.spawnCalls} yield_calls=${turn.yieldCalls} completion_events=${turn.completionEvents} exact_replies=${turn.exactReplies}`);
+        } catch {
+          console.error("Lifecycle turn evidence: available=false");
+        }
+      }
     }
     if (runError && gateway.diagnostics.length) {
       for (const diagnostic of gateway.diagnostics) console.error(diagnostic);

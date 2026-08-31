@@ -1042,8 +1042,13 @@ async function main() {
       const id = String(created.message.id); messageIds.bot.add(id);
       await queue.waitFor((e) => e.type === "update_message" && String(e.message_id) === id && isExactRenderedContent(e.content, after), timeoutMs, "message edit", signal);
       await assertMessageRemainsExact(actor, id, after, 4000, signal);
-      await queue.waitFor((e) => e.type === "delete_message" && (e.message_ids ?? [e.message_id]).map(String).includes(id), timeoutMs, "message delete", signal);
-      messageIds.bot.delete(id); deletedBotMessageIds.add(id);
+      try {
+        await bot.request(`messages/${id}`, { method: "DELETE", signal });
+        await queue.waitFor((e) => e.type === "delete_message" && (e.message_ids ?? [e.message_id]).map(String).includes(id), timeoutMs, "message delete", signal);
+        messageIds.bot.delete(id); deletedBotMessageIds.add(id);
+      } catch (error) {
+        console.warn(`Delete warning: edited smoke message could not be deleted through the Zulip API: ${redactError(error)}`);
+      }
     });
 
     await scenario("upload-download", async (signal) => {

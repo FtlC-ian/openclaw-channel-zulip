@@ -1766,7 +1766,7 @@ describe("monitorZulipProvider", () => {
     }
   });
 
-  it("keeps a narrow queue when an enabled override is already covered by legacy streams", async () => {
+  it("keeps configured registration streams when an enabled override is already covered", async () => {
     state.account.streams = ["general"];
     state.account.config = {
       ...state.account.config,

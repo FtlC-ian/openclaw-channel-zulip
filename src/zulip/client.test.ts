@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   addZulipReaction,
   createZulipClient,
+  registerZulipQueue,
   removeZulipReaction,
   zulipRequestWithRetry,
   type ZulipRequestLogger,
@@ -13,6 +14,38 @@ function jsonResponse(body: unknown, init?: ResponseInit): Response {
     headers: { "content-type": "application/json", ...(init?.headers ?? {}) },
   });
 }
+
+describe("registerZulipQueue", () => {
+  it("does not narrow a single configured stream out of direct-message events", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({
+        result: "success",
+        queue_id: "queue-1",
+        last_event_id: 17,
+      }),
+    );
+    const client = createZulipClient({
+      baseUrl: "https://zulip.example.test/",
+      email: "bot@example.test",
+      apiKey: "secret",
+      fetchImpl,
+    });
+
+    await expect(
+      registerZulipQueue(client, {
+        eventTypes: ["message"],
+        streams: ["debbie"],
+      }),
+    ).resolves.toEqual({ queueId: "queue-1", lastEventId: 17 });
+
+    const [url, init] = fetchImpl.mock.calls[0] ?? [];
+    const body = new URLSearchParams(String(init?.body));
+    expect(url).toBe("https://zulip.example.test/api/v1/register");
+    expect(body.get("event_types")).toBe('["message"]');
+    expect(body.get("all_public_streams")).toBe("true");
+    expect(body.has("narrow")).toBe(false);
+  });
+});
 
 describe("zulipRequestWithRetry", () => {
   it("requests identity encoding so Zulip responses are not parsed while still gzipped", async () => {

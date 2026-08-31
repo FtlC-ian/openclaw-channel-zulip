@@ -1083,20 +1083,24 @@ async function main() {
 
     await scenario("poll-and-interactive-reply", async (signal) => {
       const question = `${runId}:poll`; const optionA = `smoke-choice:${runId}:interactive-ok`; const optionB = `${runId}:beta`;
+      const topic = `${runId}-topic`;
       const sent = await bot.request("messages", { method: "POST", body: {
-        type: "private",
-        to: JSON.stringify([env.ZULIP_SMOKE_USER_EMAIL]),
+        type: "stream",
+        to: env.ZULIP_SMOKE_STREAM,
+        topic,
         content: question,
         widget_content: JSON.stringify(nativePollWidget(question, [optionA, optionB])),
       }, signal });
       messageIds.bot.add(String(sent.id));
       const poll = await queue.waitFor((e) => {
-        if (!isPrivateBotEvent(e, botUserId, actorUserId)) return false;
+        if (!isBotMessage(e, botUserId) || e.message?.display_recipient !== env.ZULIP_SMOKE_STREAM || e.message?.subject !== topic) return false;
         return isExactPollMessage(e.message, question, [optionA, optionB]);
       }, timeoutMs, "native poll", signal);
       messageIds.bot.add(String(poll.message.id));
-      await sendDm(optionA, signal);
-      const reply = await queue.waitFor((e) => isPrivateBotMessage(e, botUserId, actorUserId, `${runId}:interactive-ok`), timeoutMs, "interactive reply", signal);
+      const choice = await actor.request("messages", { method: "POST", body: { type: "stream", to: env.ZULIP_SMOKE_STREAM, topic, content: optionA }, signal });
+      messageIds.actor.add(String(choice.id));
+      const reply = await queue.waitFor((e) => isBotMessage(e, botUserId, `${runId}:interactive-ok`) &&
+        e.message?.display_recipient === env.ZULIP_SMOKE_STREAM && e.message?.subject === topic, timeoutMs, "interactive reply", signal);
       messageIds.bot.add(String(reply.message.id));
     });
 

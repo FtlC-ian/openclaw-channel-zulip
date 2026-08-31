@@ -1008,7 +1008,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     });
     await core.channel.session.updateLastRoute({
       storePath,
-      sessionKey: route.mainSessionKey,
+      sessionKey,
       deliveryContext: {
         channel: "zulip",
         to,

@@ -427,7 +427,13 @@ class ZulipClient {
 }
 
 export class EventQueue {
-  constructor(client) { this.client = client; this.events = []; this.lastEventId = -1; this.pollPromise = undefined; }
+  constructor(client) {
+    this.client = client;
+    this.events = [];
+    this.lastEventId = -1;
+    this.pollPromise = undefined;
+    this.messageEventsById = new Map();
+  }
   async open() {
     const result = await this.client.request("register", { method: "POST", body: {
       event_types: JSON.stringify(["message", "typing", "reaction", "update_message", "delete_message"]),
@@ -443,7 +449,13 @@ export class EventQueue {
     }, signal }).then((result) => {
       for (const event of result.events ?? []) {
         this.lastEventId = Math.max(this.lastEventId, event.id ?? this.lastEventId);
-        if (event.type !== "heartbeat") this.events.push(event);
+        if (event.type === "heartbeat") continue;
+        if (event.type === "message" && event.message?.id !== undefined) {
+          this.messageEventsById.set(String(event.message.id), event);
+        } else if (event.type === "update_message") {
+          this.reconcileMessageUpdate(event);
+        }
+        this.events.push(event);
       }
       return result.events ?? [];
     }).finally(() => { this.pollPromise = undefined; });
@@ -462,6 +474,32 @@ export class EventQueue {
   }
   async close() {
     if (this.queueId) await this.client.request("events", { method: "DELETE", params: { queue_id: this.queueId } }).catch(() => {});
+  }
+  reconcileMessageUpdate(event) {
+    const messageIds = new Set(
+      [event.message_id, event.message?.id, ...(Array.isArray(event.message_ids) ? event.message_ids : [])]
+        .filter((id) => id !== undefined && id !== null)
+        .map(String),
+    );
+    const fields = [
+      "content",
+      "subject",
+      "topic_links",
+      "last_edit_timestamp",
+      "edit_timestamp",
+      "reactions",
+      "flags",
+    ];
+    for (const messageId of messageIds) {
+      const cachedEvent = this.messageEventsById.get(messageId);
+      if (!cachedEvent?.message) continue;
+      for (const source of [event.message, event]) {
+        if (!source || typeof source !== "object") continue;
+        for (const field of fields) {
+          if (Object.hasOwn(source, field)) cachedEvent.message[field] = source[field];
+        }
+      }
+    }
   }
 }
 

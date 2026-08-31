@@ -289,6 +289,38 @@ Topic-scoped conversations now resolve through the SDK session-conversation hook
 
 Basic approval authorization is now wired through `approvalCapability`, using normalized Zulip identities from `allowFrom` as the first pass.
 
+### Direct-message isolation and rotation
+
+Zulip DMs always use an isolated OpenClaw session keyed by agent, channel,
+normalized account id, Zulip realm, bot identity, and sender identity. This
+remains enforced when the global `session.dmScope` is `main`; explicit identity
+links do not merge Zulip DM sessions. Stream and topic sessions retain their
+existing keys.
+
+The isolated key format replaces older Zulip DM keys. After upgrading, each DM
+starts a fresh session on its first message. Existing transcripts remain on disk
+under their old keys but are not imported, because importing a previously shared
+session could copy another sender's context into the isolated session.
+
+Idle rotation is owned by OpenClaw. Configure its supported direct-session policy:
+
+```json
+{
+  "session": {
+    "resetByType": {
+      "direct": { "mode": "idle", "idleMinutes": 1440 }
+    }
+  }
+}
+```
+
+The host uses the last real interaction and considers the exact expiry timestamp
+fresh; the session rotates on the next millisecond. Restarts preserve that
+timestamp. OpenClaw 2026.7.1-2 through 2026.8.1 does not publish a turn-count
+session-rotation API. The plugin therefore does not create parallel session state
+or approximate turn rotation. Turn-count rotation remains blocked on a public
+host policy/API.
+
 ## Why concurrent processing?
 
 Most channel plugin implementations process incoming messages one at a time — each message waits for the previous one to finish before starting. Under load (e.g. a burst of messages after reconnect) this creates noticeable latency for later messages.

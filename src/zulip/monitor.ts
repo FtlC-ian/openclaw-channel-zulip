@@ -51,7 +51,10 @@ import {
   type ZulipDurableInboundMetadata,
   type ZulipDurableInboundPayload,
 } from "./durable-receive.js";
-import { buildZulipStreamConversation } from "../session-conversation.js";
+import {
+  buildZulipDirectSessionKey,
+  buildZulipStreamConversation,
+} from "../session-conversation.js";
 import { sendMessageZulip } from "./send.js";
 import { downloadZulipUpload, extractZulipUploadUrls, sanitizeUploadFilename } from "./uploads.js";
 import {
@@ -937,7 +940,15 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
           }).sessionKey
         : undefined;
 
-    const sessionKey = route.sessionKey ?? `zulip:${account.accountId}:${channelId}`;
+    const sessionKey = isDM
+      ? buildZulipDirectSessionKey({
+          agentId: route.agentId,
+          accountId: route.accountId,
+          baseUrl,
+          botIdentity: email,
+          senderIdentity: dmTargetIdentity,
+        })
+      : route.sessionKey ?? `zulip:${account.accountId}:${channelId}`;
 
     const timestamp = message.timestamp ? message.timestamp * 1000 : undefined;
     const textWithId = `${bodyText}\n[zulip message id: ${messageId}]`;

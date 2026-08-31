@@ -6,7 +6,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { assertFinalPrivateTypingStop, assertMessageRemainsExact, authenticatedUserId, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, drainEventQueueUntilQuiet, eventOccursBefore, EventQueue, extractExactUploadUrl, Gateway, hasFinalPrivateTypingStop, hasProvableMinimumMessageDelay, inspectChildTranscripts, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactPollMessage, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, isUsageCountedTranscriptName, lifecycleSummary, normalizeScenarioError, probeRunnerLocalGatewayHealth, redactError, resolveUploadUrl, signalProcessTree, subagentCompletedBeforeReply, validateEnvironment, waitForProcessTreeExit, writeGatewayGeneration } from "./run.mjs";
+import { assertFinalPrivateTypingStop, assertMessageRemainsExact, authenticatedUserId, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, drainEventQueueUntilQuiet, eventOccursBefore, EventQueue, extractExactUploadUrl, Gateway, hasFinalPrivateTypingStop, hasProvableMinimumMessageDelay, inspectChildTranscripts, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactPollMessage, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, isUsageCountedTranscriptName, lifecycleSummary, normalizeScenarioError, parseZulipSubagentDiagnostic, probeRunnerLocalGatewayHealth, redactError, resolveUploadUrl, signalProcessTree, subagentCompletedBeforeReply, validateEnvironment, waitForProcessTreeExit, writeGatewayGeneration } from "./run.mjs";
 
 const ACTOR_USER_ID = "42";
 const BOT_USER_ID = "91";
@@ -473,6 +473,67 @@ test("coalesces concurrent event polls", async () => {
   resolveRequest({ events: [{ id: 1, type: "message" }] });
   await Promise.all([first, second]);
   assert.equal(queue.events.length, 1);
+});
+
+test("captures only bounded allowlisted gateway lifecycle diagnostics", () => {
+  const gateway = new Gateway(18789);
+  gateway.captureDiagnostics("ordinary log with https://secret.example\n");
+  gateway.captureDiagnostics("prefix ZULIP_SUBAGENT_DIAGNOSTIC event=indicator_shown\n");
+  gateway.captureDiagnostics("ZULIP_SUBAGENT_DIAGNOSTIC event=unknown token=ABC123\n");
+  gateway.captureDiagnostics("ZULIP_SUBAGENT_DIAGNOSTIC event=run_ended secret=ABC123\n");
+  gateway.captureDiagnostics("ZULIP_SUBAGENT_DIAGNOSTIC event=run_ended binding_found=ABC123\n");
+  gateway.captureDiagnostics("ZULIP_SUBAGENT_DIAGNOSTIC event=indicator_");
+  gateway.captureDiagnostics("shown\n");
+  for (let index = 0; index < 250; index += 1) {
+    gateway.captureDiagnostics("ZULIP_SUBAGENT_DIAGNOSTIC event=reaction_add_succeeded\n");
+  }
+
+  assert.equal(gateway.diagnostics[0], "ZULIP_SUBAGENT_DIAGNOSTIC event=indicator_shown");
+  assert.equal(gateway.diagnostics.length, 200);
+  assert.equal(gateway.diagnostics.some((line) => line.includes("secret")), false);
+});
+
+test("keeps oversized complete and unterminated diagnostic lines memory-bounded", () => {
+  const gateway = new Gateway(18789);
+  gateway.captureDiagnostics(`${"x".repeat(2048)}\nZULIP_SUBAGENT_DIAGNOSTIC event=indicator_shown\n`);
+  gateway.captureDiagnostics("y".repeat(400));
+  gateway.captureDiagnostics("y".repeat(400));
+  assert.equal(Buffer.byteLength(gateway.diagnosticStreamState.remainder, "utf8") <= 512, true);
+  assert.equal(gateway.diagnosticStreamState.discardingOversizedLine, true);
+  gateway.captureDiagnostics("y".repeat(2048));
+  assert.equal(gateway.diagnosticStreamState.remainder, "");
+  gateway.captureDiagnostics("\nZULIP_SUBAGENT_DIAGNOSTIC event=run_ended binding_found=true\n");
+
+  assert.deepEqual(gateway.diagnostics, [
+    "ZULIP_SUBAGENT_DIAGNOSTIC event=indicator_shown",
+    "ZULIP_SUBAGENT_DIAGNOSTIC event=run_ended binding_found=true",
+  ]);
+});
+
+test("isolates diagnostic parser state across gateway child generations", () => {
+  const gateway = new Gateway(18789);
+  const oldChild = { stderr: new EventEmitter() };
+  const replacementChild = { stderr: new EventEmitter() };
+
+  gateway.attachDiagnosticStream(oldChild);
+  oldChild.stderr.emit("data", "ZULIP_SUBAGENT_DIAGNOSTIC event=indicator_");
+  oldChild.stderr.emit("data", "x".repeat(1024));
+  gateway.attachDiagnosticStream(replacementChild);
+  replacementChild.stderr.emit("data", "ZULIP_SUBAGENT_DIAGNOSTIC event=run_ended binding_found=true\n");
+  oldChild.stderr.emit("data", "shown\nZULIP_SUBAGENT_DIAGNOSTIC event=indicator_shown\n");
+
+  assert.deepEqual(gateway.diagnostics, [
+    "ZULIP_SUBAGENT_DIAGNOSTIC event=run_ended binding_found=true",
+  ]);
+  assert.equal(gateway.diagnosticStreamState.remainder, "");
+  assert.equal(gateway.diagnosticStreamState.discardingOversizedLine, false);
+});
+
+test("rejects unknown lifecycle diagnostic schemas and secret-shaped values", () => {
+  assert.equal(parseZulipSubagentDiagnostic("ZULIP_SUBAGENT_DIAGNOSTIC event=unknown"), undefined);
+  assert.equal(parseZulipSubagentDiagnostic("ZULIP_SUBAGENT_DIAGNOSTIC event=run_ended unknown=true"), undefined);
+  assert.equal(parseZulipSubagentDiagnostic("ZULIP_SUBAGENT_DIAGNOSTIC event=run_ended binding_found=ABC123"), undefined);
+  assert.equal(parseZulipSubagentDiagnostic("ZULIP_SUBAGENT_DIAGNOSTIC event=context_registered key_count=999 active_contexts=1"), undefined);
 });
 
 test("reconciles a placeholder update into cached message matching and cleanup attribution", async () => {

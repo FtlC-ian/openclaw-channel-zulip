@@ -131,6 +131,7 @@ jobs:
           OPENCLAW_CONFIG_PATH: ${{ runner.temp }}/openclaw-smoke/openclaw.json
           OPENCLAW_STATE_DIR: ${{ runner.temp }}/openclaw-smoke/state
           SMOKE_GATEWAY_PORT: '18789'
+          ZULIP_SUBAGENT_DIAGNOSTICS: '1'
         run: node scripts/live-smoke/run.mjs
       - name: Record release evidence
         if: always()

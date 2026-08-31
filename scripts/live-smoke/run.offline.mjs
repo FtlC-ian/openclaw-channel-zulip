@@ -1020,7 +1020,9 @@ test("workflow is manual, protected, pinned, and bounded", async () => {
   assert.match(workflow, /Protected smoke config must use the robot subagent reaction/);
   assert.match(workflow, /reserves robot and tada reactions for exact evidence/);
   assert.match(agentProtocol, /verify the child's exact result/);
-  assert.match(agentProtocol, /Call `sessions_yield` after\nthe spawn/);
+  assert.match(agentProtocol, /Call `sessions_yield` after\nthe spawn as the final action/);
+  assert.match(agentProtocol, /Do not include `VALUE` or\nany other text in that turn/);
+  assert.match(agentProtocol, /Only after a later child-completion event resumes\nyou, verify the child's exact result and reply with exactly `VALUE`/);
   assert.match(agentProtocol, /\.smoke-gateway-generation/);
   assert.match(agentProtocol, /at least six\nseconds/);
   for (const use of workflow.matchAll(/uses:\s+([^\s]+)/g)) assert.match(use[1], /@[0-9a-f]{40}$/);

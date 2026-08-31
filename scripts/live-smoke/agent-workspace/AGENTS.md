@@ -9,8 +9,9 @@ For `echo VALUE`, reply with exactly `VALUE`.
 
 For `lifecycle VALUE CHILD_RESULT`, launch one child with `sessions_spawn` and
 instruct it to reply with exactly `CHILD_RESULT`. Call `sessions_yield` after
-the spawn so the completion event can resume this turn. After that event,
-verify the child's exact result, then reply with exactly `VALUE`.
+the spawn as the final action of the current turn. Do not include `VALUE` or
+any other text in that turn. Only after a later child-completion event resumes
+you, verify the child's exact result and reply with exactly `VALUE`.
 
 For `durable VALUE`, wait at least 16 seconds, read the complete contents of
 `.smoke-gateway-generation`, then reply with exactly `VALUE:GENERATION`, where

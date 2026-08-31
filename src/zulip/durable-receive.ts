@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { createDurableInboundReceiveJournal } from "openclaw/plugin-sdk/channel-outbound";
+import { createDurableInboundReceiveJournalFromQueue } from "openclaw/plugin-sdk/channel-outbound";
 import type { PluginJsonValue } from "openclaw/plugin-sdk/plugin-entry";
 
 import { getZulipRuntime } from "../runtime.js";
@@ -22,6 +22,23 @@ export type ZulipDurableInboundMetadata = {
 
 export type ZulipDurableInboundCompletedMetadata = {
   queueEventId?: number;
+};
+
+type LegacyPendingRecord = {
+  id: string;
+  payload: ZulipDurableInboundPayload;
+  metadata?: ZulipDurableInboundMetadata;
+  receivedAt: number;
+  updatedAt: number;
+  attempts: number;
+  lastAttemptAt?: number;
+  lastError?: string;
+};
+
+type LegacyCompletedRecord = {
+  id: string;
+  completedAt: number;
+  metadata?: ZulipDurableInboundCompletedMetadata;
 };
 
 function hashNamespacePart(value: string): string {
@@ -51,26 +68,182 @@ export function deserializeZulipDurableInboundMessage<T>(
 
 export function createZulipDurableInboundReceiveJournal(accountId: string) {
   const runtime = getZulipRuntime();
-  if (typeof runtime.state?.openKeyedStore !== "function") {
-    throw new Error("plugin keyed state is not available");
+  if (
+    typeof runtime.state?.openKeyedStore !== "function" ||
+    typeof runtime.state?.openChannelIngressQueue !== "function"
+  ) {
+    throw new Error("durable plugin state is not available");
   }
   const accountPart = hashNamespacePart(accountId);
-  return createDurableInboundReceiveJournal<
+  const legacyPendingStore = runtime.state.openKeyedStore<LegacyPendingRecord>({
+    namespace: `inbound.v1.pending.${accountPart}`,
+    maxEntries: ZULIP_DURABLE_INBOUND_PENDING_MAX_ENTRIES,
+    defaultTtlMs: ZULIP_DURABLE_INBOUND_PENDING_TTL_MS,
+  });
+  const legacyCompletedStore = runtime.state.openKeyedStore<LegacyCompletedRecord>({
+    namespace: `inbound.v1.completed.${accountPart}`,
+    maxEntries: ZULIP_DURABLE_INBOUND_COMPLETED_MAX_ENTRIES,
+    defaultTtlMs: ZULIP_DURABLE_INBOUND_COMPLETED_TTL_MS,
+  });
+  const queueJournal = createDurableInboundReceiveJournalFromQueue<
     ZulipDurableInboundPayload,
     ZulipDurableInboundMetadata,
     ZulipDurableInboundCompletedMetadata
   >({
-    pendingStore: runtime.state.openKeyedStore({
-      namespace: `inbound.v1.pending.${accountPart}`,
-      maxEntries: ZULIP_DURABLE_INBOUND_PENDING_MAX_ENTRIES,
-      defaultTtlMs: ZULIP_DURABLE_INBOUND_PENDING_TTL_MS,
-    }),
-    completedStore: runtime.state.openKeyedStore({
-      namespace: `inbound.v1.completed.${accountPart}`,
-      maxEntries: ZULIP_DURABLE_INBOUND_COMPLETED_MAX_ENTRIES,
-      defaultTtlMs: ZULIP_DURABLE_INBOUND_COMPLETED_TTL_MS,
-    }),
-    pendingTtlMs: ZULIP_DURABLE_INBOUND_PENDING_TTL_MS,
-    completedTtlMs: ZULIP_DURABLE_INBOUND_COMPLETED_TTL_MS,
+    queue: runtime.state.openChannelIngressQueue<
+      ZulipDurableInboundPayload,
+      ZulipDurableInboundMetadata,
+      ZulipDurableInboundCompletedMetadata
+    >({ accountId }),
+    retention: {
+      pendingTtlMs: ZULIP_DURABLE_INBOUND_PENDING_TTL_MS,
+      completedTtlMs: ZULIP_DURABLE_INBOUND_COMPLETED_TTL_MS,
+      pendingMaxEntries: ZULIP_DURABLE_INBOUND_PENDING_MAX_ENTRIES,
+      completedMaxEntries: ZULIP_DURABLE_INBOUND_COMPLETED_MAX_ENTRIES,
+    },
   });
+
+  const normalizeId = (id: string) => {
+    const normalized = id.trim();
+    if (!normalized) {
+      throw new Error("Durable inbound receive id cannot be empty");
+    }
+    return normalized;
+  };
+
+  const reconcileLegacyCompletion = async (
+    id: string,
+    completed: LegacyCompletedRecord,
+  ): Promise<void> => {
+    try {
+      await queueJournal.complete(id, {
+        metadata: completed.metadata,
+        completedAt: completed.completedAt,
+      });
+    } catch {
+      return;
+    }
+  };
+
+  return {
+    accept: async (
+      id: string,
+      payload: ZulipDurableInboundPayload,
+      options?: { metadata?: ZulipDurableInboundMetadata; receivedAt?: number },
+    ) => {
+      const key = normalizeId(id);
+      const completed = await legacyCompletedStore.lookup(key);
+      if (completed) {
+        return { kind: "completed" as const, duplicate: true as const, record: completed };
+      }
+      const pending = await legacyPendingStore.lookup(key);
+      if (pending) {
+        return { kind: "pending" as const, duplicate: true as const, record: pending };
+      }
+      const result = await queueJournal.accept(key, payload, options);
+      const completedAfterAccept = await legacyCompletedStore.lookup(key);
+      if (!completedAfterAccept) {
+        return result;
+      }
+      await reconcileLegacyCompletion(key, completedAfterAccept);
+      return {
+        kind: "completed" as const,
+        duplicate: true as const,
+        record: completedAfterAccept,
+      };
+    },
+    pending: async () => {
+      const legacyEntries = await legacyPendingStore.entries();
+      const legacyPending: LegacyPendingRecord[] = [];
+      for (const entry of legacyEntries) {
+        if (await legacyCompletedStore.lookup(entry.key)) {
+          await legacyPendingStore.delete(entry.key);
+        } else {
+          legacyPending.push(entry.value);
+        }
+      }
+      const queuePending = await queueJournal.pending();
+      const records = new Map<string, LegacyPendingRecord>();
+      for (const record of legacyPending) {
+        records.set(record.id, record);
+      }
+      for (const record of queuePending) {
+        const completed = await legacyCompletedStore.lookup(record.id);
+        if (completed) {
+          await reconcileLegacyCompletion(record.id, completed);
+        } else {
+          records.set(record.id, record);
+        }
+      }
+      return [...records.values()].sort(
+        (left, right) => left.receivedAt - right.receivedAt || left.id.localeCompare(right.id),
+      );
+    },
+    complete: async (
+      id: string,
+      options?: { metadata?: ZulipDurableInboundCompletedMetadata; completedAt?: number },
+    ) => {
+      const key = normalizeId(id);
+      const legacyPending = await legacyPendingStore.lookup(key);
+      const completedAt = options?.completedAt ?? Date.now();
+      if (legacyPending) {
+        const record: LegacyCompletedRecord = {
+          id: key,
+          completedAt,
+          ...(options?.metadata === undefined ? {} : { metadata: options.metadata }),
+        };
+        await legacyCompletedStore.register(key, record, {
+          ttlMs: ZULIP_DURABLE_INBOUND_COMPLETED_TTL_MS,
+        });
+      }
+      await queueJournal.complete(key, { ...options, completedAt });
+      if (legacyPending) {
+        await legacyPendingStore.delete(key);
+      }
+    },
+    release: async (
+      id: string,
+      options?: { lastError?: string; releasedAt?: number },
+    ) => {
+      const key = normalizeId(id);
+      const pending = await legacyPendingStore.lookup(key);
+      if (!pending) {
+        return await queueJournal.release(key, options);
+      }
+      const releasedAt = options?.releasedAt ?? Date.now();
+      const next: LegacyPendingRecord = {
+        ...pending,
+        updatedAt: releasedAt,
+        attempts: pending.attempts + 1,
+        lastAttemptAt: releasedAt,
+        ...(options?.lastError === undefined ? {} : { lastError: options.lastError }),
+      };
+      if (legacyPendingStore.update) {
+        await legacyPendingStore.update(
+          key,
+          (current) => current ? {
+            ...current,
+            updatedAt: releasedAt,
+            attempts: current.attempts + 1,
+            lastAttemptAt: releasedAt,
+            ...(options?.lastError === undefined ? {} : { lastError: options.lastError }),
+          } : undefined,
+          { ttlMs: ZULIP_DURABLE_INBOUND_PENDING_TTL_MS },
+        );
+      } else {
+        await legacyPendingStore.register(key, next, {
+          ttlMs: ZULIP_DURABLE_INBOUND_PENDING_TTL_MS,
+        });
+      }
+      return true;
+    },
+    deletePending: async (id: string) => {
+      const key = normalizeId(id);
+      const [legacyDeleted, queueDeleted] = await Promise.all([
+        legacyPendingStore.delete(key),
+        queueJournal.deletePending(key),
+      ]);
+      return legacyDeleted || queueDeleted;
+    },
+  };
 }

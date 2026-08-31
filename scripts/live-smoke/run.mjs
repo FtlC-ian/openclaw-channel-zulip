@@ -807,6 +807,7 @@ async function main() {
   const report = [];
   let runError;
   let lifecycleInboundId;
+  let lifecyclePhase = "not_started";
   const sendDm = async (content, signal) => {
     const result = await actor.request("messages", { method: "POST", body: { type: "private", to: JSON.stringify([env.ZULIP_SMOKE_BOT_EMAIL]), content }, signal });
     messageIds.actor.add(String(result.id)); return String(result.id);
@@ -852,11 +853,13 @@ async function main() {
     });
 
     await scenario("typing-and-lifecycle-reactions", async (signal) => {
+      lifecyclePhase = "waiting_for_reply";
       const marker = `${runId}:lifecycle-ok`; const childResult = `${runId}:child-ok`; const eventStart = queue.events.length;
       const inboundId = await sendDm(command(`lifecycle ${marker} ${childResult}`), signal);
       lifecycleInboundId = inboundId;
       const reply = await queue.waitFor((e) => isPrivateBotMessage(e, botUserId, actorUserId, marker), timeoutMs, "lifecycle reply", signal);
       messageIds.bot.add(String(reply.message.id));
+      lifecyclePhase = "waiting_for_reaction_cleanup";
       const deadline = Date.now() + timeoutMs;
       let summary;
       while (Date.now() < deadline) {
@@ -865,6 +868,7 @@ async function main() {
         await queue.poll(signal);
         await delay(500, undefined, { signal });
       }
+      lifecyclePhase = "waiting_for_child_transcript";
       const transcriptDeadline = Date.now() + timeoutMs;
       let childTranscripts;
       while (Date.now() < transcriptDeadline && (childTranscripts = await inspectChildTranscripts(env.OPENCLAW_STATE_DIR, childResult)).completedExact === 0) {
@@ -874,6 +878,7 @@ async function main() {
       if (childTranscripts.total !== 1 || childTranscripts.completedExact !== 1) {
         throw new Error(`Found ${childTranscripts.total} child transcripts and ${childTranscripts.completedExact} exact completed results; expected exactly one of each`);
       }
+      lifecyclePhase = "waiting_for_final_typing_stop";
       await drainEventQueueUntilQuiet(queue, signal, 500, timeoutMs, 100, () =>
         lifecycleSummary(queue.events, inboundId).allRemoved &&
         hasFinalPrivateTypingStop(queue.events.slice(eventStart), botUserId, actorUserId));
@@ -888,6 +893,7 @@ async function main() {
       if (!subagentCompletedBeforeReply(queue.events, inboundId, reply)) {
         throw new Error("The child lifecycle did not complete before the parent reply");
       }
+      lifecyclePhase = "complete";
     });
 
     await scenario("explicit-reaction", async (signal) => {
@@ -1002,6 +1008,7 @@ async function main() {
     if (runError && lifecycleInboundId) {
       const evidence = lifecycleEvidenceCounts(queue.events, lifecycleInboundId);
       console.error(`Lifecycle reaction evidence counts: total=${evidence.total} add=${evidence.add} remove=${evidence.remove} other_op=${evidence.otherOp} with_name=${evidence.withName} with_code=${evidence.withCode} robot_name=${evidence.robotName} robot_code=${evidence.robotCode}`);
+      console.error(`Lifecycle phase evidence: phase=${lifecyclePhase}`);
     }
     if (runError && gateway.diagnostics.length) {
       for (const diagnostic of gateway.diagnostics) console.error(diagnostic);

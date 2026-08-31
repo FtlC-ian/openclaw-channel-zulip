@@ -1472,7 +1472,7 @@ describe("monitorZulipProvider", () => {
     );
     expect(state.core.channel.session.updateLastRoute).toHaveBeenCalledWith({
       storePath: "/resolved/debbie/session-store",
-      sessionKey: "agent:debbie:main",
+      sessionKey: "agent:debbie:zulip:channel:4",
       deliveryContext: {
         channel: "zulip",
         to: "stream:debbie:zulip-plugin-pr",
@@ -1499,7 +1499,7 @@ describe("monitorZulipProvider", () => {
     );
     expect(state.core.channel.session.updateLastRoute).toHaveBeenCalledWith({
       storePath: "/tmp/openclaw-session-store.json",
-      sessionKey: "agent:debbie:main",
+      sessionKey: "agent:debbie:zulip:channel:4",
       deliveryContext: {
         channel: "zulip",
         to: "user:user8@zlp.pubnerd.app",
@@ -1535,7 +1535,7 @@ describe("monitorZulipProvider", () => {
     );
     expect(state.core.channel.session.updateLastRoute).toHaveBeenCalledWith({
       storePath: "/tmp/openclaw-session-store.json",
-      sessionKey: "agent:debbie:main",
+      sessionKey: "agent:debbie:zulip:channel:4",
       deliveryContext: {
         channel: "zulip",
         to: "user:123",

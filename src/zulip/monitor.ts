@@ -1067,52 +1067,99 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     let replyDeliveryCommitted = false;
     let placeholderMessageId: string | undefined;
     let placeholderCreationPromise: Promise<void> | undefined;
+    let placeholderDeletionPromise: Promise<boolean> | undefined;
+    let placeholderEditPromise: Promise<boolean> | undefined;
     let placeholderRemovedForDelivery = false;
     let deliveredReply = false;
 
     const deletePlaceholder = async (forDelivery = false): Promise<boolean> => {
+      await placeholderEditPromise;
+      const activeDeletion = placeholderDeletionPromise;
+      if (activeDeletion) {
+        const deleted = await activeDeletion;
+        if (deleted && forDelivery) {
+          placeholderRemovedForDelivery = true;
+        }
+        return deleted;
+      }
       const placeholderId = placeholderMessageId;
       if (!placeholderId) {
         return false;
       }
-      placeholderMessageId = undefined;
-      try {
-        await deleteZulipMessage(client, { messageId: placeholderId });
-        if (forDelivery) {
-          placeholderRemovedForDelivery = true;
+      const deletion = (async () => {
+        try {
+          await deleteZulipMessage(client, { messageId: placeholderId });
+          if (placeholderMessageId === placeholderId) {
+            placeholderMessageId = undefined;
+          }
+          return true;
+        } catch (err) {
+          logVerboseMessage(`zulip: failed to delete thinking placeholder: ${String(err)}`);
+          return false;
         }
-        return true;
-      } catch (err) {
-        placeholderMessageId ??= placeholderId;
-        logVerboseMessage(`zulip: failed to delete thinking placeholder: ${String(err)}`);
-        return false;
+      })();
+      placeholderDeletionPromise = deletion;
+      const deleted = await deletion;
+      if (placeholderDeletionPromise === deletion) {
+        placeholderDeletionPromise = undefined;
       }
+      if (deleted && forDelivery) {
+        placeholderRemovedForDelivery = true;
+      }
+      return deleted;
     };
 
     const replacePlaceholder = async (content: string): Promise<boolean> => {
+      const activeDeletion = placeholderDeletionPromise;
+      if (activeDeletion) {
+        await activeDeletion;
+        return false;
+      }
+      const activeEdit = placeholderEditPromise;
+      if (activeEdit) {
+        return await activeEdit;
+      }
       const placeholderId = placeholderMessageId;
       if (!placeholderId) {
         return false;
       }
-      placeholderMessageId = undefined;
-      try {
-        await editZulipMessage(client, { messageId: placeholderId, content });
-        core.channel.activity.record({
-          channel: "zulip",
-          accountId: account.accountId,
-          direction: "outbound",
-        });
-        return true;
-      } catch (err) {
-        placeholderMessageId ??= placeholderId;
-        logVerboseMessage(`zulip: failed to replace thinking placeholder: ${String(err)}`);
-        return false;
+      const edit = (async () => {
+        try {
+          await editZulipMessage(client, { messageId: placeholderId, content });
+          if (placeholderMessageId === placeholderId) {
+            placeholderMessageId = undefined;
+          }
+          core.channel.activity.record({
+            channel: "zulip",
+            accountId: account.accountId,
+            direction: "outbound",
+          });
+          return true;
+        } catch (err) {
+          logVerboseMessage(`zulip: failed to replace thinking placeholder: ${String(err)}`);
+          return false;
+        }
+      })();
+      placeholderEditPromise = edit;
+      const edited = await edit;
+      if (placeholderEditPromise === edit) {
+        placeholderEditPromise = undefined;
       }
+      return edited;
     };
 
     const cleanupPlaceholderLifecycle = async (): Promise<void> => {
       await placeholderCreationPromise;
-      await deletePlaceholder();
+      await placeholderEditPromise;
+      while (placeholderMessageId) {
+        if (await deletePlaceholder()) {
+          return;
+        }
+        if (!monitorReactionShutdownStarted) {
+          return;
+        }
+        await delay(100);
+      }
     };
     if (opts.abortSignal?.aborted || monitorReactionShutdownStarted) {
       return ABORTED_INBOUND_MESSAGE;
@@ -1250,7 +1297,9 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       })();
       await placeholderCreationPromise;
       if (reactionLifecycleCancelled || monitorReactionShutdownStarted || opts.abortSignal?.aborted) {
-        await deletePlaceholder();
+        await cancelReactionLifecycle();
+        opts.statusSink?.({ lastInboundAt: Date.now() });
+        return ABORTED_INBOUND_MESSAGE;
       }
     }
     let deliveryError: unknown;

@@ -659,55 +659,71 @@ describe("monitorZulipProvider", () => {
     );
   });
 
-  it("awaits thinking placeholder deletion through the gateway-stop cleanup", async () => {
+  it("waits for pending placeholder creation and retrying deletion before gateway stop", async () => {
     state.autoAbort = false;
     state.account.config.thinkingPlaceholder = { enabled: true };
-    let dispatchStarted!: () => void;
-    const dispatched = new Promise<void>((resolve) => {
-      dispatchStarted = resolve;
+    let creationStarted!: () => void;
+    const creating = new Promise<void>((resolve) => {
+      creationStarted = resolve;
     });
-    let deletionStarted!: () => void;
-    const deleting = new Promise<void>((resolve) => {
-      deletionStarted = resolve;
+    let allowCreation!: () => void;
+    const creationAllowed = new Promise<void>((resolve) => {
+      allowCreation = resolve;
     });
-    let allowDeletion!: () => void;
+    state.sendMessageZulip.mockImplementationOnce(async () => {
+      creationStarted();
+      await creationAllowed;
+      return { messageId: "pending-placeholder", channelId: "debbie" };
+    });
+    let retryDeletionStarted!: () => void;
+    const retryingDeletion = new Promise<void>((resolve) => {
+      retryDeletionStarted = resolve;
+    });
+    let allowRetryDeletion!: () => void;
     const deletionAllowed = new Promise<void>((resolve) => {
-      allowDeletion = resolve;
+      allowRetryDeletion = resolve;
     });
-    state.deleteZulipMessage.mockImplementation(async () => {
-      deletionStarted();
-      await deletionAllowed;
+    state.deleteZulipMessage
+      .mockRejectedValueOnce(new Error("transient delete failure"))
+      .mockImplementationOnce(async () => {
+        retryDeletionStarted();
+        await deletionAllowed;
+      });
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async () => {
+      throw new Error("dispatch must not start during gateway shutdown");
     });
-    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
-      async ({ replyOptions }) => {
-        dispatchStarted();
-        await new Promise<void>((resolve) => {
-          replyOptions.abortSignal?.addEventListener("abort", () => resolve(), { once: true });
-        });
-        return {};
-      },
-    );
     state.pollResponses = [{
       result: "success",
       events: [{ id: 1, type: "message", message: makeChannelMessage(1099) }],
     }];
 
     const monitorPromise = runMonitorOnce();
-    await dispatched;
+    await creating;
     const { clearActiveZulipMonitorReactionLifecycles } = await import("./monitor.js");
     let cleanupSettled = false;
     const cleanup = clearActiveZulipMonitorReactionLifecycles().then(() => {
       cleanupSettled = true;
     });
-    await deleting;
     await Promise.resolve();
     expect(cleanupSettled).toBe(false);
-    allowDeletion();
+    expect(state.deleteZulipMessage).not.toHaveBeenCalled();
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+
+    allowCreation();
+    await retryingDeletion;
+    expect(state.deleteZulipMessage).toHaveBeenCalledTimes(2);
+    expect(cleanupSettled).toBe(false);
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+    allowRetryDeletion();
     await cleanup;
 
-    expect(state.deleteZulipMessage).toHaveBeenCalledWith(state.client, {
-      messageId: "outbound-1",
+    expect(state.deleteZulipMessage).toHaveBeenNthCalledWith(1, state.client, {
+      messageId: "pending-placeholder",
     });
+    expect(state.deleteZulipMessage).toHaveBeenNthCalledWith(2, state.client, {
+      messageId: "pending-placeholder",
+    });
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
     state.abortController?.abort();
     await monitorPromise;
   });

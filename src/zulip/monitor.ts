@@ -81,6 +81,8 @@ export type MonitorZulipOpts = {
 const RECENT_MESSAGE_TTL_MS = 5 * 60_000;
 const RECENT_MESSAGE_MAX = 2000;
 const DEFAULT_ONCHAR_PREFIXES = [">", "!"];
+const PLACEHOLDER_DELETE_MAX_ATTEMPTS = 3;
+const PLACEHOLDER_DELETE_RETRY_MS = 50;
 /** Empty string = Zulip's "general chat" (no topic). */
 const FALLBACK_TOPIC = "";
 
@@ -1151,14 +1153,22 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     const cleanupPlaceholderLifecycle = async (): Promise<void> => {
       await placeholderCreationPromise;
       await placeholderEditPromise;
-      while (placeholderMessageId) {
+      for (
+        let attempt = 1;
+        placeholderMessageId && attempt <= PLACEHOLDER_DELETE_MAX_ATTEMPTS;
+        attempt += 1
+      ) {
         if (await deletePlaceholder()) {
           return;
         }
-        if (!monitorReactionShutdownStarted) {
-          return;
+        if (attempt < PLACEHOLDER_DELETE_MAX_ATTEMPTS) {
+          await delay(PLACEHOLDER_DELETE_RETRY_MS);
         }
-        await delay(100);
+      }
+      if (placeholderMessageId) {
+        runtime.error?.(
+          `zulip: thinking placeholder cleanup failed after ${PLACEHOLDER_DELETE_MAX_ATTEMPTS} attempts`,
+        );
       }
     };
     if (opts.abortSignal?.aborted || monitorReactionShutdownStarted) {
@@ -1190,7 +1200,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     let statusLifecycleSettled = false;
     let subagentLifecycleSettled = false;
     const releaseReactionCleanupIfSettled = () => {
-      if (statusLifecycleSettled && subagentLifecycleSettled) {
+      if (statusLifecycleSettled && subagentLifecycleSettled && !placeholderMessageId) {
         activeReactionCleanups.delete(cancelReactionLifecycle);
       }
     };

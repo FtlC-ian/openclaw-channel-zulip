@@ -573,6 +573,44 @@ describe("monitorZulipProvider", () => {
     );
   });
 
+  it("retries a transient placeholder deletion failure during ordinary abort", async () => {
+    state.autoAbort = false;
+    state.account.config.thinkingPlaceholder = { enabled: true };
+    state.deleteZulipMessage
+      .mockRejectedValueOnce(new Error("transient delete failure"))
+      .mockResolvedValueOnce(undefined);
+    let dispatchStarted!: () => void;
+    const dispatched = new Promise<void>((resolve) => {
+      dispatchStarted = resolve;
+    });
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
+      async ({ replyOptions }) => {
+        dispatchStarted();
+        await new Promise<void>((resolve) => {
+          replyOptions.abortSignal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+        return {};
+      },
+    );
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 1, type: "message", message: makeChannelMessage(1199) }],
+    }];
+
+    const monitorPromise = runMonitorOnce();
+    await dispatched;
+    state.abortController?.abort();
+    await monitorPromise;
+
+    expect(state.deleteZulipMessage).toHaveBeenCalledTimes(2);
+    expect(state.deleteZulipMessage).toHaveBeenNthCalledWith(1, state.client, {
+      messageId: "outbound-1",
+    });
+    expect(state.deleteZulipMessage).toHaveBeenNthCalledWith(2, state.client, {
+      messageId: "outbound-1",
+    });
+  });
+
   it("clears active reactions through the gateway-stop hook", async () => {
     state.autoAbort = false;
     state.account.config.reactions = { enabled: true, clearOnFinish: false };
@@ -659,7 +697,7 @@ describe("monitorZulipProvider", () => {
     );
   });
 
-  it("waits for pending placeholder creation and retrying deletion before gateway stop", async () => {
+  it("bounds persistent placeholder deletion failure during gateway stop", async () => {
     state.autoAbort = false;
     state.account.config.thinkingPlaceholder = { enabled: true };
     let creationStarted!: () => void;
@@ -675,20 +713,7 @@ describe("monitorZulipProvider", () => {
       await creationAllowed;
       return { messageId: "pending-placeholder", channelId: "debbie" };
     });
-    let retryDeletionStarted!: () => void;
-    const retryingDeletion = new Promise<void>((resolve) => {
-      retryDeletionStarted = resolve;
-    });
-    let allowRetryDeletion!: () => void;
-    const deletionAllowed = new Promise<void>((resolve) => {
-      allowRetryDeletion = resolve;
-    });
-    state.deleteZulipMessage
-      .mockRejectedValueOnce(new Error("transient delete failure"))
-      .mockImplementationOnce(async () => {
-        retryDeletionStarted();
-        await deletionAllowed;
-      });
+    state.deleteZulipMessage.mockRejectedValue(new Error("permission denied"));
     state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async () => {
       throw new Error("dispatch must not start during gateway shutdown");
     });
@@ -697,7 +722,12 @@ describe("monitorZulipProvider", () => {
       events: [{ id: 1, type: "message", message: makeChannelMessage(1099) }],
     }];
 
-    const monitorPromise = runMonitorOnce();
+    const runtimeError = vi.fn();
+    const monitorPromise = runMonitorOnce(new AbortController(), {
+      log: vi.fn(),
+      error: runtimeError,
+      exit: vi.fn(),
+    });
     await creating;
     const { clearActiveZulipMonitorReactionLifecycles } = await import("./monitor.js");
     let cleanupSettled = false;
@@ -710,19 +740,18 @@ describe("monitorZulipProvider", () => {
     expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
 
     allowCreation();
-    await retryingDeletion;
-    expect(state.deleteZulipMessage).toHaveBeenCalledTimes(2);
-    expect(cleanupSettled).toBe(false);
-    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
-    allowRetryDeletion();
-    await cleanup;
+    await expect(Promise.race([
+      cleanup.then(() => "settled"),
+      new Promise<string>((resolve) => setTimeout(() => resolve("timed-out"), 500)),
+    ])).resolves.toBe("settled");
 
+    expect(state.deleteZulipMessage).toHaveBeenCalledTimes(3);
     expect(state.deleteZulipMessage).toHaveBeenNthCalledWith(1, state.client, {
       messageId: "pending-placeholder",
     });
-    expect(state.deleteZulipMessage).toHaveBeenNthCalledWith(2, state.client, {
-      messageId: "pending-placeholder",
-    });
+    expect(runtimeError).toHaveBeenCalledWith(
+      "zulip: thinking placeholder cleanup failed after 3 attempts",
+    );
     expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
     state.abortController?.abort();
     await monitorPromise;

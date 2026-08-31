@@ -509,6 +509,12 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     topic: string;
     policy: ResolvedZulipInboundStreamPolicy;
   };
+  type InboundStreamResolution =
+    | {
+      ok: true;
+      decision: InboundStreamDecision | typeof RETRYABLE_STREAM_POLICY | undefined;
+    }
+    | { ok: false; error: unknown };
 
   const resolveInboundStreamDecision = async (
     message: ZulipMessage,
@@ -1655,6 +1661,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
   const processMessage = async (
     message: ZulipMessage,
     queueEventId?: number,
+    streamResolution?: InboundStreamResolution,
   ): Promise<void> => {
     const messageId = String(message.id ?? "");
     const metadata: ZulipDurableInboundMetadata | undefined =
@@ -1693,7 +1700,12 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
 
     let streamDecision: InboundStreamDecision | typeof RETRYABLE_STREAM_POLICY | undefined;
     try {
-      streamDecision = await resolveInboundStreamDecision(message);
+      if (streamResolution?.ok === false) {
+        throw streamResolution.error;
+      }
+      streamDecision = streamResolution?.ok
+        ? streamResolution.decision
+        : await resolveInboundStreamDecision(message);
     } catch (err) {
       if (acceptInbound) {
         await acceptInbound();
@@ -1809,15 +1821,39 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
           }
 
           if (event.type === "message" && event.message) {
+            let streamResolution: InboundStreamResolution;
+            try {
+              streamResolution = {
+                ok: true,
+                decision: await resolveInboundStreamDecision(event.message),
+              };
+            } catch (error) {
+              streamResolution = { ok: false, error };
+            }
+            if (streamResolution.ok) {
+              const streamDecision = streamResolution.decision;
+              if (streamDecision === RETRYABLE_STREAM_POLICY) {
+                continue;
+              }
+              if (streamDecision && !streamDecision.accepted) {
+                logRejectedStreamDecision(
+                  streamDecision,
+                  event.message.sender_email?.trim() || String(event.message.sender_id ?? ""),
+                );
+                continue;
+              }
+            }
             // Start processing without awaiting (fire-and-forget with error handling)
-            const messageTask = processMessage(event.message, validEventId).catch((err) => {
-              runtime.error?.(`zulip: message processing failed: ${String(err)}`);
-            });
+            const messageTask = processMessage(event.message, validEventId, streamResolution).catch(
+              (err) => {
+                runtime.error?.(`zulip: message processing failed: ${String(err)}`);
+              },
+            );
             activeMessageTasks.add(messageTask);
             void messageTask.finally(() => {
               activeMessageTasks.delete(messageTask);
             });
-            // Small delay between starting each message for natural pacing
+            // Small delay between starting each eligible message for natural pacing
             await delay(200, opts.abortSignal);
           }
         }

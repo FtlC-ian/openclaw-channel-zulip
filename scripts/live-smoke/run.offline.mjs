@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { assertFinalPrivateTypingStop, assertMessageRemainsExact, authenticatedUserId, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, drainEventQueueUntilQuiet, eventOccursBefore, EventQueue, extractExactUploadUrl, Gateway, hasFinalPrivateTypingStop, hasProvableMinimumMessageDelay, inspectChildTranscripts, inspectLifecycleTurnEvidence, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactPollMessage, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, isUsageCountedTranscriptName, lifecycleEvidenceCounts, lifecycleSummary, normalizeScenarioError, parseZulipSubagentDiagnostic, probeRunnerLocalGatewayHealth, redactError, resolveUploadUrl, signalProcessTree, subagentCompletedBeforeReply, validateEnvironment, waitForProcessTreeExit, writeGatewayGeneration } from "./run.mjs";
+import { selectSmokeModel } from "./prepare-config.mjs";
 
 const ACTOR_USER_ID = "42";
 const BOT_USER_ID = "91";
@@ -26,6 +27,24 @@ test("validates protected configuration while preserving base paths", () => {
   assert.equal(validateEnvironment(validEnv).ZULIP_URL, "https://zulip.example.test/path");
   assert.throws(() => validateEnvironment({ ...validEnv, ZULIP_URL: "http://zulip.test" }), /HTTPS/);
   assert.throws(() => validateEnvironment({ ...validEnv, ZULIP_SMOKE_USER_API_KEY: "" }), /protected configuration/);
+});
+
+test("selects a compatible smoke model while preserving its policy", () => {
+  const makeConfig = (model) => ({
+    agents: { defaults: { model, models: { "abacus/gpt-5-mini": { alias: "smoke", params: { safe: true } } } } },
+    models: { providers: { abacus: { models: [{ id: "gpt-5-mini", name: "mini", reasoning: true }] } } },
+  });
+  for (const model of ["abacus/gpt-5-mini", { primary: "abacus/gpt-5-mini", fallbacks: ["other/model"] }]) {
+    const config = selectSmokeModel(makeConfig(model), "gpt-5.2");
+    assert.equal(typeof config.agents.defaults.model === "string"
+      ? config.agents.defaults.model : config.agents.defaults.model.primary, "abacus/gpt-5.2");
+    assert.deepEqual(config.agents.defaults.models["abacus/gpt-5.2"], { alias: "smoke", params: { safe: true } });
+    assert.deepEqual(config.models.providers.abacus.models.at(-1), { id: "gpt-5.2", name: "gpt-5.2", reasoning: true });
+  }
+  assert.throws(() => selectSmokeModel({
+    ...makeConfig("abacus/gpt-5-mini"),
+    agents: { defaults: { model: "abacus/gpt-5-mini", models: {} } },
+  }, "gpt-5.2"), /allow its baseline model/);
 });
 
 test("preserves Zulip base paths when constructing API URLs", () => {
@@ -1019,6 +1038,9 @@ test("workflow is manual, protected, pinned, and bounded", async () => {
   assert.match(workflow, /Protected smoke config must disable stream mention gating/);
   assert.match(workflow, /Protected smoke config must use the robot subagent reaction/);
   assert.match(workflow, /reserves robot and tada reactions for exact evidence/);
+  assert.match(workflow, /const targetId = "gpt-5\.2"/);
+  assert.match(workflow, /writeFileSync\(process\.env\.OPENCLAW_CONFIG_PATH, JSON\.stringify\(config\), \{ mode: 0o600 \}\)/);
+  assert.doesNotMatch(workflow, /printf '%s' "\$OPENCLAW_SMOKE_CONFIG_JSON"/);
   assert.match(agentProtocol, /verify the child's exact result/);
   assert.match(agentProtocol, /Call `sessions_yield` after\nthe spawn as the final action/);
   assert.match(agentProtocol, /Do not include `VALUE` or\nany other text in that turn/);

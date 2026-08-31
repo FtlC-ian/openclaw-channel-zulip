@@ -86,6 +86,8 @@ jobs:
           umask 077
           mkdir -p "$(dirname "$OPENCLAW_CONFIG_PATH")" "$OPENCLAW_STATE_DIR"
           node --input-type=module <<'NODE'
+          import { writeFileSync } from "node:fs";
+          import { selectSmokeModel } from "./scripts/live-smoke/prepare-config.mjs";
           const config = JSON.parse(process.env.OPENCLAW_SMOKE_CONFIG_JSON);
           const zulip = config?.channels?.zulip ?? {};
           const { accounts: accountConfigs = {}, ...baseZulip } = zulip;
@@ -113,8 +115,10 @@ jobs:
           if (lifecycleValues.some((value) => ["robot", "🤖", "tada", "🎉"].includes(normalize(value)))) {
             throw new Error("Protected smoke config reserves robot and tada reactions for exact evidence");
           }
+          const targetId = "gpt-5.2";
+          selectSmokeModel(config, targetId);
+          writeFileSync(process.env.OPENCLAW_CONFIG_PATH, JSON.stringify(config), { mode: 0o600 });
           NODE
-          printf '%s' "$OPENCLAW_SMOKE_CONFIG_JSON" > "$OPENCLAW_CONFIG_PATH"
           pnpm exec openclaw plugins install -l "$GITHUB_WORKSPACE"
           pnpm exec openclaw config set agents.defaults.workspace "$GITHUB_WORKSPACE/scripts/live-smoke/agent-workspace"
           pnpm exec openclaw config validate

@@ -496,6 +496,14 @@ export function isExactPollMessage(message, question, options) {
   return isExactRenderedContent(message?.content, question) && isExactPoll(widget, question, options);
 }
 
+export async function assertNativePollMessagePersisted(client, id, question, options, signal) {
+  const result = await client.request(`messages/${id}`, { signal });
+  const message = result.message;
+  if (isExactPollMessage(message, question, options)) return;
+  if (isExactRenderedContent(message?.content, question)) return;
+  throw new Error("Native poll message was not readable with its exact content");
+}
+
 export function normalizeScenarioError(signal, error) {
   return signal.aborted && signal.reason instanceof Error ? signal.reason : error;
 }
@@ -1093,13 +1101,9 @@ async function main() {
         widget_content: JSON.stringify(nativePollWidget(question, [optionA, optionB])),
       }, signal });
       messageIds.bot.add(String(sent.id));
-      console.log(`poll-and-interactive-reply phase=wait_poll message_id=${sent.id}`);
-      const poll = await queue.waitFor((e) => {
-        if (!isBotMessage(e, botUserId) || e.message?.display_recipient !== env.ZULIP_SMOKE_STREAM || e.message?.subject !== topic) return false;
-        return isExactPollMessage(e.message, question, [optionA, optionB]);
-      }, timeoutMs, "native poll", signal);
-      messageIds.bot.add(String(poll.message.id));
-      console.log(`poll-and-interactive-reply phase=send_choice poll_message_id=${poll.message.id}`);
+      console.log(`poll-and-interactive-reply phase=verify_poll message_id=${sent.id}`);
+      await assertNativePollMessagePersisted(bot, sent.id, question, [optionA, optionB], signal);
+      console.log(`poll-and-interactive-reply phase=send_choice poll_message_id=${sent.id}`);
       const choice = await actor.request("messages", { method: "POST", body: { type: "stream", to: env.ZULIP_SMOKE_STREAM, topic, content: optionA }, signal });
       messageIds.actor.add(String(choice.id));
       console.log(`poll-and-interactive-reply phase=wait_reply choice_message_id=${choice.id}`);

@@ -397,6 +397,31 @@ test("reports only count-based lifecycle parent-turn evidence", async () => {
     assert.deepEqual(await inspectLifecycleTurnEvidence(stateDir, "parent-marker", "child-marker"), {
       parentTranscripts: 1, spawnCalls: 1, yieldCalls: 1, completionEvents: 1, exactReplies: 1,
     });
+    await writeFile(join(sessionsDir, "parent.jsonl"), [
+      JSON.stringify({ message: { role: "user", content: "lifecycle parent-marker child-marker" } }),
+      JSON.stringify({ message: { role: "assistant", content: [{ type: "toolCall", name: "sessions_spawn" }] } }),
+      JSON.stringify({ message: { role: "assistant", content: [{ type: "tool_use", name: "sessions_yield" }] } }),
+      JSON.stringify({ internalEvents: [{
+        type: "task_completion", source: "subagent", childSessionKey: "agent:main:subagent:child",
+        result: "child-marker", announceType: "completion", taskLabel: "child", status: "ok",
+        statusLabel: "completed", replyInstruction: "continue",
+      }] }),
+      JSON.stringify({ message: { role: "assistant", content: [{ type: "text", text: "parent-marker" }] } }),
+    ].join("\n"));
+    assert.deepEqual(await inspectLifecycleTurnEvidence(stateDir, "parent-marker", "child-marker"), {
+      parentTranscripts: 1, spawnCalls: 1, yieldCalls: 1, completionEvents: 1, exactReplies: 1,
+    });
+    await writeFile(join(sessionsDir, "parent.jsonl"), [
+      JSON.stringify({ message: { role: "user", content: "lifecycle parent-marker child-marker" } }),
+      JSON.stringify({ message: { role: "assistant", content: [
+        { type: "toolCall", name: "sessions_spawn" },
+        { type: "tool_use", name: "sessions_yield" },
+      ] } }),
+      JSON.stringify({ message: { role: "assistant", content: "parent-marker" } }),
+    ].join("\n"));
+    assert.deepEqual(await inspectLifecycleTurnEvidence(stateDir, "parent-marker", "child-marker"), {
+      parentTranscripts: 1, spawnCalls: 1, yieldCalls: 1, completionEvents: 0, exactReplies: 1,
+    });
   } finally {
     await rm(stateDir, { recursive: true, force: true });
   }

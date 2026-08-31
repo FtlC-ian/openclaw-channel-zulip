@@ -315,6 +315,11 @@ export async function inspectLifecycleTurnEvidence(stateDir, parentMarker, child
   const userText = (record) => record?.message?.role === "user"
     ? (typeof record.message.content === "string" ? record.message.content : JSON.stringify(record.message.content ?? ""))
     : "";
+  const internalEvents = (record) => Array.isArray(record?.internalEvents)
+    ? record.internalEvents
+    : Array.isArray(record?.message?.internalEvents)
+      ? record.message.internalEvents
+      : [];
   for (const file of await listAgentTranscriptFiles(stateDir)) {
     const records = await readTranscriptRecords(file);
     if (!records.some((record) => userText(record).includes(parentMarker))) continue;
@@ -323,8 +328,13 @@ export async function inspectLifecycleTurnEvidence(stateDir, parentMarker, child
     spawnCalls += names.filter((name) => name === "sessions_spawn").length;
     yieldCalls += names.filter((name) => name === "sessions_yield").length;
     completionEvents += records.filter((record) => {
+      if (internalEvents(record).some((event) =>
+        event?.type === "task_completion" && event?.source === "subagent" &&
+        (String(event.result ?? "").includes(childMarker) || String(event.childSessionKey ?? "").includes("subagent")))) {
+        return true;
+      }
       const text = userText(record);
-      return text.includes(childMarker) && !text.includes(parentMarker);
+      return (text.includes("[Internal task completion event]") || text.includes(childMarker)) && !text.includes(parentMarker);
     }).length;
     exactReplies += records.flatMap(assistantMessageTexts).filter((text) => text === parentMarker).length;
   }
@@ -402,6 +412,18 @@ export function subagentCompletedBeforeReply(events, inboundMessageId, replyEven
     applyReactionEvent(active, event);
   }
   return sawSubagent && active.size === 0;
+}
+
+export async function waitForOptionalPrivateBotMessage(queue, predicate, timeoutMs, signal) {
+  const deadline = Date.now() + timeoutMs;
+  let event;
+  while (Date.now() < deadline && !event) {
+    event = queue.events.find(predicate);
+    if (event) break;
+    await queue.poll(signal);
+    await delay(500, undefined, { signal });
+  }
+  return event;
 }
 
 export function isExactPoll(widget, question, options) {
@@ -953,14 +975,11 @@ async function main() {
     });
 
     await scenario("typing-and-lifecycle-reactions", async (signal) => {
-      lifecyclePhase = "waiting_for_reply";
+      lifecyclePhase = "waiting_for_reaction_cleanup";
       const marker = `${runId}:lifecycle-ok`; const childResult = `${runId}:child-ok`; const eventStart = queue.events.length;
       lifecycleMarkers = { marker, childResult };
       const inboundId = await sendDm(command(`lifecycle ${marker} ${childResult}`), signal);
       lifecycleInboundId = inboundId;
-      const reply = await queue.waitFor((e) => isPrivateBotMessage(e, botUserId, actorUserId, marker), timeoutMs, "lifecycle reply", signal);
-      messageIds.bot.add(String(reply.message.id));
-      lifecyclePhase = "waiting_for_reaction_cleanup";
       const deadline = Date.now() + timeoutMs;
       let summary;
       while (Date.now() < deadline) {
@@ -979,6 +998,18 @@ async function main() {
       if (childTranscripts.total !== 1 || childTranscripts.completedExact !== 1) {
         throw new Error(`Found ${childTranscripts.total} child transcripts and ${childTranscripts.completedExact} exact completed results; expected exactly one of each`);
       }
+      lifecyclePhase = "checking_optional_parent_reply";
+      const reply = await waitForOptionalPrivateBotMessage(
+        queue,
+        (e) => isPrivateBotMessage(e, botUserId, actorUserId, marker),
+        5000,
+        signal,
+      );
+      if (reply) messageIds.bot.add(String(reply.message.id));
+      const turn = await inspectLifecycleTurnEvidence(env.OPENCLAW_STATE_DIR, marker, childResult);
+      if (turn.exactReplies > 0 && turn.completionEvents === 0) {
+        throw new Error("Lifecycle parent produced its final reply without transcript evidence of a child completion event");
+      }
       lifecyclePhase = "waiting_for_final_typing_stop";
       await drainEventQueueUntilQuiet(queue, signal, 500, timeoutMs, 100, () =>
         lifecycleSummary(queue.events, inboundId).allRemoved &&
@@ -991,8 +1022,8 @@ async function main() {
       if (!summary.sawSubagent) throw new Error("No truthful subagent lifecycle reaction was observed");
       if (summary.subagentCount !== 1) throw new Error(`Observed ${summary.subagentCount} subagent lifecycle reactions; expected exactly one`);
       if (!summary.allRemoved) throw new Error("Lifecycle reactions were not cleaned up after completion");
-      if (!subagentCompletedBeforeReply(queue.events, inboundId, reply)) {
-        throw new Error("The child lifecycle did not complete before the parent reply");
+      if (reply && !subagentCompletedBeforeReply(queue.events, inboundId, reply)) {
+        throw new Error("The optional parent reply was observed before child lifecycle cleanup");
       }
       lifecyclePhase = "complete";
     });

@@ -6,7 +6,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { assertFinalPrivateTypingStop, assertMessageRemainsExact, authenticatedUserId, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, drainEventQueueUntilQuiet, eventOccursBefore, EventQueue, extractExactUploadUrl, Gateway, hasFinalPrivateTypingStop, hasProvableMinimumMessageDelay, inspectChildTranscripts, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactPollMessage, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, isUsageCountedTranscriptName, lifecycleSummary, normalizeScenarioError, parseZulipSubagentDiagnostic, probeRunnerLocalGatewayHealth, redactError, resolveUploadUrl, signalProcessTree, subagentCompletedBeforeReply, validateEnvironment, waitForProcessTreeExit, writeGatewayGeneration } from "./run.mjs";
+import { assertFinalPrivateTypingStop, assertMessageRemainsExact, authenticatedUserId, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, drainEventQueueUntilQuiet, eventOccursBefore, EventQueue, extractExactUploadUrl, Gateway, hasFinalPrivateTypingStop, hasProvableMinimumMessageDelay, inspectChildTranscripts, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactPollMessage, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, isUsageCountedTranscriptName, lifecycleEvidenceCounts, lifecycleSummary, normalizeScenarioError, parseZulipSubagentDiagnostic, probeRunnerLocalGatewayHealth, redactError, resolveUploadUrl, signalProcessTree, subagentCompletedBeforeReply, validateEnvironment, waitForProcessTreeExit, writeGatewayGeneration } from "./run.mjs";
 
 const ACTOR_USER_ID = "42";
 const BOT_USER_ID = "91";
@@ -398,6 +398,26 @@ test("requires lifecycle and subagent reactions to be removed", () => {
   assert.equal(lifecycleSummary([{ ...base, op: "add" }, { ...base, user_id: 8, op: "add" }, { ...base, op: "remove" }], "42").allRemoved, false);
   const terminal = { ...base, emoji_name: "white_check_mark", emoji_code: "2705", op: "add" };
   assert.equal(lifecycleSummary([{ ...base, op: "add" }, { ...base, op: "remove" }, terminal], "42").allRemoved, false);
+});
+
+test("reports only fixed numeric lifecycle evidence classifications", () => {
+  const events = [
+    { type: "reaction", message_id: 42, op: "add", emoji_name: "eyes", emoji_code: "1f440" },
+    { type: "reaction", message_id: 42, op: "add", emoji_name: "robot", emoji_code: "1F916" },
+    { type: "reaction", message_id: 42, op: "remove", emoji_name: "robot", emoji_code: "1f916" },
+    { type: "reaction", message_id: 42, op: "unexpected" },
+    { type: "reaction", message_id: 99, op: "add", emoji_name: "robot", emoji_code: "1f916" },
+  ];
+  assert.deepEqual(lifecycleEvidenceCounts(events, "42"), {
+    total: 4,
+    add: 2,
+    remove: 1,
+    otherOp: 1,
+    withName: 3,
+    withCode: 3,
+    robotName: 2,
+    robotCode: 2,
+  });
 });
 
 test("requires subagent lifecycle completion before the parent reply", () => {

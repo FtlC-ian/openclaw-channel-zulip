@@ -401,9 +401,17 @@ async function runMonitorOnce(
   });
 }
 
-function enableDurableInboundJournal() {
+function enableDurableInboundJournal(
+  journalOptions: {
+    completedLookupFailuresAfterAccept?: number;
+    completedLookupFailureIds?: readonly string[];
+    deferredPendingListFailures?: number;
+    queueCompletionFailures?: number;
+  } = {},
+) {
   state.durableStores = new Map();
   state.durableQueues = new Map();
+  let postAcceptLookupFailed = false;
   state.core.state = {
     openKeyedStore: vi.fn((options: { namespace: string }) => {
       const existing = state.durableStores.get(options.namespace);
@@ -411,6 +419,25 @@ function enableDurableInboundJournal() {
         return existing;
       }
       const store = state.createMemoryKeyedStore(options.maxEntries);
+      if (options.namespace.includes(".completed.")) {
+        let failuresRemaining = journalOptions.completedLookupFailuresAfterAccept ?? 0;
+        const failureIds = new Set(journalOptions.completedLookupFailureIds ?? []);
+        const lookupCounts = new Map<string, number>();
+        const lookup = store.lookup.getMockImplementation();
+        store.lookup.mockImplementation(async (key: string) => {
+          const count = (lookupCounts.get(key) ?? 0) + 1;
+          lookupCounts.set(key, count);
+          const targetedFailure = count === 2 && failureIds.delete(key);
+          if (count === 2 && (targetedFailure || failuresRemaining > 0)) {
+            if (!targetedFailure) {
+              failuresRemaining -= 1;
+            }
+            postAcceptLookupFailed = true;
+            throw new Error("synthetic legacy lookup failure");
+          }
+          return await lookup?.(key);
+        });
+      }
       state.durableStores.set(options.namespace, store);
       return store;
     }),
@@ -421,6 +448,24 @@ function enableDurableInboundJournal() {
         return existing;
       }
       const queue = state.createMemoryIngressQueue();
+      const complete = queue.complete.getMockImplementation();
+      let queueCompletionFailuresRemaining = journalOptions.queueCompletionFailures ?? 0;
+      queue.complete.mockImplementation(async (...args) => {
+        if (queueCompletionFailuresRemaining > 0) {
+          queueCompletionFailuresRemaining -= 1;
+          throw new Error("synthetic queue completion failure");
+        }
+        return await complete?.(...args);
+      });
+      const listPending = queue.listPending.getMockImplementation();
+      let pendingListFailuresRemaining = journalOptions.deferredPendingListFailures ?? 0;
+      queue.listPending.mockImplementation(async () => {
+        if (postAcceptLookupFailed && pendingListFailuresRemaining > 0) {
+          pendingListFailuresRemaining -= 1;
+          throw new Error("synthetic deferred pending-list failure");
+        }
+        return await listPending?.();
+      });
       state.durableQueues.set(accountId, queue);
       return queue;
     }),
@@ -2331,6 +2376,12 @@ describe("monitorZulipProvider", () => {
     queue!.complete.mockRejectedValueOnce(new Error("synthetic reconciliation failure"));
 
     await expect(journal.pending()).resolves.toEqual([]);
+    expect(completedStore!.register).toHaveBeenLastCalledWith(
+      durableId,
+      expect.objectContaining({ completedAt: 200 }),
+      { ttlMs: 30 * 24 * 60 * 60 * 1000 },
+    );
+    expect(queue!.delete).toHaveBeenCalledWith(durableId);
     expect(queue!.complete).toHaveBeenCalledWith(durableId, {
       metadata: { queueEventId: 10 },
       completedAt: 200,
@@ -2379,6 +2430,355 @@ describe("monitorZulipProvider", () => {
       duplicate: true,
     }));
     await expect(journal.pending()).resolves.toEqual([]);
+  });
+
+  it("keeps the queue fallback when completion and tombstone extension fail", async () => {
+    enableDurableInboundJournal();
+    const {
+      createZulipDurableInboundMessageId,
+      createZulipDurableInboundReceiveJournal,
+      serializeZulipDurableInboundMessage,
+    } = await import("./durable-receive.js");
+    const message = makeChannelMessage(2105);
+    const durableId = createZulipDurableInboundMessageId({
+      accountId: state.account.accountId,
+      messageId: String(message.id),
+    });
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const queue = state.durableQueues.get(state.account.accountId);
+    const completedStore = Array.from(state.durableStores.entries()).find(([namespace]) =>
+      namespace.includes(".completed."),
+    )?.[1];
+    expect(queue).toBeDefined();
+    expect(completedStore).toBeDefined();
+    await queue!.enqueue(durableId, {
+      message: serializeZulipDurableInboundMessage(message),
+      receivedAt: 100,
+    }, { receivedAt: 100 });
+    await completedStore!.register(durableId, {
+      id: durableId,
+      completedAt: 200,
+    });
+    queue!.complete.mockRejectedValueOnce(new Error("synthetic completion failure"));
+    completedStore!.register.mockRejectedValueOnce(new Error("synthetic extension failure"));
+
+    await expect(journal.pending()).resolves.toEqual([]);
+    expect(queue!.delete).not.toHaveBeenCalled();
+  });
+
+  it("defers delivery when the post-accept legacy completion lookup fails", async () => {
+    enableDurableInboundJournal();
+    const {
+      createZulipDurableInboundMessageId,
+      createZulipDurableInboundReceiveJournal,
+      serializeZulipDurableInboundMessage,
+    } = await import("./durable-receive.js");
+    const message = makeChannelMessage(2103);
+    const durableId = createZulipDurableInboundMessageId({
+      accountId: state.account.accountId,
+      messageId: String(message.id),
+    });
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const completedStore = Array.from(state.durableStores.entries()).find(([namespace]) =>
+      namespace.includes(".completed."),
+    )?.[1];
+    expect(completedStore).toBeDefined();
+    completedStore!.lookup
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("synthetic legacy lookup failure"));
+
+    await expect(journal.accept(durableId, {
+      message: serializeZulipDurableInboundMessage(message),
+      receivedAt: 300,
+    })).resolves.toEqual(expect.objectContaining({
+      kind: "pending",
+      duplicate: true,
+    }));
+    await expect(journal.pending()).resolves.toEqual([
+      expect.objectContaining({ id: durableId }),
+    ]);
+  });
+
+  it("retries a post-accept legacy lookup deferral without waiting for restart", async () => {
+    enableDurableInboundJournal({ completedLookupFailuresAfterAccept: 1 });
+    state.autoAbort = false;
+    const controller = new AbortController();
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 12, type: "message", message: makeChannelMessage(2199) }],
+    }];
+
+    const monitorPromise = runMonitorOnce(controller);
+    await vi.waitFor(() => {
+      const queue = state.durableQueues.get(state.account.accountId);
+      expect(queue?.complete).toHaveBeenCalledWith(expect.any(String), {
+        metadata: { queueEventId: 12 },
+        completedAt: expect.any(Number),
+      });
+    });
+    controller.abort();
+    await monitorPromise;
+
+    expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries only the deferred durable message while another message is in flight", async () => {
+    const { createZulipDurableInboundMessageId } = await import("./durable-receive.js");
+    const firstMessage = makeChannelMessage(99200);
+    const deferredMessage = makeChannelMessage(99201);
+    const deferredDurableId = createZulipDurableInboundMessageId({
+      accountId: state.account.accountId,
+      messageId: String(deferredMessage.id),
+    });
+    enableDurableInboundJournal({ completedLookupFailureIds: [deferredDurableId] });
+    state.autoAbort = false;
+    const controller = new AbortController();
+    let releaseFirstReply!: () => void;
+    const firstReplyRelease = new Promise<void>((resolve) => {
+      releaseFirstReply = resolve;
+    });
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher
+      .mockImplementationOnce(async () => {
+        await firstReplyRelease;
+        return { counts: { tool: 0, block: 0, final: 1 } };
+      })
+      .mockImplementationOnce(async () => {
+        releaseFirstReply();
+        controller.abort();
+        return { counts: { tool: 0, block: 0, final: 1 } };
+      });
+    state.pollResponses = [{
+      result: "success",
+      events: [
+        { id: 15, type: "message", message: firstMessage },
+        { id: 16, type: "message", message: deferredMessage },
+      ],
+    }];
+
+    await runMonitorOnce(controller);
+
+    expect(
+      state.core.channel.inbound.buildContext.mock.calls.map(([input]) => input.messageId),
+    ).toEqual(["99200", "99201"]);
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries deferred durable replay after a transient pending-list failure", async () => {
+    const { createZulipDurableInboundMessageId } = await import("./durable-receive.js");
+    const message = makeChannelMessage(99202);
+    const durableId = createZulipDurableInboundMessageId({
+      accountId: state.account.accountId,
+      messageId: String(message.id),
+    });
+    enableDurableInboundJournal({
+      completedLookupFailureIds: [durableId],
+      deferredPendingListFailures: 1,
+    });
+    state.autoAbort = false;
+    const controller = new AbortController();
+    const runtimeError = vi.fn();
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
+      async () => {
+        controller.abort();
+        return { counts: { tool: 0, block: 0, final: 1 } };
+      },
+    );
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 17, type: "message", message }],
+    }];
+
+    await runMonitorOnce(controller, {
+      log: vi.fn(),
+      error: runtimeError,
+      exit: vi.fn(),
+    });
+
+    const queue = state.durableQueues.get(state.account.accountId);
+    expect(queue?.listPending).toHaveBeenCalledTimes(3);
+    expect(runtimeError).toHaveBeenCalledWith(
+      expect.stringContaining("synthetic deferred pending-list failure"),
+    );
+    expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps retrying a deferred durable message after transient replay metadata failure", async () => {
+    const { createZulipDurableInboundMessageId } = await import("./durable-receive.js");
+    const message = makeChannelMessage(99203);
+    const durableId = createZulipDurableInboundMessageId({
+      accountId: state.account.accountId,
+      messageId: String(message.id),
+    });
+    enableDurableInboundJournal({ completedLookupFailureIds: [durableId] });
+    state.autoAbort = false;
+    state.streamLookups.set("4", new Error("synthetic replay metadata failure"));
+    const controller = new AbortController();
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 18, type: "message", message }],
+    }];
+
+    const monitorPromise = runMonitorOnce(controller);
+    await vi.waitFor(() => {
+      const queue = state.durableQueues.get(state.account.accountId);
+      expect(queue?.release).toHaveBeenCalledWith(durableId, {
+        lastError: "Zulip stream metadata unavailable during durable replay",
+      });
+    });
+    state.streamLookups.set("4", { id: 4, name: "debbie", invite_only: false });
+    await vi.waitFor(() => {
+      const queue = state.durableQueues.get(state.account.accountId);
+      expect(queue?.complete).toHaveBeenCalledWith(durableId, {
+        metadata: { queueEventId: 18 },
+        completedAt: expect.any(Number),
+      });
+    });
+    controller.abort();
+    await monitorPromise;
+
+    expect(fetchZulipStreamMock).toHaveBeenCalledTimes(2);
+    expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries only journal completion after a deferred reply was delivered", async () => {
+    const { createZulipDurableInboundMessageId } = await import("./durable-receive.js");
+    const message = makePrivateMessage(99206);
+    const durableId = createZulipDurableInboundMessageId({
+      accountId: state.account.accountId,
+      messageId: String(message.id),
+    });
+    enableDurableInboundJournal({
+      completedLookupFailureIds: [durableId],
+      queueCompletionFailures: 1,
+    });
+    state.autoAbort = false;
+    const controller = new AbortController();
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 21, type: "message", message }],
+    }];
+
+    const monitorPromise = runMonitorOnce(controller);
+    await vi.waitFor(() => {
+      const queue = state.durableQueues.get(state.account.accountId);
+      expect(queue?.complete).toHaveBeenCalledTimes(2);
+    });
+    controller.abort();
+    await monitorPromise;
+
+    expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries only journal completion after a live reply was delivered", async () => {
+    enableDurableInboundJournal({ queueCompletionFailures: 1 });
+    state.autoAbort = false;
+    const controller = new AbortController();
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 22, type: "message", message: makePrivateMessage(99207) }],
+    }];
+
+    const monitorPromise = runMonitorOnce(controller);
+    await vi.waitFor(() => {
+      const queue = state.durableQueues.get(state.account.accountId);
+      expect(queue?.complete).toHaveBeenCalledTimes(2);
+    });
+    controller.abort();
+    await monitorPromise;
+
+    expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not let one retryable deferred message starve a later ready message", async () => {
+    const { createZulipDurableInboundMessageId } = await import("./durable-receive.js");
+    const retryableMessage = makeChannelMessage(99204);
+    const readyMessage = makePrivateMessage(99205);
+    const retryableDurableId = createZulipDurableInboundMessageId({
+      accountId: state.account.accountId,
+      messageId: String(retryableMessage.id),
+    });
+    const readyDurableId = createZulipDurableInboundMessageId({
+      accountId: state.account.accountId,
+      messageId: String(readyMessage.id),
+    });
+    enableDurableInboundJournal({
+      completedLookupFailureIds: [retryableDurableId, readyDurableId],
+    });
+    state.autoAbort = false;
+    state.streamLookups.set("4", new Error("persistent replay metadata failure"));
+    const controller = new AbortController();
+    state.pollResponses = [{
+      result: "success",
+      events: [
+        { id: 19, type: "message", message: retryableMessage },
+        { id: 20, type: "message", message: readyMessage },
+      ],
+    }];
+
+    const monitorPromise = runMonitorOnce(controller);
+    await vi.waitFor(() => {
+      const queue = state.durableQueues.get(state.account.accountId);
+      expect(queue?.release).toHaveBeenCalledWith(retryableDurableId, {
+        lastError: "Zulip stream metadata unavailable during durable replay",
+      });
+      expect(queue?.complete).toHaveBeenCalledWith(readyDurableId, {
+        metadata: { queueEventId: 20 },
+        completedAt: expect.any(Number),
+      });
+    });
+    controller.abort();
+    await monitorPromise;
+
+    expect(
+      state.core.channel.inbound.buildContext.mock.calls.map(([input]) => input.messageId),
+    ).toEqual(["99205"]);
+    expect(state.durableQueues.get(state.account.accountId)?.release).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("serializes deferred durable replay and queues one follow-up pass", async () => {
+    enableDurableInboundJournal({ completedLookupFailuresAfterAccept: 2 });
+    state.autoAbort = false;
+    const controller = new AbortController();
+    let releaseFirstReply!: () => void;
+    let markFirstReplyStarted!: () => void;
+    const firstReplyStarted = new Promise<void>((resolve) => {
+      markFirstReplyStarted = resolve;
+    });
+    const firstReplyRelease = new Promise<void>((resolve) => {
+      releaseFirstReply = resolve;
+    });
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher
+      .mockImplementationOnce(async () => {
+        markFirstReplyStarted();
+        await firstReplyRelease;
+        return { counts: { tool: 0, block: 0, final: 1 } };
+      })
+      .mockImplementationOnce(async () => {
+        controller.abort();
+        return { counts: { tool: 0, block: 0, final: 1 } };
+      });
+    state.pollResponses = [{
+      result: "success",
+      events: [
+        { id: 13, type: "message", message: makeChannelMessage(99100) },
+        { id: 14, type: "message", message: makeChannelMessage(99101) },
+      ],
+    }];
+
+    const monitorPromise = runMonitorOnce(controller);
+    await firstReplyStarted;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+    releaseFirstReply();
+    await monitorPromise;
+
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(2);
+    expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(2);
   });
 
   it("completes fresh durable inbound messages without filling the legacy tombstone store", async () => {
@@ -2638,6 +3038,39 @@ describe("monitorZulipProvider", () => {
 
     await expect(journal.pending()).resolves.toEqual([]);
     expect(getZulipEventsWithRetryMock).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries only journal completion after a startup replay was delivered", async () => {
+    enableDurableInboundJournal({ queueCompletionFailures: 1 });
+    const {
+      createZulipDurableInboundMessageId,
+      createZulipDurableInboundReceiveJournal,
+      serializeZulipDurableInboundMessage,
+    } = await import("./durable-receive.js");
+    const message = makePrivateMessage(99208);
+    const durableId = createZulipDurableInboundMessageId({
+      accountId: state.account.accountId,
+      messageId: String(message.id),
+    });
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    await journal.accept(durableId, {
+      message: serializeZulipDurableInboundMessage(message),
+      receivedAt: Date.now(),
+    });
+    state.autoAbort = false;
+    state.pollResponses = [{ result: "success", events: [] }];
+    const controller = new AbortController();
+
+    const monitorPromise = runMonitorOnce(controller);
+    await vi.waitFor(() => {
+      const queue = state.durableQueues.get(state.account.accountId);
+      expect(queue?.complete).toHaveBeenCalledTimes(2);
+    });
+    controller.abort();
+    await monitorPromise;
+
     expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(1);
     expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
   });

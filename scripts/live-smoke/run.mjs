@@ -3,6 +3,7 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { chmod, readdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { request as httpRequest } from "node:http";
 import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
@@ -441,12 +442,11 @@ export class EventQueue {
 }
 
 export class Gateway {
-  constructor(port, { termTimeoutMs = 10000, killTimeoutMs = 5000, healthProbe, healthProbeSpawn = spawn, healthProbeTimeoutMs = 5000 } = {}) {
+  constructor(port, { termTimeoutMs = 10000, killTimeoutMs = 5000, healthProbe, healthProbeTimeoutMs = 2000 } = {}) {
     this.port = String(port);
     this.termTimeoutMs = termTimeoutMs;
     this.killTimeoutMs = killTimeoutMs;
     this.healthProbe = healthProbe;
-    this.healthProbeSpawn = healthProbeSpawn;
     this.healthProbeTimeoutMs = healthProbeTimeoutMs;
   }
   async start(signal) {
@@ -471,27 +471,7 @@ export class Gateway {
   }
   async isHealthy() {
     if (this.healthProbe) return this.healthProbe();
-    return new Promise((resolve) => {
-      const probe = this.healthProbeSpawn("pnpm", ["exec", "openclaw", "gateway", "health", "--port", this.port, "--timeout", "2000"], {
-        stdio: "ignore", env: process.env, detached: process.platform !== "win32",
-      });
-      let settled = false;
-      let timeout;
-      const finish = (value) => {
-        if (!settled) {
-          settled = true;
-          clearTimeout(timeout);
-          resolve(value);
-        }
-      };
-      probe.once("error", () => finish(false));
-      probe.once("exit", (code) => finish(code === 0));
-      timeout = setTimeout(() => {
-        try { signalProcessTree(probe, "SIGKILL"); } catch {}
-        finish(false);
-      }, this.healthProbeTimeoutMs);
-      timeout.unref?.();
-    });
+    return probeRunnerLocalGatewayHealth(this.port, this.healthProbeTimeoutMs);
   }
   async waitUntilUnhealthy(timeoutMs) {
     const deadline = Date.now() + timeoutMs;
@@ -523,6 +503,37 @@ export class Gateway {
     if (this.process === child) this.process = undefined;
   }
   async restart(signal) { await this.stop(); signal?.throwIfAborted(); await this.start(signal); }
+}
+
+export function probeRunnerLocalGatewayHealth(port, timeoutMs = 2000) {
+  return new Promise((resolve) => {
+    const probe = httpRequest({
+      hostname: "127.0.0.1",
+      port,
+      path: "/healthz",
+      method: "GET",
+      agent: false,
+    });
+    let response;
+    let timeout;
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      response?.destroy();
+      probe.destroy();
+      resolve(value);
+    };
+    probe.once("response", (incoming) => {
+      response = incoming;
+      finish(incoming.statusCode === 200);
+    });
+    probe.once("error", () => finish(false));
+    timeout = setTimeout(() => finish(false), timeoutMs);
+    timeout.unref?.();
+    probe.end();
+  });
 }
 
 export function isChildRunning(child) {

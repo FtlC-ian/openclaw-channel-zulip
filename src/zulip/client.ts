@@ -394,16 +394,9 @@ export async function registerZulipQueue(
   const eventTypes = params.eventTypes ?? ["message"];
   body.set("event_types", JSON.stringify(eventTypes));
   body.set("event_queue_longpoll_timeout_seconds", "90");
-  // Zulip ANDs narrow terms, so multiple ["stream","x"] filters match nothing.
-  // For single stream, use narrow. For multiple streams or "*", use all_public_streams
-  // and filter client-side. Uses array format [op, operand] per Zulip API v11+.
-  if (params.streams && params.streams.length === 1 && !params.streams.includes("*")) {
-    const narrow = [["stream", params.streams[0]]];
-    body.set("narrow", JSON.stringify(narrow));
-  } else {
-    // For multiple streams or "*", get all public stream messages and filter client-side
-    body.set("all_public_streams", "true");
-  }
+  // A stream narrow excludes direct messages. Receive DMs plus subscribed/private and
+  // public stream messages, then enforce configured stream and topic policy client-side.
+  body.set("all_public_streams", "true");
 
   const payload = await client.request<
     ZulipApiResponse & { queue_id?: string; last_event_id?: number }

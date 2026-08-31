@@ -1562,6 +1562,39 @@ describe("monitorZulipProvider", () => {
     expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
   });
 
+  it("does not pace rejected public-stream traffic ahead of an eligible DM", async () => {
+    state.account.config = {
+      ...state.account.config,
+      streams: ["debbie"],
+    };
+    const unrelatedEvents = Array.from({ length: 20 }, (_, index) => ({
+      id: index + 1,
+      type: "message",
+      message: {
+        ...makeChannelMessage(4000 + index),
+        stream_id: 100 + index,
+        display_recipient: `unrelated-${index}`,
+      },
+    }));
+    state.pollResponses = [{
+      result: "success",
+      events: [
+        ...unrelatedEvents,
+        { id: 21, type: "message", message: makePrivateMessage(4020) },
+      ],
+    }];
+
+    await runMonitorOnce();
+
+    expect(fetchZulipStreamMock).not.toHaveBeenCalled();
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(state.core.channel.inbound.buildContext).toHaveReturnedWith(
+      expect.objectContaining({ ChatType: "direct" }),
+    );
+  });
+
   it("processes stream messages inside configured topic filters with case and whitespace normalization", async () => {
     state.account.config = {
       ...state.account.config,
@@ -1766,7 +1799,7 @@ describe("monitorZulipProvider", () => {
     }
   });
 
-  it("keeps a narrow queue when an enabled override is already covered by legacy streams", async () => {
+  it("keeps configured registration streams when an enabled override is already covered", async () => {
     state.account.streams = ["general"];
     state.account.config = {
       ...state.account.config,

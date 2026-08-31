@@ -33,6 +33,8 @@ import {
   sendZulipTyping,
   addZulipReaction,
   removeZulipReaction,
+  editZulipMessage,
+  deleteZulipMessage,
   type ZulipMessage,
   type ZulipStream,
   type ZulipSubscription,
@@ -79,6 +81,8 @@ export type MonitorZulipOpts = {
 const RECENT_MESSAGE_TTL_MS = 5 * 60_000;
 const RECENT_MESSAGE_MAX = 2000;
 const DEFAULT_ONCHAR_PREFIXES = [">", "!"];
+const PLACEHOLDER_DELETE_MAX_ATTEMPTS = 3;
+const PLACEHOLDER_DELETE_RETRY_MS = 50;
 /** Empty string = Zulip's "general chat" (no topic). */
 const FALLBACK_TOPIC = "";
 
@@ -486,6 +490,11 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     );
     return reactionCleanupChain;
   };
+  const thinkingPlaceholderConfig = account.config.thinkingPlaceholder;
+  const thinkingPlaceholderEnabled = thinkingPlaceholderConfig?.enabled === true;
+  const thinkingPlaceholderText = thinkingPlaceholderConfig?.text?.trim() || "Thinking…";
+  const thinkingPlaceholderErrorText =
+    thinkingPlaceholderConfig?.errorText?.trim() || "I couldn't complete that response.";
 
   const pairing = createChannelPairingController({
     core,
@@ -1057,6 +1066,111 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         logVerboseMessage(`zulip: failed to remove reaction ${reaction.emojiName}: ${String(err)}`);
       }
     };
+    let replyDeliveryCommitted = false;
+    let placeholderMessageId: string | undefined;
+    let placeholderCreationPromise: Promise<void> | undefined;
+    let placeholderDeletionPromise: Promise<boolean> | undefined;
+    let placeholderEditPromise: Promise<boolean> | undefined;
+    let placeholderRemovedForDelivery = false;
+    let deliveredReply = false;
+
+    const deletePlaceholder = async (forDelivery = false): Promise<boolean> => {
+      await placeholderEditPromise;
+      const activeDeletion = placeholderDeletionPromise;
+      if (activeDeletion) {
+        const deleted = await activeDeletion;
+        if (deleted && forDelivery) {
+          placeholderRemovedForDelivery = true;
+        }
+        return deleted;
+      }
+      const placeholderId = placeholderMessageId;
+      if (!placeholderId) {
+        return false;
+      }
+      const deletion = (async () => {
+        try {
+          await deleteZulipMessage(client, { messageId: placeholderId });
+          if (placeholderMessageId === placeholderId) {
+            placeholderMessageId = undefined;
+          }
+          return true;
+        } catch (err) {
+          logVerboseMessage(`zulip: failed to delete thinking placeholder: ${String(err)}`);
+          return false;
+        }
+      })();
+      placeholderDeletionPromise = deletion;
+      const deleted = await deletion;
+      if (placeholderDeletionPromise === deletion) {
+        placeholderDeletionPromise = undefined;
+      }
+      if (deleted && forDelivery) {
+        placeholderRemovedForDelivery = true;
+      }
+      return deleted;
+    };
+
+    const replacePlaceholder = async (content: string): Promise<boolean> => {
+      const activeDeletion = placeholderDeletionPromise;
+      if (activeDeletion) {
+        await activeDeletion;
+        return false;
+      }
+      const activeEdit = placeholderEditPromise;
+      if (activeEdit) {
+        return await activeEdit;
+      }
+      const placeholderId = placeholderMessageId;
+      if (!placeholderId) {
+        return false;
+      }
+      const edit = (async () => {
+        try {
+          await editZulipMessage(client, { messageId: placeholderId, content });
+          if (placeholderMessageId === placeholderId) {
+            placeholderMessageId = undefined;
+          }
+          core.channel.activity.record({
+            channel: "zulip",
+            accountId: account.accountId,
+            direction: "outbound",
+          });
+          return true;
+        } catch (err) {
+          logVerboseMessage(`zulip: failed to replace thinking placeholder: ${String(err)}`);
+          return false;
+        }
+      })();
+      placeholderEditPromise = edit;
+      const edited = await edit;
+      if (placeholderEditPromise === edit) {
+        placeholderEditPromise = undefined;
+      }
+      return edited;
+    };
+
+    const cleanupPlaceholderLifecycle = async (): Promise<void> => {
+      await placeholderCreationPromise;
+      await placeholderEditPromise;
+      for (
+        let attempt = 1;
+        placeholderMessageId && attempt <= PLACEHOLDER_DELETE_MAX_ATTEMPTS;
+        attempt += 1
+      ) {
+        if (await deletePlaceholder()) {
+          return;
+        }
+        if (attempt < PLACEHOLDER_DELETE_MAX_ATTEMPTS) {
+          await delay(PLACEHOLDER_DELETE_RETRY_MS);
+        }
+      }
+      if (placeholderMessageId) {
+        runtime.error?.(
+          `zulip: thinking placeholder cleanup failed after ${PLACEHOLDER_DELETE_MAX_ATTEMPTS} attempts`,
+        );
+      }
+    };
     if (opts.abortSignal?.aborted || monitorReactionShutdownStarted) {
       return ABORTED_INBOUND_MESSAGE;
     }
@@ -1086,7 +1200,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     let statusLifecycleSettled = false;
     let subagentLifecycleSettled = false;
     const releaseReactionCleanupIfSettled = () => {
-      if (statusLifecycleSettled && subagentLifecycleSettled) {
+      if (statusLifecycleSettled && subagentLifecycleSettled && !placeholderMessageId) {
         activeReactionCleanups.delete(cancelReactionLifecycle);
       }
     };
@@ -1099,7 +1213,11 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
           terminalCleanupTimer = undefined;
         }
         activeReactionCleanups.delete(cancelReactionLifecycle);
-        await Promise.allSettled([statusReactions.clear(), subagentContext.cancel()]);
+        await Promise.allSettled([
+          statusReactions.clear(),
+          subagentContext.cancel(),
+          cleanupPlaceholderLifecycle(),
+        ]);
       })();
       return reactionLifecycleCleanup;
     };
@@ -1165,7 +1283,37 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       },
     });
 
-    let replyDeliveryCommitted = false;
+    if (
+      thinkingPlaceholderEnabled &&
+      !reactionLifecycleCancelled &&
+      !monitorReactionShutdownStarted &&
+      !opts.abortSignal?.aborted
+    ) {
+      placeholderCreationPromise = (async () => {
+        try {
+          const placeholder = await sendMessageZulip(to, thinkingPlaceholderText, {
+            cfg,
+            accountId: account.accountId,
+            topic,
+          });
+          if (placeholder.messageId !== "unknown") {
+            placeholderMessageId = placeholder.messageId;
+          } else {
+            logVerboseMessage("zulip: thinking placeholder send returned no message id");
+          }
+        } catch (err) {
+          logVerboseMessage(`zulip: failed to create thinking placeholder: ${String(err)}`);
+        }
+      })();
+      await placeholderCreationPromise;
+      if (reactionLifecycleCancelled || monitorReactionShutdownStarted || opts.abortSignal?.aborted) {
+        await cancelReactionLifecycle();
+        opts.statusSink?.({ lastInboundAt: Date.now() });
+        return ABORTED_INBOUND_MESSAGE;
+      }
+    }
+    let deliveryError: unknown;
+    let hasDeliveryError = false;
     const dispatcherOptions = {
       ...prefixOptions,
       humanDelay: core.channel.reply.resolveHumanDelayConfig(cfg, route.agentId),
@@ -1175,6 +1323,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       },
       onIdle: typingCallbacks.onIdle,
       deliver: async (payload: ReplyPayload) => {
+        let deliveredThisPayload = false;
         const mediaUrls = payload.mediaUrls ?? (payload.mediaUrl ? [payload.mediaUrl] : []);
         const hasOutboundMetadata = Boolean(payload.presentation || payload.channelData);
         const rawText = core.channel.text.convertMarkdownTables(payload.text ?? "", tableMode);
@@ -1188,6 +1337,22 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
             if (!chunk && !(first && hasOutboundMetadata)) {
               continue;
             }
+            const replacedPlaceholder =
+              first &&
+              chunk &&
+              !hasOutboundMetadata &&
+              resolvedTopic === topic &&
+              (await replacePlaceholder(chunk));
+            if (replacedPlaceholder) {
+              replyDeliveryCommitted = true;
+              deliveredReply = true;
+              deliveredThisPayload = true;
+              first = false;
+              continue;
+            }
+            if (first) {
+              await deletePlaceholder(true);
+            }
             await sendMessageZulip(to, chunk, {
               cfg,
               accountId: account.accountId,
@@ -1196,9 +1361,12 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
               channelData: first ? payload.channelData : undefined,
             });
             replyDeliveryCommitted = true;
+            deliveredReply = true;
+            deliveredThisPayload = true;
             first = false;
           }
         } else {
+          await deletePlaceholder(true);
           let first = true;
           for (const mediaUrl of mediaUrls) {
             const isFirst = first;
@@ -1212,12 +1380,20 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
               channelData: isFirst ? payload.channelData : undefined,
             });
             replyDeliveryCommitted = true;
+            deliveredReply = true;
+            deliveredThisPayload = true;
             first = false;
           }
         }
-        opts.statusSink?.({ lastOutboundAt: Date.now() });
+        if (deliveredThisPayload) {
+          opts.statusSink?.({ lastOutboundAt: Date.now() });
+        }
       },
       onError: (err: unknown) => {
+        if (!hasDeliveryError) {
+          deliveryError = err;
+          hasDeliveryError = true;
+        }
         runtime.error?.(`zulip reply failed: ${String(err)}`);
       },
     };
@@ -1263,6 +1439,9 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       dispatchError = err;
       runtime.error?.(`zulip reply failed: ${String(err)}`);
     }
+    if (dispatchError === undefined && hasDeliveryError) {
+      dispatchError = deliveryError;
+    }
 
     const successfulReplyCount =
       (dispatchResult?.counts?.tool ?? 0) +
@@ -1273,6 +1452,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       replyDeliveryCommitted ? undefined : ABORTED_INBOUND_MESSAGE;
 
     if (reactionLifecycleCancelled || opts.abortSignal?.aborted) {
+      await deletePlaceholder();
       await cancelReactionLifecycle();
       opts.statusSink?.({ lastInboundAt: Date.now() });
       return abortOutcome();
@@ -1280,12 +1460,49 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
 
     await subagentContext.finish();
     if (reactionLifecycleCancelled || opts.abortSignal?.aborted) {
+      await deletePlaceholder();
       await cancelReactionLifecycle();
       opts.statusSink?.({ lastInboundAt: Date.now() });
       return abortOutcome();
     }
     const finalDeliveryFailed = (dispatchResult?.failedCounts?.final ?? 0) > 0;
     const terminalError = Boolean(dispatchError) || finalDeliveryFailed;
+    if (placeholderMessageId) {
+      const cancelled = dispatchError instanceof Error && dispatchError.name === "AbortError";
+      if (!terminalError || cancelled || deliveredReply) {
+        await deletePlaceholder();
+      } else {
+        const errorFeedbackCommitted = await replacePlaceholder(thinkingPlaceholderErrorText);
+        if (errorFeedbackCommitted) {
+          replyDeliveryCommitted = true;
+          opts.statusSink?.({ lastOutboundAt: Date.now() });
+        } else {
+          await deletePlaceholder();
+        }
+      }
+    } else if (
+      dispatchError &&
+      !(dispatchError instanceof Error && dispatchError.name === "AbortError") &&
+      placeholderRemovedForDelivery &&
+      !deliveredReply
+    ) {
+      try {
+        await sendMessageZulip(to, thinkingPlaceholderErrorText, {
+          cfg,
+          accountId: account.accountId,
+          topic,
+        });
+        core.channel.activity.record({
+          channel: "zulip",
+          accountId: account.accountId,
+          direction: "outbound",
+        });
+        replyDeliveryCommitted = true;
+        opts.statusSink?.({ lastOutboundAt: Date.now() });
+      } catch (err) {
+        logVerboseMessage(`zulip: failed to send thinking placeholder error: ${String(err)}`);
+      }
+    }
     const retryableNoDelivery = terminalError && !replyDeliveryCommitted;
     if (terminalError) {
       await statusReactions.setError();
@@ -1293,6 +1510,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       await statusReactions.setDone();
     }
     if (reactionLifecycleCancelled || opts.abortSignal?.aborted) {
+      await deletePlaceholder();
       await cancelReactionLifecycle();
       opts.statusSink?.({ lastInboundAt: Date.now() });
       return abortOutcome();

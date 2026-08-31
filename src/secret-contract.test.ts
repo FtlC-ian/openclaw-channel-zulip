@@ -40,6 +40,27 @@ describe("Zulip secret contract", () => {
     expect(zulipChannelConfigSchema.runtime!.safeParse({ agentReactionGuidance: "ack" }).success).toBe(false);
   });
 
+  it("schema accepts account-scoped thinking placeholders and rejects empty text", () => {
+    expect(
+      zulipChannelConfigSchema.runtime!.safeParse({
+        accounts: {
+          work: {
+            thinkingPlaceholder: {
+              enabled: true,
+              text: "Thinking…",
+              errorText: "Turn failed.",
+            },
+          },
+        },
+      }).success,
+    ).toBe(true);
+    expect(
+      zulipChannelConfigSchema.runtime!.safeParse({
+        thinkingPlaceholder: { enabled: true, text: "" },
+      }).success,
+    ).toBe(false);
+  });
+
   it.each([
     { value: { dmPolicy: "open" }, path: ["allowFrom"] },
     { value: { accounts: { work: { dmPolicy: "open" } } }, path: ["accounts", "work", "allowFrom"] },

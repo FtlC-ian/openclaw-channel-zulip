@@ -125,9 +125,12 @@ const state = vi.hoisted(() => {
     streamLookups: new Map<string, Record<string, unknown> | Error>(),
     downloadedUploads: [] as Array<{ buffer: Buffer; contentType: string; filename: string }>,
     extractedUploadUrls: [] as string[],
-    client: { authHeader: "fake-auth" },
+    editZulipMessage: vi.fn(async () => {}),
+    deleteZulipMessage: vi.fn(async () => {}),
     addZulipReaction: vi.fn(async () => {}),
     removeZulipReaction: vi.fn(async () => {}),
+    sendMessageZulip: vi.fn(async () => ({ messageId: "outbound-1", channelId: "debbie" })),
+    client: { authHeader: "fake-auth" },
     botUser: {
       id: 999,
       email: "debbie-bot@zlp.pubnerd.app",
@@ -196,6 +199,8 @@ vi.mock("./client.js", () => ({
   sendZulipTyping: vi.fn(async () => {}),
   addZulipReaction: state.addZulipReaction,
   removeZulipReaction: state.removeZulipReaction,
+  editZulipMessage: state.editZulipMessage,
+  deleteZulipMessage: state.deleteZulipMessage,
 }));
 
 vi.mock("./accounts.js", () => ({
@@ -203,7 +208,7 @@ vi.mock("./accounts.js", () => ({
 }));
 
 vi.mock("./send.js", () => ({
-  sendMessageZulip: vi.fn(async () => {}),
+  sendMessageZulip: state.sendMessageZulip,
 }));
 
 const downloadZulipUploadMock = vi.fn(async () => {
@@ -302,6 +307,7 @@ function makePrivateMessage(id: number, senderEmail = "user8@zlp.pubnerd.app") {
 async function runMonitorOnce(
   controller = new AbortController(),
   runtime?: RuntimeEnv,
+  options: { statusSink?: (patch: Record<string, unknown>) => void } = {},
 ) {
   const { monitorZulipProvider } = await import("./monitor.js");
   state.abortController = controller;
@@ -309,6 +315,7 @@ async function runMonitorOnce(
     config: state.core.config,
     runtime,
     abortSignal: state.abortController.signal,
+    statusSink: options.statusSink,
   });
 }
 
@@ -366,6 +373,12 @@ describe("monitorZulipProvider", () => {
     state.extractedUploadUrls = [];
     state.abortController = undefined;
     state.autoAbort = true;
+    state.editZulipMessage.mockReset();
+    state.deleteZulipMessage.mockReset();
+    state.addZulipReaction.mockReset();
+    state.removeZulipReaction.mockReset();
+    state.sendMessageZulip.mockReset();
+    state.sendMessageZulip.mockResolvedValue({ messageId: "outbound-1", channelId: "debbie" });
     downloadZulipUploadMock.mockClear();
     extractZulipUploadUrlsMock.mockClear();
     registerZulipQueueMock.mockClear();
@@ -560,6 +573,44 @@ describe("monitorZulipProvider", () => {
     );
   });
 
+  it("retries a transient placeholder deletion failure during ordinary abort", async () => {
+    state.autoAbort = false;
+    state.account.config.thinkingPlaceholder = { enabled: true };
+    state.deleteZulipMessage
+      .mockRejectedValueOnce(new Error("transient delete failure"))
+      .mockResolvedValueOnce(undefined);
+    let dispatchStarted!: () => void;
+    const dispatched = new Promise<void>((resolve) => {
+      dispatchStarted = resolve;
+    });
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
+      async ({ replyOptions }) => {
+        dispatchStarted();
+        await new Promise<void>((resolve) => {
+          replyOptions.abortSignal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+        return {};
+      },
+    );
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 1, type: "message", message: makeChannelMessage(1199) }],
+    }];
+
+    const monitorPromise = runMonitorOnce();
+    await dispatched;
+    state.abortController?.abort();
+    await monitorPromise;
+
+    expect(state.deleteZulipMessage).toHaveBeenCalledTimes(2);
+    expect(state.deleteZulipMessage).toHaveBeenNthCalledWith(1, state.client, {
+      messageId: "outbound-1",
+    });
+    expect(state.deleteZulipMessage).toHaveBeenNthCalledWith(2, state.client, {
+      messageId: "outbound-1",
+    });
+  });
+
   it("clears active reactions through the gateway-stop hook", async () => {
     state.autoAbort = false;
     state.account.config.reactions = { enabled: true, clearOnFinish: false };
@@ -644,6 +695,66 @@ describe("monitorZulipProvider", () => {
       state.client,
       expect.objectContaining({ messageId: "1092", emojiName: "cross_mark" }),
     );
+  });
+
+  it("bounds persistent placeholder deletion failure during gateway stop", async () => {
+    state.autoAbort = false;
+    state.account.config.thinkingPlaceholder = { enabled: true };
+    let creationStarted!: () => void;
+    const creating = new Promise<void>((resolve) => {
+      creationStarted = resolve;
+    });
+    let allowCreation!: () => void;
+    const creationAllowed = new Promise<void>((resolve) => {
+      allowCreation = resolve;
+    });
+    state.sendMessageZulip.mockImplementationOnce(async () => {
+      creationStarted();
+      await creationAllowed;
+      return { messageId: "pending-placeholder", channelId: "debbie" };
+    });
+    state.deleteZulipMessage.mockRejectedValue(new Error("permission denied"));
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async () => {
+      throw new Error("dispatch must not start during gateway shutdown");
+    });
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 1, type: "message", message: makeChannelMessage(1099) }],
+    }];
+
+    const runtimeError = vi.fn();
+    const monitorPromise = runMonitorOnce(new AbortController(), {
+      log: vi.fn(),
+      error: runtimeError,
+      exit: vi.fn(),
+    });
+    await creating;
+    const { clearActiveZulipMonitorReactionLifecycles } = await import("./monitor.js");
+    let cleanupSettled = false;
+    const cleanup = clearActiveZulipMonitorReactionLifecycles().then(() => {
+      cleanupSettled = true;
+    });
+    await Promise.resolve();
+    expect(cleanupSettled).toBe(false);
+    expect(state.deleteZulipMessage).not.toHaveBeenCalled();
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+
+    allowCreation();
+    await expect(Promise.race([
+      cleanup.then(() => "settled"),
+      new Promise<string>((resolve) => setTimeout(() => resolve("timed-out"), 500)),
+    ])).resolves.toBe("settled");
+
+    expect(state.deleteZulipMessage).toHaveBeenCalledTimes(3);
+    expect(state.deleteZulipMessage).toHaveBeenNthCalledWith(1, state.client, {
+      messageId: "pending-placeholder",
+    });
+    expect(runtimeError).toHaveBeenCalledWith(
+      "zulip: thinking placeholder cleanup failed after 3 attempts",
+    );
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+    state.abortController?.abort();
+    await monitorPromise;
   });
 
   it("does not add a terminal reaction when abort races subagent settlement", async () => {
@@ -782,6 +893,274 @@ describe("monitorZulipProvider", () => {
       state.client,
       expect.objectContaining({ messageId: "1096", emojiName: "eyes" }),
     );
+  });
+
+  it("replaces a stream thinking placeholder with the first text chunk", async () => {
+    state.account.config.thinkingPlaceholder = { enabled: true, text: "Thinking…" };
+    state.core.channel.text.chunkMarkdownTextWithMode.mockReturnValue(["first chunk", "second chunk"]);
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }) => {
+      await dispatcherOptions.deliver({ text: "reply text" });
+    });
+    state.pollResponses = [{ result: "success", events: [{ id: 1, type: "message", message: makeChannelMessage(4001) }] }];
+
+    await runMonitorOnce();
+
+    expect(state.sendMessageZulip).toHaveBeenNthCalledWith(1, "stream:debbie:zulip-plugin-pr", "Thinking…", expect.objectContaining({ topic: "zulip-plugin-pr" }));
+    expect(state.editZulipMessage).toHaveBeenCalledWith(state.client, { messageId: "outbound-1", content: "first chunk" });
+    expect(state.sendMessageZulip).toHaveBeenNthCalledWith(2, "stream:debbie:zulip-plugin-pr", "second chunk", expect.any(Object));
+    expect(state.deleteZulipMessage).not.toHaveBeenCalled();
+  });
+
+  it("removes a DM thinking placeholder after a silent turn", async () => {
+    state.account.config.thinkingPlaceholder = { enabled: true };
+    const statusSink = vi.fn();
+    state.pollResponses = [{ result: "success", events: [{ id: 1, type: "message", message: makePrivateMessage(4002) }] }];
+
+    await runMonitorOnce(new AbortController(), undefined, { statusSink });
+
+    expect(state.sendMessageZulip).toHaveBeenCalledWith("user:user8@zlp.pubnerd.app", "Thinking…", expect.any(Object));
+    expect(state.deleteZulipMessage).toHaveBeenCalledWith(state.client, { messageId: "outbound-1" });
+    expect(state.editZulipMessage).not.toHaveBeenCalled();
+    expect(statusSink).not.toHaveBeenCalledWith(expect.objectContaining({ lastOutboundAt: expect.any(Number) }));
+  });
+
+  it("adds the configured success reaction after a silent turn", async () => {
+    state.account.config.reactions = {
+      enabled: true,
+      clearOnFinish: false,
+      onStart: "",
+      onSuccess: "check",
+    };
+    state.pollResponses = [{ result: "success", events: [{ id: 1, type: "message", message: makeChannelMessage(4010) }] }];
+
+    await runMonitorOnce();
+
+    expect(state.addZulipReaction).toHaveBeenCalledExactlyOnceWith(state.client, {
+      messageId: "4010",
+      emojiName: "check",
+    });
+  });
+
+  it("removes the placeholder before a presentation-only reply", async () => {
+    state.account.config.thinkingPlaceholder = { enabled: true };
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }) => {
+      await dispatcherOptions.deliver({
+        presentation: { blocks: [{ type: "buttons", buttons: [{ label: "Confirm", action: "confirm" }] }] },
+      });
+    });
+    state.pollResponses = [{ result: "success", events: [{ id: 1, type: "message", message: makeChannelMessage(4003) }] }];
+
+    await runMonitorOnce();
+
+    expect(state.deleteZulipMessage).toHaveBeenCalledWith(state.client, { messageId: "outbound-1" });
+    expect(state.sendMessageZulip).toHaveBeenNthCalledWith(2, "stream:debbie:zulip-plugin-pr", "", expect.objectContaining({ presentation: expect.any(Object) }));
+  });
+
+  it("removes the placeholder before a media-only reply", async () => {
+    state.account.config.thinkingPlaceholder = { enabled: true };
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }) => {
+      await dispatcherOptions.deliver({ mediaUrl: "https://example.com/result.png" });
+    });
+    state.pollResponses = [{ result: "success", events: [{ id: 1, type: "message", message: makePrivateMessage(4006) }] }];
+
+    await runMonitorOnce();
+
+    expect(state.deleteZulipMessage).toHaveBeenCalledWith(state.client, { messageId: "outbound-1" });
+    expect(state.sendMessageZulip).toHaveBeenNthCalledWith(2, "user:user8@zlp.pubnerd.app", "", expect.objectContaining({ mediaUrl: "https://example.com/result.png" }));
+  });
+
+  it("converts the placeholder to an error when dispatch fails before delivery", async () => {
+    state.account.config.thinkingPlaceholder = { enabled: true, errorText: "Turn failed." };
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockRejectedValue(new Error("model failed"));
+    state.pollResponses = [{ result: "success", events: [{ id: 1, type: "message", message: makeChannelMessage(4004) }] }];
+
+    await runMonitorOnce();
+
+    expect(state.editZulipMessage).toHaveBeenCalledWith(state.client, { messageId: "outbound-1", content: "Turn failed." });
+    expect(state.deleteZulipMessage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      name: "media",
+      payload: { mediaUrl: "https://example.com/result.png" },
+      editFails: false,
+      messageId: 4011,
+    },
+    {
+      name: "presentation-only",
+      payload: {
+        presentation: { blocks: [{ type: "buttons", buttons: [{ label: "Confirm", action: "confirm" }] }] },
+      },
+      editFails: false,
+      messageId: 4012,
+    },
+    {
+      name: "topic-change",
+      payload: { text: "[[zulip_topic: another-topic]] actual reply" },
+      editFails: false,
+      messageId: 4013,
+    },
+    {
+      name: "text replacement fallback",
+      payload: { text: "actual reply" },
+      editFails: true,
+      messageId: 4014,
+    },
+  ])("sends configured error text when a $name send fails after placeholder cleanup", async ({ payload, editFails, messageId }) => {
+    state.account.config.thinkingPlaceholder = { enabled: true, errorText: "Turn failed." };
+    state.account.config.reactions = {
+      enabled: true,
+      clearOnFinish: false,
+      onStart: "",
+      onSuccess: "check",
+      onError: "warning",
+    };
+    if (editFails) {
+      state.editZulipMessage.mockRejectedValueOnce(new Error("edit denied"));
+    }
+    state.sendMessageZulip
+      .mockResolvedValueOnce({ messageId: "placeholder-1", channelId: "debbie" })
+      .mockRejectedValueOnce(new Error("reply send failed"))
+      .mockResolvedValueOnce({ messageId: "error-1", channelId: "debbie" });
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }) => {
+      try {
+        await dispatcherOptions.deliver(payload);
+      } catch (err) {
+        dispatcherOptions.onError(err);
+      }
+    });
+    state.pollResponses = [{ result: "success", events: [{ id: 1, type: "message", message: makeChannelMessage(messageId) }] }];
+
+    await runMonitorOnce();
+
+    expect(state.deleteZulipMessage).toHaveBeenCalledWith(state.client, { messageId: "placeholder-1" });
+    expect(state.sendMessageZulip).toHaveBeenCalledTimes(3);
+    expect(state.sendMessageZulip).toHaveBeenNthCalledWith(
+      3,
+      "stream:debbie:zulip-plugin-pr",
+      "Turn failed.",
+      expect.objectContaining({ topic: "zulip-plugin-pr" }),
+    );
+    expect(state.addZulipReaction).toHaveBeenCalledExactlyOnceWith(state.client, {
+      messageId: String(messageId),
+      emojiName: "warning",
+    });
+    expect(state.addZulipReaction).not.toHaveBeenCalledWith(
+      state.client,
+      expect.objectContaining({ emojiName: "check" }),
+    );
+  });
+
+  it.each([
+    {
+      name: "text chunk",
+      payload: { text: "reply text", channelData: { test: true } },
+      chunks: ["first chunk", "second chunk"],
+      expectedFirstReply: "first chunk",
+      expectedFirstReplyOptions: { channelData: { test: true } },
+      messageId: 4015,
+    },
+    {
+      name: "media item",
+      payload: {
+        text: "caption",
+        mediaUrls: ["https://example.com/first.png", "https://example.com/second.png"],
+      },
+      chunks: undefined,
+      expectedFirstReply: "caption",
+      expectedFirstReplyOptions: { mediaUrl: "https://example.com/first.png" },
+      messageId: 4016,
+    },
+  ])("does not append error text after partial $name delivery", async ({
+    payload,
+    chunks,
+    expectedFirstReply,
+    expectedFirstReplyOptions,
+    messageId,
+  }) => {
+    state.account.config.thinkingPlaceholder = { enabled: true, errorText: "Turn failed." };
+    if (chunks) {
+      state.core.channel.text.chunkMarkdownTextWithMode.mockReturnValue(chunks);
+    }
+    state.sendMessageZulip
+      .mockResolvedValueOnce({ messageId: "placeholder-1", channelId: "debbie" })
+      .mockResolvedValueOnce({ messageId: "reply-1", channelId: "debbie" })
+      .mockRejectedValueOnce(new Error("later reply send failed"));
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }) => {
+      try {
+        await dispatcherOptions.deliver(payload);
+      } catch (err) {
+        dispatcherOptions.onError(err);
+      }
+    });
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 1, type: "message", message: makeChannelMessage(messageId) }],
+    }];
+
+    await runMonitorOnce();
+
+    expect(state.deleteZulipMessage).toHaveBeenCalledWith(state.client, {
+      messageId: "placeholder-1",
+    });
+    expect(state.sendMessageZulip).toHaveBeenNthCalledWith(
+      2,
+      "stream:debbie:zulip-plugin-pr",
+      expectedFirstReply,
+      expect.objectContaining(expectedFirstReplyOptions),
+    );
+    expect(state.sendMessageZulip).toHaveBeenCalledTimes(3);
+    expect(state.sendMessageZulip).not.toHaveBeenCalledWith(
+      "stream:debbie:zulip-plugin-pr",
+      "Turn failed.",
+      expect.any(Object),
+    );
+  });
+
+  it("removes the placeholder when the turn is cancelled", async () => {
+    state.account.config.thinkingPlaceholder = { enabled: true };
+    const cancelled = new Error("cancelled");
+    cancelled.name = "AbortError";
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockRejectedValue(cancelled);
+    state.pollResponses = [{ result: "success", events: [{ id: 1, type: "message", message: makeChannelMessage(4007) }] }];
+
+    await runMonitorOnce();
+
+    expect(state.deleteZulipMessage).toHaveBeenCalledWith(state.client, { messageId: "outbound-1" });
+    expect(state.editZulipMessage).not.toHaveBeenCalled();
+  });
+
+  it("continues normally when placeholder creation fails", async () => {
+    state.account.config.thinkingPlaceholder = { enabled: true };
+    state.sendMessageZulip
+      .mockRejectedValueOnce(new Error("placeholder rejected"))
+      .mockResolvedValueOnce({ messageId: "reply-1", channelId: "debbie" });
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }) => {
+      await dispatcherOptions.deliver({ text: "actual reply" });
+    });
+    state.pollResponses = [{ result: "success", events: [{ id: 1, type: "message", message: makeChannelMessage(4008) }] }];
+
+    await runMonitorOnce();
+
+    expect(state.sendMessageZulip).toHaveBeenCalledTimes(2);
+    expect(state.sendMessageZulip).toHaveBeenNthCalledWith(2, "stream:debbie:zulip-plugin-pr", "actual reply", expect.any(Object));
+    expect(state.editZulipMessage).not.toHaveBeenCalled();
+    expect(state.deleteZulipMessage).not.toHaveBeenCalled();
+  });
+
+  it("falls back to a normal send when replacing the placeholder fails", async () => {
+    state.account.config.thinkingPlaceholder = { enabled: true };
+    state.editZulipMessage.mockRejectedValueOnce(new Error("edit denied"));
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }) => {
+      await dispatcherOptions.deliver({ text: "actual reply" });
+    });
+    state.pollResponses = [{ result: "success", events: [{ id: 1, type: "message", message: makeChannelMessage(4005) }] }];
+
+    await runMonitorOnce();
+
+    expect(state.deleteZulipMessage).toHaveBeenCalledWith(state.client, { messageId: "outbound-1" });
+    expect(state.sendMessageZulip).toHaveBeenNthCalledWith(2, "stream:debbie:zulip-plugin-pr", "actual reply", expect.any(Object));
   });
 
   it("forwards presentation and channel data only with the first text chunk", async () => {
@@ -1766,6 +2145,90 @@ describe("monitorZulipProvider", () => {
       metadata: { queueEventId: 2 },
     });
     expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(1);
+  });
+
+  it("commits edited placeholder error feedback and does not replay it", async () => {
+    enableDurableInboundJournal();
+    state.account.config.thinkingPlaceholder = { enabled: true, errorText: "Turn failed." };
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockRejectedValueOnce(
+      new Error("synthetic model failure"),
+    );
+    const statusSink = vi.fn();
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 6, type: "message", message: makeChannelMessage(2111) }],
+    }];
+
+    await runMonitorOnce(new AbortController(), undefined, { statusSink });
+
+    const pendingStore = Array.from(state.durableStores.entries()).find(([namespace]) =>
+      namespace.includes(".pending."),
+    )?.[1];
+    const completedStore = Array.from(state.durableStores.entries()).find(([namespace]) =>
+      namespace.includes(".completed."),
+    )?.[1];
+    await expect(pendingStore?.entries()).resolves.toEqual([]);
+    await expect(completedStore?.entries()).resolves.toHaveLength(1);
+    expect(state.editZulipMessage).toHaveBeenCalledExactlyOnceWith(state.client, {
+      messageId: "outbound-1",
+      content: "Turn failed.",
+    });
+    expect(statusSink).toHaveBeenCalledWith({ lastOutboundAt: expect.any(Number) });
+
+    await runMonitorOnce();
+
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+    expect(state.editZulipMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("commits fallback error feedback after placeholder cleanup and does not replay it", async () => {
+    enableDurableInboundJournal();
+    state.account.config.thinkingPlaceholder = { enabled: true, errorText: "Turn failed." };
+    state.sendMessageZulip
+      .mockResolvedValueOnce({ messageId: "placeholder-1", channelId: "debbie" })
+      .mockRejectedValueOnce(new Error("reply send failed"))
+      .mockResolvedValueOnce({ messageId: "error-1", channelId: "debbie" });
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
+      async ({ dispatcherOptions }) => {
+        try {
+          await dispatcherOptions.deliver({
+            presentation: {
+              blocks: [{ type: "buttons", buttons: [{ label: "Confirm", action: "confirm" }] }],
+            },
+          });
+        } catch (err) {
+          dispatcherOptions.onError(err);
+        }
+      },
+    );
+    const statusSink = vi.fn();
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 7, type: "message", message: makeChannelMessage(2112) }],
+    }];
+
+    await runMonitorOnce(new AbortController(), undefined, { statusSink });
+
+    const pendingStore = Array.from(state.durableStores.entries()).find(([namespace]) =>
+      namespace.includes(".pending."),
+    )?.[1];
+    const completedStore = Array.from(state.durableStores.entries()).find(([namespace]) =>
+      namespace.includes(".completed."),
+    )?.[1];
+    await expect(pendingStore?.entries()).resolves.toEqual([]);
+    await expect(completedStore?.entries()).resolves.toHaveLength(1);
+    expect(state.sendMessageZulip).toHaveBeenNthCalledWith(
+      3,
+      "stream:debbie:zulip-plugin-pr",
+      "Turn failed.",
+      expect.objectContaining({ topic: "zulip-plugin-pr" }),
+    );
+    expect(statusSink).toHaveBeenCalledWith({ lastOutboundAt: expect.any(Number) });
+
+    await runMonitorOnce();
+
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+    expect(state.sendMessageZulip).toHaveBeenCalledTimes(3);
   });
 
   it.each([

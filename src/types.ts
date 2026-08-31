@@ -101,6 +101,14 @@ export type ZulipAccountConfig = {
     /** Dedicated indicator while spawned children are active. Empty string suppresses it. */
     subagent?: string;
   };
+  /** Optional edit-in-place progress message. Disabled unless enabled is true. */
+  thinkingPlaceholder?: {
+    enabled?: boolean;
+    /** Initial placeholder text. Default: "Thinking…". */
+    text?: string;
+    /** Text retained when the turn fails before delivering a reply. */
+    errorText?: string;
+  };
   /** Model prompt guidance for agent-controlled reactions. Does not enable automatic status reactions. Default: "minimal". */
   agentReactionGuidance?: ZulipAgentReactionGuidance;
   /** Outbound text chunk size (chars). Default: 4000. */

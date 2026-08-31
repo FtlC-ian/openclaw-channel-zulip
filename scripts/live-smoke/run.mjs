@@ -63,23 +63,24 @@ export function redactError(error) {
     .slice(0, 500);
 }
 
-export function isBotMessage(event, botEmail, marker) {
-  if (event?.type !== "message" || event.message?.sender_email !== botEmail) return false;
+export function isBotMessage(event, botUserId, marker) {
+  if (event?.type !== "message" || !sameUserId(event.message?.sender_id, botUserId)) return false;
   return isExactRenderedContent(event.message?.content, marker);
 }
 
-export function isPrivateBotEvent(event, botEmail, actorEmail) {
-  if (event?.type !== "message" || event.message?.type !== "private" || event.message?.sender_email !== botEmail) return false;
+export function isPrivateBotEvent(event, botUserId, actorUserId) {
+  if (event?.type !== "message" || event.message?.type !== "private" ||
+    !sameUserId(event.message?.sender_id, botUserId)) return false;
   const recipients = Array.isArray(event.message?.display_recipient) ? event.message.display_recipient : [];
-  return hasExactDirectParticipants(recipients, botEmail, actorEmail);
+  return hasExactDirectParticipants(recipients, botUserId, actorUserId);
 }
 
-export function isPrivateBotMessage(event, botEmail, actorEmail, marker) {
-  return isPrivateBotEvent(event, botEmail, actorEmail) && isExactRenderedContent(event.message?.content, marker);
+export function isPrivateBotMessage(event, botUserId, actorUserId, marker) {
+  return isPrivateBotEvent(event, botUserId, actorUserId) && isExactRenderedContent(event.message?.content, marker);
 }
 
-export function isDurableReplyEvent(event, botEmail, actorEmail, marker) {
-  return isPrivateBotEvent(event, botEmail, actorEmail) && String(event.message?.content ?? "").includes(marker);
+export function isDurableReplyEvent(event, botUserId, actorUserId, marker) {
+  return isPrivateBotEvent(event, botUserId, actorUserId) && String(event.message?.content ?? "").includes(marker);
 }
 
 export function eventOccursBefore(events, first, second) {
@@ -103,28 +104,29 @@ export function captureMessageIds(events, predicate, target) {
   return matches;
 }
 
-export function captureObservedSmokeBotMessageIds(events, { botEmail, actorEmail, stream, runId }, target, excluded = new Set()) {
+export function captureObservedSmokeBotMessageIds(events, { botUserId, actorUserId, stream, runId }, target, excluded = new Set()) {
   return captureMessageIds(events, (event) => {
-    if (event?.type !== "message" || event.message?.sender_email !== botEmail || excluded.has(String(event.message?.id))) return false;
-    if (isPrivateBotEvent(event, botEmail, actorEmail)) return true;
+    if (event?.type !== "message" || !sameUserId(event.message?.sender_id, botUserId) || excluded.has(String(event.message?.id))) return false;
+    if (isPrivateBotEvent(event, botUserId, actorUserId)) return true;
     const content = String(event.message?.content ?? "");
     return content.includes(runId) || (event.message?.type === "stream" &&
       event.message?.display_recipient === stream && event.message?.subject === `${runId}-topic`);
   }, target);
 }
 
-export function isPrivateTypingEvent(event, botEmail, actorEmail, op) {
+export function isPrivateTypingEvent(event, botUserId, actorUserId, op) {
   if (event?.type !== "typing" || event.op !== op) return false;
-  const senderEmail = event.sender?.email ?? event.sender_email;
-  if (senderEmail !== botEmail || (event.message_type && !["direct", "private"].includes(event.message_type))) return false;
+  const senderUserId = event.sender?.user_id ?? event.sender?.id ?? event.sender_id;
+  if (!sameUserId(senderUserId, botUserId) ||
+    (event.message_type && !["direct", "private"].includes(event.message_type))) return false;
   const recipients = Array.isArray(event.recipients) ? event.recipients : [];
-  return hasExactDirectParticipants(recipients, botEmail, actorEmail);
+  return hasExactDirectParticipants(recipients, botUserId, actorUserId);
 }
 
-export function hasFinalPrivateTypingStop(events, botEmail, actorEmail) {
+export function hasFinalPrivateTypingStop(events, botUserId, actorUserId) {
   const lifecycle = events.filter((event) =>
-    isPrivateTypingEvent(event, botEmail, actorEmail, "start") ||
-    isPrivateTypingEvent(event, botEmail, actorEmail, "stop"));
+    isPrivateTypingEvent(event, botUserId, actorUserId, "start") ||
+    isPrivateTypingEvent(event, botUserId, actorUserId, "stop"));
   return lifecycle.some((event) => event.op === "start") && lifecycle.at(-1)?.op === "stop";
 }
 
@@ -140,16 +142,38 @@ export async function drainEventQueueUntilQuiet(queue, signal, quietMs = 500, ma
   throw new Error("Event queue did not reach a stable quiet window");
 }
 
-export async function assertFinalPrivateTypingStop(queue, eventStart, botEmail, actorEmail, signal, quietMs = 500, maxMs = 5000, pollIntervalMs = 100) {
+export async function assertFinalPrivateTypingStop(queue, eventStart, botUserId, actorUserId, signal, quietMs = 500, maxMs = 5000, pollIntervalMs = 100) {
   await drainEventQueueUntilQuiet(queue, signal, quietMs, maxMs, pollIntervalMs);
-  if (!hasFinalPrivateTypingStop(queue.events.slice(eventStart), botEmail, actorEmail)) {
+  if (!hasFinalPrivateTypingStop(queue.events.slice(eventStart), botUserId, actorUserId)) {
     throw new Error("Final direct typing state was not stopped after lifecycle completion");
   }
 }
 
-function hasExactDirectParticipants(recipients, botEmail, actorEmail) {
-  const emails = new Set(recipients.map((recipient) => recipient?.email ?? recipient).filter(Boolean));
-  return emails.size === 2 && emails.has(botEmail) && emails.has(actorEmail);
+function userId(value) {
+  const normalized = String(value ?? "").trim();
+  return /^[1-9][0-9]*$/.test(normalized) ? normalized : undefined;
+}
+
+function sameUserId(actual, expected) {
+  const actualId = userId(actual);
+  const expectedId = userId(expected);
+  return actualId !== undefined && expectedId !== undefined && actualId === expectedId;
+}
+
+export function authenticatedUserId(payload, label = "Zulip identity") {
+  const id = userId(payload?.user_id ?? payload?.id);
+  if (!id) throw new Error(`${label} did not return a valid user_id`);
+  return id;
+}
+
+function hasExactDirectParticipants(recipients, botUserId, actorUserId) {
+  const expectedBotId = userId(botUserId);
+  const expectedActorId = userId(actorUserId);
+  const participantIds = recipients.map((recipient) =>
+    userId(recipient?.id ?? recipient?.user_id ?? recipient));
+  const uniqueIds = new Set(participantIds);
+  return recipients.length === 2 && participantIds.every(Boolean) && uniqueIds.size === 2 &&
+    uniqueIds.has(expectedBotId) && uniqueIds.has(expectedActorId);
 }
 
 export function isExactRenderedContent(content, expected) {
@@ -582,6 +606,11 @@ async function main() {
   const runId = `smoke-${env.SMOKE_TESTED_SHA.slice(0, 8)}-${randomBytes(5).toString("hex")}`;
   const actor = new ZulipClient(env.ZULIP_URL, env.ZULIP_SMOKE_USER_EMAIL, env.ZULIP_SMOKE_USER_API_KEY);
   const bot = new ZulipClient(env.ZULIP_URL, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_BOT_API_KEY);
+  const [actorUserId, botUserId] = await Promise.all([
+    actor.request("users/me").then((payload) => authenticatedUserId(payload, "Smoke actor")),
+    bot.request("users/me").then((payload) => authenticatedUserId(payload, "Smoke bot")),
+  ]);
+  if (actorUserId === botUserId) throw new Error("Smoke actor and bot resolved to the same Zulip user_id");
   const queue = new EventQueue(actor);
   const gateway = new Gateway(env.SMOKE_GATEWAY_PORT || 18789);
   const gatewayGenerationPath = resolve("scripts/live-smoke/agent-workspace/.smoke-gateway-generation");
@@ -621,7 +650,7 @@ async function main() {
 
     await scenario("dm-round-trip", async (signal) => {
       const marker = `${runId}:dm-ok`; await sendDm(command(`echo ${marker}`), signal);
-      const event = await queue.waitFor((e) => isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, marker), timeoutMs, "DM reply", signal);
+      const event = await queue.waitFor((e) => isPrivateBotMessage(e, botUserId, actorUserId, marker), timeoutMs, "DM reply", signal);
       messageIds.bot.add(String(event.message.id));
     });
 
@@ -629,14 +658,14 @@ async function main() {
       const marker = `${runId}:stream-ok`; const topic = `${runId}-topic`;
       const sent = await actor.request("messages", { method: "POST", body: { type: "stream", to: env.ZULIP_SMOKE_STREAM, topic, content: command(`echo ${marker}`) }, signal });
       messageIds.actor.add(String(sent.id));
-      const event = await queue.waitFor((e) => isBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, marker) && e.message?.display_recipient === env.ZULIP_SMOKE_STREAM && e.message?.subject === topic, timeoutMs, "stream/topic reply", signal);
+      const event = await queue.waitFor((e) => isBotMessage(e, botUserId, marker) && e.message?.display_recipient === env.ZULIP_SMOKE_STREAM && e.message?.subject === topic, timeoutMs, "stream/topic reply", signal);
       messageIds.bot.add(String(event.message.id));
     });
 
     await scenario("typing-and-lifecycle-reactions", async (signal) => {
       const marker = `${runId}:lifecycle-ok`; const childResult = `${runId}:child-ok`; const eventStart = queue.events.length;
       const inboundId = await sendDm(command(`lifecycle ${marker} ${childResult}`), signal);
-      const reply = await queue.waitFor((e) => isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, marker), timeoutMs, "lifecycle reply", signal);
+      const reply = await queue.waitFor((e) => isPrivateBotMessage(e, botUserId, actorUserId, marker), timeoutMs, "lifecycle reply", signal);
       messageIds.bot.add(String(reply.message.id));
       const deadline = Date.now() + timeoutMs;
       let summary;
@@ -657,9 +686,9 @@ async function main() {
       }
       await drainEventQueueUntilQuiet(queue, signal, 500, timeoutMs, 100, () =>
         lifecycleSummary(queue.events, inboundId).allRemoved &&
-        hasFinalPrivateTypingStop(queue.events.slice(eventStart), env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL));
+        hasFinalPrivateTypingStop(queue.events.slice(eventStart), botUserId, actorUserId));
       summary = lifecycleSummary(queue.events, inboundId);
-      if (!hasFinalPrivateTypingStop(queue.events.slice(eventStart), env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL)) {
+      if (!hasFinalPrivateTypingStop(queue.events.slice(eventStart), botUserId, actorUserId)) {
         throw new Error("Final direct typing state was not stopped after lifecycle completion");
       }
       if (!summary.added.length) throw new Error("No lifecycle reaction was observed on the inbound message");
@@ -675,7 +704,7 @@ async function main() {
       const marker = `${runId}:reacted`;
       const inboundId = await sendDm(command(`react 🎉 ${marker}`), signal);
       const reaction = await queue.waitFor((e) => e.type === "reaction" && e.op === "add" && String(e.message_id) === inboundId && (e.emoji_name === "tada" || e.emoji_code === "1f389"), timeoutMs, "explicit reaction", signal);
-      const reply = await queue.waitFor((e) => isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, marker), timeoutMs, "reaction acknowledgement", signal);
+      const reply = await queue.waitFor((e) => isPrivateBotMessage(e, botUserId, actorUserId, marker), timeoutMs, "reaction acknowledgement", signal);
       messageIds.bot.add(String(reply.message.id));
       if (!eventOccursBefore(queue.events, reaction, reply)) {
         throw new Error("Reaction acknowledgement arrived before the requested reaction");
@@ -685,7 +714,7 @@ async function main() {
     await scenario("edit-delete", async (signal) => {
       const before = `${runId}:before-edit`; const after = `${runId}:after-edit`;
       await sendDm(command(`edit-delete ${before} ${after}`), signal);
-      const created = await queue.waitFor((e) => isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, before), timeoutMs, "message before edit", signal);
+      const created = await queue.waitFor((e) => isPrivateBotMessage(e, botUserId, actorUserId, before), timeoutMs, "message before edit", signal);
       const id = String(created.message.id); messageIds.bot.add(id);
       await queue.waitFor((e) => e.type === "update_message" && String(e.message_id) === id && isExactRenderedContent(e.content, after), timeoutMs, "message edit", signal);
       await assertMessageRemainsExact(actor, id, after, 4000, signal);
@@ -696,10 +725,10 @@ async function main() {
     await scenario("upload-download", async (signal) => {
       const inboundMarker = `${runId}:inbound-upload`; const uri = await actor.upload(`${runId}.txt`, inboundMarker, signal);
       await sendDm(`${command(`read-upload ${inboundMarker}`)}\n[attachment](${uri})`, signal);
-      const inboundReply = await queue.waitFor((e) => isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, inboundMarker), timeoutMs, "inbound upload read", signal);
+      const inboundReply = await queue.waitFor((e) => isPrivateBotMessage(e, botUserId, actorUserId, inboundMarker), timeoutMs, "inbound upload read", signal);
       messageIds.bot.add(String(inboundReply.message.id));
       const outboundMarker = `${runId}:outbound-upload`; await sendDm(command(`send-upload ${outboundMarker}`), signal);
-      const outbound = await queue.waitFor((e) => isPrivateBotEvent(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL) &&
+      const outbound = await queue.waitFor((e) => isPrivateBotEvent(e, botUserId, actorUserId) &&
         Boolean(extractExactUploadUrl(e.message?.content)), timeoutMs, "outbound upload", signal);
       messageIds.bot.add(String(outbound.message.id));
       const uploadUrl = extractExactUploadUrl(outbound.message.content);
@@ -710,26 +739,26 @@ async function main() {
       const question = `${runId}:poll`; const optionA = `smoke-choice:${runId}:interactive-ok`; const optionB = `${runId}:beta`;
       await sendDm(command(`poll ${question} ${optionA} ${optionB}`), signal);
       const poll = await queue.waitFor((e) => {
-        if (!isPrivateBotEvent(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL)) return false;
+        if (!isPrivateBotEvent(e, botUserId, actorUserId)) return false;
         return isExactPollMessage(e.message, question, [optionA, optionB]);
       }, timeoutMs, "native poll", signal);
       messageIds.bot.add(String(poll.message.id));
       await sendDm(optionA, signal);
-      const reply = await queue.waitFor((e) => isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, `${runId}:interactive-ok`), timeoutMs, "interactive reply", signal);
+      const reply = await queue.waitFor((e) => isPrivateBotMessage(e, botUserId, actorUserId, `${runId}:interactive-ok`), timeoutMs, "interactive reply", signal);
       messageIds.bot.add(String(reply.message.id));
     });
 
     await scenario("durable-receive-completion-deduplication", async (signal) => {
       const marker = `${runId}:durable-ok`;
       const isAttributable = (event) =>
-        isDurableReplyEvent(event, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, marker);
+        isDurableReplyEvent(event, botUserId, actorUserId, marker);
       const captureReplies = () => captureMessageIds(queue.events, isAttributable, messageIds.bot);
       try {
         const oldGeneration = randomBytes(16).toString("hex");
         await writeGatewayGeneration(gatewayGenerationPath, oldGeneration);
         const inboundId = await sendDm(command(`durable ${marker}`), signal);
         const commandEvent = await queue.waitFor((e) => e.type === "message" &&
-          String(e.message?.id) === inboundId && e.message?.sender_email === env.ZULIP_SMOKE_USER_EMAIL,
+          String(e.message?.id) === inboundId && sameUserId(e.message?.sender_id, actorUserId),
         timeoutMs, "durable command event", signal);
         await queue.waitFor((e) => e.type === "reaction" && e.op === "add" && String(e.message_id) === inboundId, timeoutMs, "durable accept signal", signal);
         if (captureReplies().length) {
@@ -743,7 +772,7 @@ async function main() {
         const reply = await queue.waitFor((e) => {
           if (!isAttributable(e)) return false;
           captureReplies();
-          if (!isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, replacementReply)) {
+          if (!isPrivateBotMessage(e, botUserId, actorUserId, replacementReply)) {
             throw new Error("Durable reply did not contain the replacement gateway generation");
           }
           if (!hasProvableMinimumMessageDelay(commandEvent, e, 15)) {
@@ -755,7 +784,7 @@ async function main() {
         const settleDeadline = Date.now() + 10000;
         while (Date.now() < settleDeadline) { await queue.poll(signal); await delay(500, undefined, { signal }); }
         const replies = captureReplies();
-        const validReplies = replies.filter((e) => isPrivateBotMessage(e, env.ZULIP_SMOKE_BOT_EMAIL, env.ZULIP_SMOKE_USER_EMAIL, replacementReply));
+        const validReplies = replies.filter((e) => isPrivateBotMessage(e, botUserId, actorUserId, replacementReply));
         if (replies.length !== 1 || validReplies.length !== 1) {
           throw new Error(`Durable receive produced ${replies.length} attributable replies (${validReplies.length} valid); expected exactly one valid replacement reply`);
         }
@@ -770,8 +799,8 @@ async function main() {
     await unlink(gatewayGenerationPath).catch(() => {});
     await queue.poll().catch(() => {});
     captureObservedSmokeBotMessageIds(queue.events, {
-      botEmail: env.ZULIP_SMOKE_BOT_EMAIL,
-      actorEmail: env.ZULIP_SMOKE_USER_EMAIL,
+      botUserId,
+      actorUserId,
       stream: env.ZULIP_SMOKE_STREAM,
       runId,
     }, messageIds.bot, deletedBotMessageIds);

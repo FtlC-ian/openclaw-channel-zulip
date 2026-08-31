@@ -6,7 +6,10 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { assertFinalPrivateTypingStop, assertMessageRemainsExact, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, drainEventQueueUntilQuiet, eventOccursBefore, EventQueue, extractExactUploadUrl, Gateway, hasFinalPrivateTypingStop, hasProvableMinimumMessageDelay, inspectChildTranscripts, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactPollMessage, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, isUsageCountedTranscriptName, lifecycleSummary, normalizeScenarioError, probeRunnerLocalGatewayHealth, redactError, resolveUploadUrl, signalProcessTree, subagentCompletedBeforeReply, validateEnvironment, waitForProcessTreeExit, writeGatewayGeneration } from "./run.mjs";
+import { assertFinalPrivateTypingStop, assertMessageRemainsExact, authenticatedUserId, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, drainEventQueueUntilQuiet, eventOccursBefore, EventQueue, extractExactUploadUrl, Gateway, hasFinalPrivateTypingStop, hasProvableMinimumMessageDelay, inspectChildTranscripts, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactPollMessage, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, isUsageCountedTranscriptName, lifecycleSummary, normalizeScenarioError, probeRunnerLocalGatewayHealth, redactError, resolveUploadUrl, signalProcessTree, subagentCompletedBeforeReply, validateEnvironment, waitForProcessTreeExit, writeGatewayGeneration } from "./run.mjs";
+
+const ACTOR_USER_ID = "42";
+const BOT_USER_ID = "91";
 
 const validEnv = {
   ZULIP_URL: "https://zulip.example.test/path",
@@ -44,51 +47,65 @@ test("redacts URLs and authorization values", () => {
 });
 
 test("matches only marked messages from the configured bot", () => {
-  const event = { type: "message", message: { sender_email: "bot@example.test", content: "marker" } };
-  assert.equal(isBotMessage(event, "bot@example.test", "marker"), true);
-  assert.equal(isBotMessage({ ...event, message: { ...event.message, content: "<p>marker</p>" } }, "bot@example.test", "marker"), true);
-  assert.equal(isBotMessage({ ...event, message: { ...event.message, content: "prefix marker" } }, "bot@example.test", "marker"), false);
-  assert.equal(isBotMessage(event, "other@example.test", "marker"), false);
+  const event = { type: "message", message: { sender_id: Number(BOT_USER_ID), content: "marker" } };
+  assert.equal(isBotMessage(event, BOT_USER_ID, "marker"), true);
+  assert.equal(isBotMessage({ ...event, message: { ...event.message, content: "<p>marker</p>" } }, BOT_USER_ID, "marker"), true);
+  assert.equal(isBotMessage({ ...event, message: { ...event.message, content: "prefix marker" } }, BOT_USER_ID, "marker"), false);
+  assert.equal(isBotMessage(event, "92", "marker"), false);
+  assert.equal(isBotMessage({ type: "message", message: { content: "marker" } }, undefined, "marker"), false);
 });
 
-test("requires private bot replies with the expected participants", () => {
-  const event = { type: "message", message: { type: "private", sender_email: "bot@example.test", content: "marker", display_recipient: [
-    { email: "bot@example.test" }, { email: "user@example.test" },
+test("requires private bot replies with the exact user IDs despite differing login emails", () => {
+  const event = { type: "message", message: { type: "private", sender_id: Number(BOT_USER_ID), sender_email: "bot-event@example.test", content: "marker", display_recipient: [
+    { id: Number(BOT_USER_ID), email: "bot-event@example.test" },
+    { id: Number(ACTOR_USER_ID), email: "actor-event@example.test" },
   ] } };
-  assert.equal(isPrivateBotMessage(event, "bot@example.test", "user@example.test", "marker"), true);
-  assert.equal(isPrivateBotMessage({ ...event, message: { ...event.message, type: "stream" } }, "bot@example.test", "user@example.test", "marker"), false);
-  assert.equal(isPrivateBotMessage({ ...event, message: { ...event.message, display_recipient: [{ email: "bot@example.test" }] } }, "bot@example.test", "user@example.test", "marker"), false);
-  assert.equal(isPrivateBotMessage({ ...event, message: { ...event.message, display_recipient: [...event.message.display_recipient, { email: "third@example.test" }] } }, "bot@example.test", "user@example.test", "marker"), false);
+  assert.equal(isPrivateBotMessage(event, BOT_USER_ID, ACTOR_USER_ID, "marker"), true);
+  assert.equal(isPrivateBotMessage({ ...event, message: { ...event.message, sender_id: undefined } }, undefined, ACTOR_USER_ID, "marker"), false);
+  assert.equal(isPrivateBotMessage({ ...event, message: { ...event.message, type: "stream" } }, BOT_USER_ID, ACTOR_USER_ID, "marker"), false);
+  assert.equal(isPrivateBotMessage({ ...event, message: { ...event.message, display_recipient: [{ id: Number(BOT_USER_ID) }] } }, BOT_USER_ID, ACTOR_USER_ID, "marker"), false);
+  assert.equal(isPrivateBotMessage({ ...event, message: { ...event.message, display_recipient: [...event.message.display_recipient, { id: 7 }] } }, BOT_USER_ID, ACTOR_USER_ID, "marker"), false);
   const uploadEvent = { ...event, message: { ...event.message, content: "[file](/user_uploads/a.txt)" } };
-  assert.equal(isPrivateBotEvent(uploadEvent, "bot@example.test", "user@example.test"), true);
-  assert.equal(isPrivateBotEvent({ ...uploadEvent, message: { ...uploadEvent.message, type: "stream" } }, "bot@example.test", "user@example.test"), false);
+  assert.equal(isPrivateBotEvent(uploadEvent, BOT_USER_ID, ACTOR_USER_ID), true);
+  assert.equal(isPrivateBotEvent({ ...uploadEvent, message: { ...uploadEvent.message, type: "stream" } }, BOT_USER_ID, ACTOR_USER_ID), false);
 });
 
-test("matches private typing events from the configured bot", () => {
-  const event = { type: "typing", op: "start", message_type: "direct", sender: { email: "bot@example.test" }, recipients: [
-    { email: "bot@example.test" }, { email: "user@example.test" },
+test("matches private typing by user ID across supported sender payload shapes", () => {
+  const event = { type: "typing", op: "start", message_type: "direct", sender: { user_id: Number(BOT_USER_ID), email: "bot-event@example.test" }, recipients: [
+    { user_id: Number(BOT_USER_ID), email: "bot-event@example.test" },
+    { user_id: Number(ACTOR_USER_ID), email: "actor-event@example.test" },
   ] };
-  assert.equal(isPrivateTypingEvent(event, "bot@example.test", "user@example.test", "start"), true);
-  assert.equal(isPrivateTypingEvent({ ...event, op: "stop" }, "bot@example.test", "user@example.test", "start"), false);
-  assert.equal(isPrivateTypingEvent({ ...event, sender: { email: "other@example.test" } }, "bot@example.test", "user@example.test", "start"), false);
-  assert.equal(isPrivateTypingEvent({ ...event, recipients: [...event.recipients, { email: "third@example.test" }] }, "bot@example.test", "user@example.test", "start"), false);
+  assert.equal(isPrivateTypingEvent(event, BOT_USER_ID, ACTOR_USER_ID, "start"), true);
+  assert.equal(isPrivateTypingEvent({ ...event, sender: { id: Number(BOT_USER_ID) } }, BOT_USER_ID, ACTOR_USER_ID, "start"), true);
+  assert.equal(isPrivateTypingEvent({ ...event, sender: undefined, sender_id: Number(BOT_USER_ID) }, BOT_USER_ID, ACTOR_USER_ID, "start"), true);
+  assert.equal(isPrivateTypingEvent({ ...event, op: "stop" }, BOT_USER_ID, ACTOR_USER_ID, "start"), false);
+  assert.equal(isPrivateTypingEvent({ ...event, sender: { user_id: 92 } }, BOT_USER_ID, ACTOR_USER_ID, "start"), false);
+  assert.equal(isPrivateTypingEvent({ ...event, sender: undefined }, undefined, ACTOR_USER_ID, "start"), false);
+  assert.equal(isPrivateTypingEvent({ ...event, recipients: [...event.recipients, { id: 7 }] }, BOT_USER_ID, ACTOR_USER_ID, "start"), false);
+});
+
+test("extracts authenticated Zulip user IDs and rejects malformed identity responses", () => {
+  assert.equal(authenticatedUserId({ user_id: 42 }, "Smoke actor"), ACTOR_USER_ID);
+  assert.equal(authenticatedUserId({ id: "91" }, "Smoke bot"), BOT_USER_ID);
+  assert.throws(() => authenticatedUserId({ user_id: "actor@example.test" }, "Smoke actor"),
+    /Smoke actor did not return a valid user_id/);
 });
 
 test("requires the final matching typing event to stop", () => {
-  const base = { type: "typing", message_type: "direct", sender: { email: "bot@example.test" }, recipients: [
-    { email: "bot@example.test" }, { email: "user@example.test" },
+  const base = { type: "typing", message_type: "direct", sender: { user_id: Number(BOT_USER_ID) }, recipients: [
+    { id: Number(BOT_USER_ID) }, { id: Number(ACTOR_USER_ID) },
   ] };
   const start = { ...base, op: "start" };
   const stop = { ...base, op: "stop" };
-  assert.equal(hasFinalPrivateTypingStop([start, stop], "bot@example.test", "user@example.test"), true);
-  assert.equal(hasFinalPrivateTypingStop([start, stop, start], "bot@example.test", "user@example.test"), false);
-  assert.equal(hasFinalPrivateTypingStop([stop], "bot@example.test", "user@example.test"), false);
-  assert.equal(hasFinalPrivateTypingStop([start, stop, { ...start, sender: { email: "other@example.test" } }], "bot@example.test", "user@example.test"), true);
+  assert.equal(hasFinalPrivateTypingStop([start, stop], BOT_USER_ID, ACTOR_USER_ID), true);
+  assert.equal(hasFinalPrivateTypingStop([start, stop, start], BOT_USER_ID, ACTOR_USER_ID), false);
+  assert.equal(hasFinalPrivateTypingStop([stop], BOT_USER_ID, ACTOR_USER_ID), false);
+  assert.equal(hasFinalPrivateTypingStop([start, stop, { ...start, sender: { user_id: 92 } }], BOT_USER_ID, ACTOR_USER_ID), true);
 });
 
 test("rechecks the final typing state after draining later events", async () => {
-  const base = { type: "typing", message_type: "direct", sender: { email: "bot@example.test" }, recipients: [
-    { email: "bot@example.test" }, { email: "user@example.test" },
+  const base = { type: "typing", message_type: "direct", sender: { user_id: Number(BOT_USER_ID) }, recipients: [
+    { id: Number(BOT_USER_ID) }, { id: Number(ACTOR_USER_ID) },
   ] };
   const start = { ...base, op: "start" };
   const stop = { ...base, op: "stop" };
@@ -102,7 +119,7 @@ test("rechecks the final typing state after draining later events", async () => 
     },
   };
   await assert.rejects(
-    assertFinalPrivateTypingStop(queue, 0, "bot@example.test", "user@example.test", undefined, 10, 100, 0),
+    assertFinalPrivateTypingStop(queue, 0, BOT_USER_ID, ACTOR_USER_ID, undefined, 10, 100, 0),
     /Final direct typing state was not stopped/,
   );
 });
@@ -167,8 +184,8 @@ test("waits through the locked default terminal hold until lifecycle cleanup", a
 
 test("does not settle when a late typing start follows the earlier stop", async () => {
   const reaction = { type: "reaction", message_id: 42, user_id: 7, reaction_type: "unicode_emoji", emoji_name: "robot", emoji_code: "1f916" };
-  const typing = { type: "typing", message_type: "direct", sender: { email: "bot@example.test" }, recipients: [
-    { email: "bot@example.test" }, { email: "user@example.test" },
+  const typing = { type: "typing", message_type: "direct", sender: { user_id: Number(BOT_USER_ID) }, recipients: [
+    { id: Number(BOT_USER_ID) }, { id: Number(ACTOR_USER_ID) },
   ] };
   const events = [{ ...reaction, op: "add" }, { ...reaction, op: "remove" }, { ...typing, op: "start" }, { ...typing, op: "stop" }];
   const started = Date.now();
@@ -185,11 +202,11 @@ test("does not settle when a late typing start follows the earlier stop", async 
   await assert.rejects(
     drainEventQueueUntilQuiet(queue, undefined, 30, 100, 5, () =>
       lifecycleSummary(queue.events, "42").allRemoved &&
-      hasFinalPrivateTypingStop(queue.events, "bot@example.test", "user@example.test")),
+      hasFinalPrivateTypingStop(queue.events, BOT_USER_ID, ACTOR_USER_ID)),
     /stable quiet window/,
   );
   assert.equal(lateStartSent, true);
-  assert.equal(hasFinalPrivateTypingStop(queue.events, "bot@example.test", "user@example.test"), false);
+  assert.equal(hasFinalPrivateTypingStop(queue.events, BOT_USER_ID, ACTOR_USER_ID), false);
 });
 
 test("matches complete raw or Zulip-rendered content", () => {
@@ -201,13 +218,13 @@ test("matches complete raw or Zulip-rendered content", () => {
 });
 
 test("attributes every configured-bot DM containing the unique durable marker", () => {
-  const base = { type: "message", message: { type: "private", sender_email: "bot@example.test", display_recipient: [
-    { email: "bot@example.test" }, { email: "user@example.test" },
+  const base = { type: "message", message: { type: "private", sender_id: Number(BOT_USER_ID), display_recipient: [
+    { id: Number(BOT_USER_ID) }, { id: Number(ACTOR_USER_ID) },
   ] } };
   for (const content of ["durable-marker", "durable-marker:old", "<p>durable-marker:wrong</p>", "prefix durable-marker suffix"]) {
-    assert.equal(isDurableReplyEvent({ ...base, message: { ...base.message, content } }, "bot@example.test", "user@example.test", "durable-marker"), true);
+    assert.equal(isDurableReplyEvent({ ...base, message: { ...base.message, content } }, BOT_USER_ID, ACTOR_USER_ID, "durable-marker"), true);
   }
-  assert.equal(isDurableReplyEvent({ ...base, message: { ...base.message, sender_email: "other@example.test", content: "durable-marker" } }, "bot@example.test", "user@example.test", "durable-marker"), false);
+  assert.equal(isDurableReplyEvent({ ...base, message: { ...base.message, sender_id: 92, content: "durable-marker" } }, BOT_USER_ID, ACTOR_USER_ID, "durable-marker"), false);
 });
 
 test("requires the explicit reaction event to precede its acknowledgement", () => {
@@ -238,21 +255,21 @@ test("captures every attributable reply id before an early failure", () => {
 });
 
 test("captures every observed in-run bot message while excluding already deleted messages", () => {
-  const dm = (id, content, sender = "bot@example.test") => ({ type: "message", message: {
-    id, type: "private", sender_email: sender, content, display_recipient: [
-      { email: "bot@example.test" }, { email: "user@example.test" },
+  const dm = (id, content, senderId = Number(BOT_USER_ID)) => ({ type: "message", message: {
+    id, type: "private", sender_id: senderId, content, display_recipient: [
+      { id: Number(BOT_USER_ID) }, { id: Number(ACTOR_USER_ID) },
     ],
   } });
   const events = [
     dm(1, "malformed extra output"),
     dm(2, "already deleted"),
-    dm(3, "other sender", "other@example.test"),
-    { type: "message", message: { id: 4, type: "stream", sender_email: "bot@example.test", content: "wrong", display_recipient: "smoke", subject: "run-id-topic" } },
-    { type: "message", message: { id: 5, type: "stream", sender_email: "bot@example.test", content: "run-id marker", display_recipient: "other", subject: "other" } },
+    dm(3, "other sender", 92),
+    { type: "message", message: { id: 4, type: "stream", sender_id: Number(BOT_USER_ID), content: "wrong", display_recipient: "smoke", subject: "run-id-topic" } },
+    { type: "message", message: { id: 5, type: "stream", sender_id: Number(BOT_USER_ID), content: "run-id marker", display_recipient: "other", subject: "other" } },
   ];
   const ids = new Set();
   const matches = captureObservedSmokeBotMessageIds(events, {
-    botEmail: "bot@example.test", actorEmail: "user@example.test", stream: "smoke", runId: "run-id",
+    botUserId: BOT_USER_ID, actorUserId: ACTOR_USER_ID, stream: "smoke", runId: "run-id",
   }, ids, new Set(["2"]));
   assert.equal(matches.length, 3);
   assert.deepEqual([...ids], ["1", "4", "5"]);

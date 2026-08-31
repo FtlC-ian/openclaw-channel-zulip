@@ -435,6 +435,23 @@ export function isExactPoll(widget, question, options) {
     choice.short_name === options[index] && choice.long_name === options[index] && choice.reply === options[index]);
 }
 
+export function nativePollWidget(question, options) {
+  return {
+    widget_type: "zform",
+    extra_data: {
+      type: "choices",
+      heading: question,
+      choices: options.map((option) => ({
+        type: "multiple_choice",
+        short_name: option,
+        long_name: option,
+        reply: option,
+      })),
+      poll: true,
+    },
+  };
+}
+
 export function extractExactUploadUrl(content) {
   const rendered = String(content ?? "");
   const anchor = rendered.match(/^<p><a href="([^"<>]*\/user_uploads\/[^"<>]+)">([^<>]+)<\/a><\/p>$/);
@@ -1066,7 +1083,13 @@ async function main() {
 
     await scenario("poll-and-interactive-reply", async (signal) => {
       const question = `${runId}:poll`; const optionA = `smoke-choice:${runId}:interactive-ok`; const optionB = `${runId}:beta`;
-      await sendDm(command(`poll ${question} ${optionA} ${optionB}`), signal);
+      const sent = await bot.request("messages", { method: "POST", body: {
+        type: "private",
+        to: JSON.stringify([env.ZULIP_SMOKE_USER_EMAIL]),
+        content: question,
+        widget_content: JSON.stringify(nativePollWidget(question, [optionA, optionB])),
+      }, signal });
+      messageIds.bot.add(String(sent.id));
       const poll = await queue.waitFor((e) => {
         if (!isPrivateBotEvent(e, botUserId, actorUserId)) return false;
         return isExactPollMessage(e.message, question, [optionA, optionB]);

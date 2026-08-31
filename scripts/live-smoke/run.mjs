@@ -279,6 +279,21 @@ export function lifecycleSummary(events, inboundMessageId) {
   };
 }
 
+export function lifecycleEvidenceCounts(events, inboundMessageId) {
+  const relevant = events.filter((event) =>
+    event?.type === "reaction" && String(event.message_id) === String(inboundMessageId));
+  return {
+    total: relevant.length,
+    add: relevant.filter((event) => event.op === "add").length,
+    remove: relevant.filter((event) => event.op === "remove").length,
+    otherOp: relevant.filter((event) => event.op !== "add" && event.op !== "remove").length,
+    withName: relevant.filter((event) => typeof event.emoji_name === "string").length,
+    withCode: relevant.filter((event) => typeof event.emoji_code === "string").length,
+    robotName: relevant.filter((event) => event.emoji_name === "robot").length,
+    robotCode: relevant.filter((event) => String(event.emoji_code ?? "").toLowerCase() === "1f916").length,
+  };
+}
+
 export function subagentCompletedBeforeReply(events, inboundMessageId, replyEvent) {
   const replyIndex = events.indexOf(replyEvent);
   if (replyIndex < 0) return false;
@@ -784,6 +799,7 @@ async function main() {
   const deletedBotMessageIds = new Set();
   const report = [];
   let runError;
+  let lifecycleInboundId;
   const sendDm = async (content, signal) => {
     const result = await actor.request("messages", { method: "POST", body: { type: "private", to: JSON.stringify([env.ZULIP_SMOKE_BOT_EMAIL]), content }, signal });
     messageIds.actor.add(String(result.id)); return String(result.id);
@@ -831,6 +847,7 @@ async function main() {
     await scenario("typing-and-lifecycle-reactions", async (signal) => {
       const marker = `${runId}:lifecycle-ok`; const childResult = `${runId}:child-ok`; const eventStart = queue.events.length;
       const inboundId = await sendDm(command(`lifecycle ${marker} ${childResult}`), signal);
+      lifecycleInboundId = inboundId;
       const reply = await queue.waitFor((e) => isPrivateBotMessage(e, botUserId, actorUserId, marker), timeoutMs, "lifecycle reply", signal);
       messageIds.bot.add(String(reply.message.id));
       const deadline = Date.now() + timeoutMs;
@@ -975,6 +992,10 @@ async function main() {
       await countMessageDeletionFailures(actor, messageIds.actor);
     await queue.close().catch(() => {});
     for (const item of report) console.log(`${item.ok ? "PASS" : "FAIL"} ${item.name} (${item.ms}ms)${item.error ? `: ${item.error}` : ""}`);
+    if (runError && lifecycleInboundId) {
+      const evidence = lifecycleEvidenceCounts(queue.events, lifecycleInboundId);
+      console.error(`Lifecycle reaction evidence counts: total=${evidence.total} add=${evidence.add} remove=${evidence.remove} other_op=${evidence.otherOp} with_name=${evidence.withName} with_code=${evidence.withCode} robot_name=${evidence.robotName} robot_code=${evidence.robotCode}`);
+    }
     if (runError && gateway.diagnostics.length) {
       for (const diagnostic of gateway.diagnostics) console.error(diagnostic);
     }

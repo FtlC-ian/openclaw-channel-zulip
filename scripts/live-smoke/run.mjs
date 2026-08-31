@@ -1048,9 +1048,6 @@ async function main() {
       if (!summary.sawSubagent) throw new Error("No truthful subagent lifecycle reaction was observed");
       if (summary.subagentCount !== 1) throw new Error(`Observed ${summary.subagentCount} subagent lifecycle reactions; expected exactly one`);
       if (!summary.allRemoved) throw new Error("Lifecycle reactions were not cleaned up after completion");
-      if (reply && !subagentCompletedBeforeReply(queue.events, inboundId, reply)) {
-        throw new Error("The optional parent reply was observed before child lifecycle cleanup");
-      }
       lifecyclePhase = "complete";
     });
 

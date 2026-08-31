@@ -492,6 +492,140 @@ test("waits for gateway exit after escalating to SIGKILL", async () => {
   assert.equal(gateway.process, undefined);
 });
 
+test("does not begin scenario traffic until gateway startup stabilization finishes", async () => {
+  const child = { exitCode: null, signalCode: null };
+  let clock = 0;
+  let releaseStabilization;
+  let stabilizationStarted;
+  const stabilization = new Promise((resolve) => { releaseStabilization = resolve; });
+  const enteredStabilization = new Promise((resolve) => { stabilizationStarted = resolve; });
+  const waits = [];
+  const gateway = new Gateway(18789, {
+    healthProbe: async () => true,
+    startupSettleMs: 250,
+    spawnImpl: () => child,
+    now: () => clock,
+    wait: async (ms, signal) => {
+      waits.push(ms);
+      signal?.throwIfAborted();
+      if (ms === 250) {
+        stabilizationStarted();
+        await stabilization;
+      }
+      clock += ms;
+      signal?.throwIfAborted();
+    },
+  });
+  let scenarioSendStarted = false;
+  const scenario = gateway.start().then(() => { scenarioSendStarted = true; });
+
+  await enteredStabilization;
+  assert.equal(scenarioSendStarted, false);
+  releaseStabilization();
+  await scenario;
+
+  assert.equal(scenarioSendStarted, true);
+  assert.deepEqual(waits, [500, 250]);
+});
+
+test("fails startup if the gateway exits during stabilization", async () => {
+  const child = { exitCode: null, signalCode: null };
+  let clock = 0;
+  const gateway = new Gateway(18789, {
+    healthProbe: async () => true,
+    startupSettleMs: 250,
+    spawnImpl: () => child,
+    now: () => clock,
+    wait: async (ms) => {
+      clock += ms;
+      if (ms === 250) child.exitCode = 1;
+    },
+  });
+
+  await assert.rejects(gateway.start(), /gateway exited during startup stabilization/);
+});
+
+test("aborts gateway startup during stabilization", async () => {
+  const child = { exitCode: null, signalCode: null };
+  const controller = new AbortController();
+  const abortReason = new Error("cancel startup");
+  let clock = 0;
+  const gateway = new Gateway(18789, {
+    healthProbe: async () => true,
+    startupSettleMs: 250,
+    spawnImpl: () => child,
+    now: () => clock,
+    wait: async (ms, signal) => {
+      clock += ms;
+      if (ms === 250) controller.abort(abortReason);
+      signal?.throwIfAborted();
+    },
+  });
+
+  await assert.rejects(gateway.start(controller.signal), (error) => error === abortReason);
+});
+
+function createDeferredFinalHealthGateway() {
+  const child = { exitCode: null, signalCode: null };
+  let clock = 0;
+  let healthProbeCount = 0;
+  let markFinalProbeStarted;
+  let resolveFinalProbe;
+  const finalProbeStarted = new Promise((resolve) => { markFinalProbeStarted = resolve; });
+  const finalProbe = new Promise((resolve) => { resolveFinalProbe = resolve; });
+  const gateway = new Gateway(18789, {
+    healthProbe: async () => {
+      healthProbeCount += 1;
+      if (healthProbeCount < 3) return true;
+      markFinalProbeStarted();
+      return finalProbe;
+    },
+    startupSettleMs: 250,
+    spawnImpl: () => child,
+    now: () => clock,
+    wait: async (ms, signal) => {
+      signal?.throwIfAborted();
+      clock += ms;
+    },
+  });
+  return { child, finalProbeStarted, gateway, resolveFinalProbe };
+}
+
+test("aborts startup when cancellation arrives during the final health probe", async () => {
+  const controller = new AbortController();
+  const abortReason = new Error("cancel final probe");
+  const { finalProbeStarted, gateway, resolveFinalProbe } = createDeferredFinalHealthGateway();
+  const startup = gateway.start(controller.signal);
+
+  await finalProbeStarted;
+  controller.abort(abortReason);
+  resolveFinalProbe(true);
+
+  await assert.rejects(startup, (error) => error === abortReason);
+});
+
+test("fails startup when the gateway exits during the final health probe", async () => {
+  const { child, finalProbeStarted, gateway, resolveFinalProbe } =
+    createDeferredFinalHealthGateway();
+  const startup = gateway.start();
+
+  await finalProbeStarted;
+  child.exitCode = 1;
+  resolveFinalProbe(true);
+
+  await assert.rejects(startup, /gateway exited during final startup health probe/);
+});
+
+test("fails startup when the deferred final health probe is false", async () => {
+  const { finalProbeStarted, gateway, resolveFinalProbe } = createDeferredFinalHealthGateway();
+  const startup = gateway.start();
+
+  await finalProbeStarted;
+  resolveFinalProbe(false);
+
+  await assert.rejects(startup, /gateway became unhealthy during startup stabilization/);
+});
+
 test("accepts only HTTP 200 from the runner-local health endpoint without auth", async () => {
   const requests = [];
   const server = createServer((request, response) => {

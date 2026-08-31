@@ -4,9 +4,8 @@ Before publishing a release candidate:
 
 - Confirm CI passed for the exact commit being released.
 - From the `main` branch, dispatch **Zulip live smoke (protected)** with the
-  candidate's full commit SHA. The workflow rejects commits not already
-  reachable from `main` before the protected environment or its secrets are
-  available.
+  candidate's full commit SHA. For a release, leave `candidate_ref` empty so the
+  workflow requires the commit to be reachable from `main`.
 - Record the successful run URL and tested SHA here and on GitHub issue #24:
   `Live smoke: <run URL>; tested SHA: <40-character SHA>`.
 - Confirm the run summary reports every scenario as `PASS`. A skipped or
@@ -25,6 +24,15 @@ configuration in `OPENCLAW_SMOKE_CONFIG_JSON`; store the test actor and bot
 credentials in the environment-scoped secrets named by the workflow. Set
 `ZULIP_SMOKE_STREAM` as an environment variable. Never define these as
 repository-level secrets.
+
+When debugging a live-only failure, keep the fixes on one same-repository
+feature branch and dispatch the workflow with both `candidate_sha` and
+`candidate_ref`. Repeat on that branch until the smoke run passes, then open one
+pull request. Do not merge each experimental fix to `main`: that creates noisy
+review and failure notifications and leaves `main` holding known-bad candidates.
+Only the repository owner can dispatch a branch candidate, the candidate must
+be reachable from the named same-repository branch, and environment approval is
+still required before credentials are released.
 
 The isolated configuration must enable the checked-out local Zulip plugin, use
 the dedicated bot account, allow DMs from the smoke actor, monitor the smoke

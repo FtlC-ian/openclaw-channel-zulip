@@ -487,7 +487,8 @@ test("reconciles a placeholder update into cached message matching and cleanup a
     id: 2,
     type: "update_message",
     message_id: 100,
-    content: "<p>final-marker</p>",
+    content: "final-marker",
+    rendered_content: "<p>final-marker</p>",
     edit_timestamp: 1_750_000_001,
   };
   const batches = [[messageEvent], [updateEvent]];
@@ -535,6 +536,60 @@ test("does not mutate a cached message for an unrelated update", async () => {
   assert.deepEqual(queue.events, [messageEvent, updateEvent]);
 });
 
+test("scopes an official propagated update across cached messages", async () => {
+  const primaryEvent = { id: 1, type: "message", message: {
+    id: 100,
+    content: "<p>primary before</p>",
+    subject: "old-topic",
+    topic_links: [],
+    stream_id: 5,
+  } };
+  const secondaryEvent = { id: 2, type: "message", message: {
+    id: 101,
+    content: "<p>secondary before</p>",
+    subject: "old-topic",
+    topic_links: [],
+    stream_id: 5,
+  } };
+  const topicLinks = [{ text: "docs", url: "https://example.com/docs" }];
+  const updateEvent = {
+    id: 3,
+    type: "update_message",
+    message_id: 100,
+    message_ids: [100, 101],
+    content: "**primary after**",
+    rendered_content: "<p><strong>primary after</strong></p>",
+    flags: ["read"],
+    edit_timestamp: 1_750_000_002,
+    is_me_message: false,
+    stream_id: 5,
+    stream_name: "Old channel",
+    new_stream_id: 9,
+    subject: "new-topic",
+    topic_links: topicLinks,
+    propagate_mode: "change_all",
+  };
+  const queue = new EventQueue({
+    request: async () => ({ events: [primaryEvent, secondaryEvent, updateEvent] }),
+  });
+
+  await queue.poll();
+
+  assert.equal(primaryEvent.message.content, "<p><strong>primary after</strong></p>");
+  assert.deepEqual(primaryEvent.message.flags, ["read"]);
+  assert.equal(primaryEvent.message.edit_timestamp, 1_750_000_002);
+  assert.equal(primaryEvent.message.is_me_message, false);
+  assert.equal(secondaryEvent.message.content, "<p>secondary before</p>");
+  assert.equal(Object.hasOwn(secondaryEvent.message, "flags"), false);
+  assert.equal(Object.hasOwn(secondaryEvent.message, "edit_timestamp"), false);
+  for (const event of [primaryEvent, secondaryEvent]) {
+    assert.equal(event.message.subject, "new-topic");
+    assert.equal(event.message.topic_links, topicLinks);
+    assert.equal(event.message.stream_id, 9);
+  }
+  assert.equal(queue.events[2], updateEvent);
+});
+
 test("preserves raw update and delete evidence after reconciling an edit", async () => {
   const messageEvent = { id: 1, type: "message", message: {
     id: 100,
@@ -545,7 +600,9 @@ test("preserves raw update and delete evidence after reconciling an edit", async
     id: 2,
     type: "update_message",
     message_id: 100,
-    content: "<p>after-edit</p>",
+    message_ids: [100],
+    content: "after-edit",
+    rendered_content: "<p>after-edit</p>",
     subject: "new-topic",
   };
   const deleteEvent = { id: 3, type: "delete_message", message_ids: [100] };

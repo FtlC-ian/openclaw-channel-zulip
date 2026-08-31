@@ -397,7 +397,7 @@ test("requires lifecycle and subagent reactions to be removed", () => {
   assert.equal(lifecycleSummary([{ ...base, op: "add" }, { ...base, op: "remove" }, { ...base, op: "add" }], "42").allRemoved, false);
   assert.equal(lifecycleSummary([{ ...base, op: "add" }, { ...base, user_id: 8, op: "add" }, { ...base, op: "remove" }], "42").allRemoved, false);
   assert.equal(lifecycleSummary([
-    { ...base, op: "add" },
+    { ...base, emoji_code: "1F916", op: "add" },
     {
       ...base,
       user_id: undefined,
@@ -435,7 +435,7 @@ test("requires subagent lifecycle completion before the parent reply", () => {
   const reply = { type: "message", id: 3 };
   assert.equal(subagentCompletedBeforeReply([reaction(1, "add"), reaction(2, "remove"), reply], "42", reply), true);
   assert.equal(subagentCompletedBeforeReply([
-    reaction(1, "add"),
+    { ...reaction(1, "add"), emoji_code: "1F916" },
     {
       ...reaction(2, "remove"),
       user_id: undefined,

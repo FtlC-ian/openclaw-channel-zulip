@@ -23,20 +23,23 @@
 
 ## Installation
 
-This source targets OpenClaw **2026.7.1-2**. It uses the focused channel SDK,
-ordered inbound media facts, buffered reply dispatch, and portable message
-presentations. The development dependency is pinned to that published SDK.
+This source supports OpenClaw **2026.7.1-2 through 2026.8.1**. The development
+dependency and minimum host version remain pinned to 2026.7.1-2, so the same
+plugin build can still be installed and tested on the current stable host.
 
-Do not use this branch with the 2026.8 beta yet: that SDK removes the keyed-store
-receive journal before an external-plugin migration path is available. Pending
-inbound records and deduplication tombstones retain their existing namespaces and
-retention; this update does not migrate or discard them. The newer ingress queue
-also requires host trust unavailable to ordinary third-party plugins.
+Durable inbound handling uses the shared ingress queue API available in both
+supported versions. When upgrading an existing installation, pending records and
+deduplication tombstones from the older keyed-store journal retain their original
+namespaces and retention. They are replayed or completed through the compatibility
+journal instead of being silently discarded.
 
-The stable setup adapter, session-store path resolver, human-delay resolver, and
-outbound media loader remain until supported replacements preserve their current
-contracts. The beta setup contract is not available in the pinned stable SDK;
-replacing the outbound loader must preserve host-provided file access limits.
+Outbound media loading uses the typed media-runtime SDK surface shared by both
+versions. Command access-group authorization remains enabled even if an older
+configuration still contains the removed `commands.useAccessGroups` toggle.
+
+OpenClaw 2026.8.1 compatibility does not require upgrading a running Gateway.
+Keep production on 2026.7.1-2 until the separate 2026.8.1 core startup regressions
+are resolved.
 
 ### Via plugin manager (recommended)
 

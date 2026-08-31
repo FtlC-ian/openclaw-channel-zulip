@@ -6,6 +6,9 @@
 - **Per-stream inbound policy**: Add deterministic name/ID `streamOverrides` for inbound activation, mention requirements, and allowed/excluded topics while preserving legacy `streams`, `topics`, and `streamTopics` behavior.
 - **Early inbound filtering**: Resolve stream policy before durable acceptance, attachment downloads, reactions, typing, routing, or agent dispatch. Outbound access remains independent.
 
+### Compatibility
+- **OpenClaw 2026.8.1 compatibility**: Use the shared ingress queue and typed media-runtime SDK surfaces while retaining OpenClaw 2026.7.1-2 as the minimum supported host, draining legacy durable records, and keeping command access-group checks enabled.
+
 ## 2026.5.26
 
 ### Features

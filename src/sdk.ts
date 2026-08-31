@@ -10,7 +10,32 @@ export type { WizardPrompter } from "openclaw/plugin-sdk/setup";
 export type { ChannelGroupContext } from "openclaw/plugin-sdk/channel-contract";
 
 export type { ChannelOutboundAdapter } from "openclaw/plugin-sdk/channel-send-result";
-export { loadOutboundMediaFromUrl } from "openclaw/plugin-sdk/outbound-media";
+import { buildOutboundMediaLoadOptions } from "openclaw/plugin-sdk/media-runtime";
+import { loadWebMedia } from "openclaw/plugin-sdk/web-media";
+
+type OutboundMediaLoadOptions = {
+  maxBytes?: number;
+  mediaAccess?: {
+    localRoots?: readonly string[];
+    readFile?: (filePath: string) => Promise<Buffer>;
+    workspaceDir?: string;
+  };
+  mediaLocalRoots?: readonly string[] | "any";
+  mediaReadFile?: (filePath: string) => Promise<Buffer>;
+  workspaceDir?: string;
+  proxyUrl?: string;
+  fetchImpl?: typeof fetch;
+  requestInit?: RequestInit;
+  optimizeImages?: boolean;
+  trustExplicitProxyDns?: boolean;
+};
+
+export async function loadOutboundMediaFromUrl(
+  mediaUrl: string,
+  options: OutboundMediaLoadOptions = {},
+) {
+  return await loadWebMedia(mediaUrl, buildOutboundMediaLoadOptions(options));
+}
 
 export {
   createChannelMessageAdapterFromOutbound,

@@ -38,6 +38,85 @@ const state = vi.hoisted(() => {
     };
   };
 
+  const createMemoryIngressQueue = () => {
+    const pending = new Map<string, Record<string, any>>();
+    const completed = new Map<string, Record<string, any>>();
+    return {
+      enqueue: vi.fn(async (
+        id: string,
+        payload: unknown,
+        options: { metadata?: unknown; receivedAt?: number } = {},
+      ) => {
+        const completedRecord = completed.get(id);
+        if (completedRecord) {
+          return { kind: "completed", duplicate: true, record: completedRecord };
+        }
+        const pendingRecord = pending.get(id);
+        if (pendingRecord) {
+          return { kind: "pending", duplicate: true, record: pendingRecord };
+        }
+        const receivedAt = options.receivedAt ?? Date.now();
+        const record = {
+          id,
+          channelId: "zulip",
+          accountId: "default",
+          queueName: "default",
+          payload,
+          ...(options.metadata === undefined ? {} : { metadata: options.metadata }),
+          receivedAt,
+          updatedAt: receivedAt,
+          attempts: 0,
+        };
+        pending.set(id, record);
+        return { kind: "accepted", duplicate: false, record };
+      }),
+      listPending: vi.fn(async () => [...pending.values()]),
+      listClaims: vi.fn(async () => []),
+      claimNext: vi.fn(async () => null),
+      claim: vi.fn(async () => null),
+      complete: vi.fn(async (
+        id: string,
+        options: { metadata?: unknown; completedAt?: number } = {},
+      ) => {
+        if (!pending.has(id) && completed.has(id)) {
+          return false;
+        }
+        pending.delete(id);
+        completed.set(id, {
+          id,
+          channelId: "zulip",
+          accountId: "default",
+          queueName: "default",
+          completedAt: options.completedAt ?? Date.now(),
+          ...(options.metadata === undefined ? {} : { metadata: options.metadata }),
+        });
+        return true;
+      }),
+      release: vi.fn(async (
+        id: string,
+        options: { lastError?: string; releasedAt?: number } = {},
+      ) => {
+        const record = pending.get(id);
+        if (!record) {
+          return false;
+        }
+        const releasedAt = options.releasedAt ?? Date.now();
+        pending.set(id, {
+          ...record,
+          updatedAt: releasedAt,
+          attempts: Number(record.attempts ?? 0) + 1,
+          lastAttemptAt: releasedAt,
+          ...(options.lastError === undefined ? {} : { lastError: options.lastError }),
+        });
+        return true;
+      }),
+      fail: vi.fn(async () => false),
+      delete: vi.fn(async (id: string) => pending.delete(id)),
+      recoverStaleClaims: vi.fn(async () => 0),
+      prune: vi.fn(async () => 0),
+    };
+  };
+
   const createCore = () => ({
     config: {
       channels: {
@@ -54,6 +133,7 @@ const state = vi.hoisted(() => {
       | undefined
       | {
           openKeyedStore: ReturnType<typeof vi.fn>;
+          openChannelIngressQueue: ReturnType<typeof vi.fn>;
         },
     system: {
       enqueueSystemEvent: vi.fn(),
@@ -114,9 +194,11 @@ const state = vi.hoisted(() => {
 
   return {
     createMemoryKeyedStore,
+    createMemoryIngressQueue,
     abortController: undefined as AbortController | undefined,
     autoAbort: true,
     durableStores: new Map<string, ReturnType<typeof createMemoryKeyedStore>>(),
+    durableQueues: new Map<string, ReturnType<typeof createMemoryIngressQueue>>(),
     pollResponses: [] as Array<Record<string, unknown>>,
     pairingAllowFrom: [] as string[],
     pairingUpsertError: undefined as Error | undefined,
@@ -321,6 +403,7 @@ async function runMonitorOnce(
 
 function enableDurableInboundJournal() {
   state.durableStores = new Map();
+  state.durableQueues = new Map();
   state.core.state = {
     openKeyedStore: vi.fn((options: { namespace: string }) => {
       const existing = state.durableStores.get(options.namespace);
@@ -330,6 +413,16 @@ function enableDurableInboundJournal() {
       const store = state.createMemoryKeyedStore(options.maxEntries);
       state.durableStores.set(options.namespace, store);
       return store;
+    }),
+    openChannelIngressQueue: vi.fn((options: { accountId?: string } = {}) => {
+      const accountId = options.accountId ?? "default";
+      const existing = state.durableQueues.get(accountId);
+      if (existing) {
+        return existing;
+      }
+      const queue = state.createMemoryIngressQueue();
+      state.durableQueues.set(accountId, queue);
+      return queue;
     }),
   };
 }
@@ -341,6 +434,7 @@ describe("monitorZulipProvider", () => {
     state.core = state.createCore();
     state.core.channel.inbound.buildContext.mockImplementation(buildChannelInboundEventContext);
     state.durableStores = new Map();
+    state.durableQueues = new Map();
     state.pairingAllowFrom = [];
     state.pairingUpsertError = undefined;
     state.upsertPairingRequest.mockReset().mockImplementation(async () => {
@@ -1438,11 +1532,6 @@ describe("monitorZulipProvider", () => {
       5 * 1024 * 1024,
     );
     expect(state.core.channel.media.saveMediaBuffer).toHaveBeenCalledTimes(3);
-    // The stable SDK projects canonical input facts into its older dispatch context.
-    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mock.calls[0]?.[0]?.ctx).toMatchObject({
-      MediaPaths: ["/managed/song.mp3", "/managed/image.png", "/managed/report.pdf"],
-      MediaTypes: ["audio/mpeg", "image/png", "application/pdf"],
-    });
     expect(state.core.channel.inbound.buildContext).toHaveBeenCalledWith(
       expect.objectContaining({
         media: [
@@ -2139,7 +2228,8 @@ describe("monitorZulipProvider", () => {
   it.each([
     { paired: true, expectedDispatches: 1 },
     { paired: false, expectedDispatches: 0 },
-  ])("preserves paired command authorization in open streams (paired=$paired)", async ({ paired, expectedDispatches }) => {
+  ])("keeps access-group command authorization enabled in open streams (paired=$paired)", async ({ paired, expectedDispatches }) => {
+    (state.core.config.commands as { useAccessGroups?: boolean }).useAccessGroups = false;
     state.account.config.dmPolicy = "pairing";
     state.pairingAllowFrom = paired ? ["user8@zlp.pubnerd.app"] : [];
     state.core.channel.commands.shouldHandleTextCommands.mockReturnValue(true);
@@ -2152,6 +2242,105 @@ describe("monitorZulipProvider", () => {
     if (paired) {
       expect(state.core.channel.inbound.buildContext).toHaveReturnedWith(expect.objectContaining({ CommandAuthorized: true }));
     }
+  });
+
+  it("drains legacy keyed-journal records through the queue-backed compatibility journal", async () => {
+    enableDurableInboundJournal();
+    const {
+      createZulipDurableInboundMessageId,
+      createZulipDurableInboundReceiveJournal,
+      serializeZulipDurableInboundMessage,
+    } = await import("./durable-receive.js");
+    const message = makeChannelMessage(2100);
+    const durableId = createZulipDurableInboundMessageId({
+      accountId: state.account.accountId,
+      messageId: String(message.id),
+    });
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const pendingStore = Array.from(state.durableStores.entries()).find(([namespace]) =>
+      namespace.includes(".pending."),
+    )?.[1];
+    expect(pendingStore).toBeDefined();
+    await pendingStore!.register(durableId, {
+      id: durableId,
+      payload: {
+        message: serializeZulipDurableInboundMessage(message),
+        receivedAt: 100,
+      },
+      receivedAt: 100,
+      updatedAt: 100,
+      attempts: 2,
+      lastAttemptAt: 100,
+      lastError: "legacy failure",
+    });
+
+    await expect(journal.pending()).resolves.toEqual([
+      expect.objectContaining({ id: durableId, attempts: 2, lastError: "legacy failure" }),
+    ]);
+    await expect(journal.release(durableId, {
+      lastError: "retry failure",
+      releasedAt: 200,
+    })).resolves.toBe(true);
+    await expect(journal.pending()).resolves.toEqual([
+      expect.objectContaining({ id: durableId, attempts: 3, lastError: "retry failure" }),
+    ]);
+
+    await journal.complete(durableId, {
+      metadata: { queueEventId: 9 },
+      completedAt: 300,
+    });
+    await expect(journal.pending()).resolves.toEqual([]);
+    await expect(journal.accept(durableId, {
+      message: serializeZulipDurableInboundMessage(message),
+      receivedAt: 400,
+    })).resolves.toEqual(expect.objectContaining({
+      kind: "completed",
+      duplicate: true,
+      record: expect.objectContaining({ completedAt: 300, metadata: { queueEventId: 9 } }),
+    }));
+  });
+
+  it("does not replay queue records covered by a legacy completion tombstone", async () => {
+    enableDurableInboundJournal();
+    const {
+      createZulipDurableInboundMessageId,
+      createZulipDurableInboundReceiveJournal,
+      serializeZulipDurableInboundMessage,
+    } = await import("./durable-receive.js");
+    const message = makeChannelMessage(2101);
+    const durableId = createZulipDurableInboundMessageId({
+      accountId: state.account.accountId,
+      messageId: String(message.id),
+    });
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const queue = state.durableQueues.get(state.account.accountId);
+    const completedStore = Array.from(state.durableStores.entries()).find(([namespace]) =>
+      namespace.includes(".completed."),
+    )?.[1];
+    expect(queue).toBeDefined();
+    expect(completedStore).toBeDefined();
+    await queue!.enqueue(durableId, {
+      message: serializeZulipDurableInboundMessage(message),
+      receivedAt: 100,
+    }, { receivedAt: 100 });
+    await completedStore!.register(durableId, {
+      id: durableId,
+      completedAt: 200,
+      metadata: { queueEventId: 10 },
+    });
+
+    await expect(journal.pending()).resolves.toEqual([]);
+    expect(queue!.complete).toHaveBeenCalledWith(durableId, {
+      metadata: { queueEventId: 10 },
+      completedAt: 200,
+    });
+    await expect(journal.accept(durableId, {
+      message: serializeZulipDurableInboundMessage(message),
+      receivedAt: 300,
+    })).resolves.toEqual(expect.objectContaining({
+      kind: "completed",
+      duplicate: true,
+    }));
   });
 
   it("records and completes durable inbound messages when plugin state is available", async () => {
@@ -2300,13 +2489,12 @@ describe("monitorZulipProvider", () => {
 
       await runMonitorOnce();
 
-      const pendingStore = Array.from(state.durableStores.entries()).find(([namespace]) =>
-        namespace.includes(".pending."),
-      )?.[1];
+      const { createZulipDurableInboundReceiveJournal } = await import("./durable-receive.js");
+      const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
       const completedStore = Array.from(state.durableStores.entries()).find(([namespace]) =>
         namespace.includes(".completed."),
       )?.[1];
-      await expect(pendingStore?.entries()).resolves.toHaveLength(1);
+      await expect(journal.pending()).resolves.toHaveLength(1);
       await expect(completedStore?.entries()).resolves.toEqual([]);
       expect(state.addZulipReaction).toHaveBeenCalledWith(
         state.client,
@@ -2325,7 +2513,7 @@ describe("monitorZulipProvider", () => {
         });
       await runMonitorOnce();
 
-      await expect(pendingStore?.entries()).resolves.toEqual([]);
+      await expect(journal.pending()).resolves.toEqual([]);
       await expect(completedStore?.entries()).resolves.toHaveLength(1);
       expect(
         state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher,

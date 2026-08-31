@@ -706,7 +706,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     });
     const hasControlCommand = core.channel.text.hasControlCommand(rawText, cfg);
     const isControlCommand = allowTextCommands && hasControlCommand;
-    const useAccessGroups = cfg.commands?.useAccessGroups !== false;
+    const useAccessGroups = true;
     const senderAllowedForCommands = isSenderAllowed({
       senderId: senderIdentity,
       senderName,

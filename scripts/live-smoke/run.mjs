@@ -466,32 +466,67 @@ export class EventQueue {
 }
 
 export class Gateway {
-  constructor(port, { termTimeoutMs = 10000, killTimeoutMs = 5000, healthProbe, healthProbeTimeoutMs = 2000 } = {}) {
+  constructor(port, {
+    termTimeoutMs = 10000,
+    killTimeoutMs = 5000,
+    healthProbe,
+    healthProbeTimeoutMs = 2000,
+    startupSettleMs = 5000,
+    startupSettlePollMs = 250,
+    spawnImpl = spawn,
+    wait = (ms, signal) => delay(ms, undefined, { signal }),
+    now = () => Date.now(),
+  } = {}) {
     this.port = String(port);
     this.termTimeoutMs = termTimeoutMs;
     this.killTimeoutMs = killTimeoutMs;
     this.healthProbe = healthProbe;
     this.healthProbeTimeoutMs = healthProbeTimeoutMs;
+    this.startupSettleMs = startupSettleMs;
+    this.startupSettlePollMs = startupSettlePollMs;
+    this.spawnImpl = spawnImpl;
+    this.wait = wait;
+    this.now = now;
   }
   async start(signal) {
     signal?.throwIfAborted();
     if (this.process && isProcessTreeRunning(this.process)) throw new Error("Runner-local OpenClaw gateway is already running");
-    this.process = spawn("pnpm", ["exec", "openclaw", "gateway", "run", "--bind", "loopback", "--port", this.port, "--auth", "none", "--compact"], {
+    this.process = this.spawnImpl("pnpm", ["exec", "openclaw", "gateway", "run", "--bind", "loopback", "--port", this.port, "--auth", "none", "--compact"], {
       cwd: process.cwd(), env: process.env, stdio: ["ignore", "ignore", "ignore"], detached: process.platform !== "win32",
     });
     const child = this.process;
-    const deadline = Date.now() + 30000;
-    while (Date.now() < deadline) {
+    const deadline = this.now() + 30000;
+    while (this.now() < deadline) {
       signal?.throwIfAborted();
       if (!isChildRunning(child)) throw new Error("Runner-local OpenClaw gateway exited during startup");
       if (await this.isHealthy()) {
-        await delay(500, undefined, { signal });
+        await this.wait(500, signal);
         if (!isChildRunning(child)) throw new Error("Runner-local OpenClaw gateway exited during startup");
-        if (await this.isHealthy()) return;
+        if (await this.isHealthy()) {
+          await this.waitForStartupStability(child, signal);
+          return;
+        }
       }
-      await delay(1000, undefined, { signal });
+      await this.wait(1000, signal);
     }
     throw new Error("Runner-local OpenClaw gateway did not become healthy within 30s");
+  }
+  async waitForStartupStability(child, signal) {
+    const deadline = this.now() + this.startupSettleMs;
+    while (this.now() < deadline) {
+      signal?.throwIfAborted();
+      if (!isChildRunning(child)) {
+        throw new Error("Runner-local OpenClaw gateway exited during startup stabilization");
+      }
+      await this.wait(Math.min(this.startupSettlePollMs, deadline - this.now()), signal);
+    }
+    signal?.throwIfAborted();
+    if (!isChildRunning(child)) {
+      throw new Error("Runner-local OpenClaw gateway exited during startup stabilization");
+    }
+    if (!await this.isHealthy()) {
+      throw new Error("Runner-local OpenClaw gateway became unhealthy during startup stabilization");
+    }
   }
   async isHealthy() {
     if (this.healthProbe) return this.healthProbe();

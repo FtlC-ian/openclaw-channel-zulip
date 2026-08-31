@@ -492,6 +492,79 @@ test("waits for gateway exit after escalating to SIGKILL", async () => {
   assert.equal(gateway.process, undefined);
 });
 
+test("does not begin scenario traffic until gateway startup stabilization finishes", async () => {
+  const child = { exitCode: null, signalCode: null };
+  let clock = 0;
+  let releaseStabilization;
+  let stabilizationStarted;
+  const stabilization = new Promise((resolve) => { releaseStabilization = resolve; });
+  const enteredStabilization = new Promise((resolve) => { stabilizationStarted = resolve; });
+  const waits = [];
+  const gateway = new Gateway(18789, {
+    healthProbe: async () => true,
+    startupSettleMs: 250,
+    spawnImpl: () => child,
+    now: () => clock,
+    wait: async (ms, signal) => {
+      waits.push(ms);
+      signal?.throwIfAborted();
+      if (ms === 250) {
+        stabilizationStarted();
+        await stabilization;
+      }
+      clock += ms;
+      signal?.throwIfAborted();
+    },
+  });
+  let scenarioSendStarted = false;
+  const scenario = gateway.start().then(() => { scenarioSendStarted = true; });
+
+  await enteredStabilization;
+  assert.equal(scenarioSendStarted, false);
+  releaseStabilization();
+  await scenario;
+
+  assert.equal(scenarioSendStarted, true);
+  assert.deepEqual(waits, [500, 250]);
+});
+
+test("fails startup if the gateway exits during stabilization", async () => {
+  const child = { exitCode: null, signalCode: null };
+  let clock = 0;
+  const gateway = new Gateway(18789, {
+    healthProbe: async () => true,
+    startupSettleMs: 250,
+    spawnImpl: () => child,
+    now: () => clock,
+    wait: async (ms) => {
+      clock += ms;
+      if (ms === 250) child.exitCode = 1;
+    },
+  });
+
+  await assert.rejects(gateway.start(), /gateway exited during startup stabilization/);
+});
+
+test("aborts gateway startup during stabilization", async () => {
+  const child = { exitCode: null, signalCode: null };
+  const controller = new AbortController();
+  const abortReason = new Error("cancel startup");
+  let clock = 0;
+  const gateway = new Gateway(18789, {
+    healthProbe: async () => true,
+    startupSettleMs: 250,
+    spawnImpl: () => child,
+    now: () => clock,
+    wait: async (ms, signal) => {
+      clock += ms;
+      if (ms === 250) controller.abort(abortReason);
+      signal?.throwIfAborted();
+    },
+  });
+
+  await assert.rejects(gateway.start(controller.signal), (error) => error === abortReason);
+});
+
 test("accepts only HTTP 200 from the runner-local health endpoint without auth", async () => {
   const requests = [];
   const server = createServer((request, response) => {

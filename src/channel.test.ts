@@ -2,7 +2,10 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 import { createReplyPrefixOptions } from "openclaw/plugin-sdk/channel-outbound";
 import { describe, expect, it } from "vitest";
 import { zulipPlugin } from "./channel.js";
-import { resolveZulipSessionConversation } from "./session-conversation.js";
+import {
+  buildZulipDirectSessionKey,
+  resolveZulipSessionConversation,
+} from "./session-conversation.js";
 import { zulipMessageActions } from "./actions.js";
 import { zulipOnboardingAdapter } from "./onboarding.js";
 import { resolveZulipAccount } from "./zulip/accounts.js";
@@ -66,16 +69,64 @@ describe("zulipPlugin", () => {
 
       expect(
         resolveRoute({
-          cfg: {} as OpenClawConfig,
+          cfg: {
+            channels: {
+              zulip: {
+                url: "https://realm-a.example.test",
+                email: "bot@realm-a.example.test",
+              },
+            },
+            session: { dmScope: "main" },
+          } as OpenClawConfig,
           agentId: "main",
           target: "@ian@example.com",
         }),
       ).toMatchObject({
-        peer: { kind: "direct", id: "ian@example.com" },
+        sessionKey: buildZulipDirectSessionKey({
+          agentId: "main",
+          accountId: "default",
+          baseUrl: "https://realm-a.example.test",
+          botIdentity: "bot@realm-a.example.test",
+          senderIdentity: "ian@example.com",
+        }),
+        peer: { kind: "direct", id: expect.stringMatching(/^account-[0-9a-f]{64}:ian@example\.com$/) },
         chatType: "direct",
         from: "zulip:ian@example.com",
         to: "user:ian@example.com",
       });
+    });
+
+    it("isolates direct sessions across users, accounts, and realms despite collisions", () => {
+      const base = {
+        agentId: "main",
+        accountId: "default",
+        baseUrl: "https://realm-a.example.test",
+        botIdentity: "bot@realm-a.example.test",
+        senderIdentity: "same@example.com",
+      };
+      const sessionKey = buildZulipDirectSessionKey(base);
+
+      expect(buildZulipDirectSessionKey(base)).toBe(sessionKey);
+      expect(buildZulipDirectSessionKey({ ...base, senderIdentity: "other@example.com" }))
+        .not.toBe(sessionKey);
+      expect(buildZulipDirectSessionKey({ ...base, accountId: "secondary" }))
+        .not.toBe(sessionKey);
+      expect(buildZulipDirectSessionKey({ ...base, baseUrl: "https://realm-b.example.test" }))
+        .not.toBe(sessionKey);
+      expect(buildZulipDirectSessionKey({ ...base, botIdentity: "other-bot@example.test" }))
+        .not.toBe(sessionKey);
+    });
+
+    it("keeps direct sessions separate from stream and topic sessions", () => {
+      const direct = buildZulipDirectSessionKey({
+        agentId: "main",
+        accountId: "default",
+        baseUrl: "https://realm-a.example.test",
+        botIdentity: "bot@realm-a.example.test",
+        senderIdentity: "4",
+      });
+      expect(direct).not.toBe("agent:main:zulip:channel:4");
+      expect(direct).not.toBe("agent:main:zulip:channel:4:thread:4");
     });
 
     it("resolves outbound stream topic routes using canonical conversation ids", () => {

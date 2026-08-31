@@ -1,8 +1,64 @@
+import { createHash } from "node:crypto";
 import { sanitizeThreadId } from "./zulip/monitor-helpers.js";
-import { buildChannelOutboundSessionRoute, type OpenClawConfig } from "./sdk.js";
+import {
+  buildAgentSessionKey,
+  buildChannelOutboundSessionRoute,
+  type OpenClawConfig,
+} from "./sdk.js";
+import { resolveZulipAccount } from "./zulip/accounts.js";
+import { normalizeZulipBaseUrl } from "./zulip/client.js";
 import { parseZulipTarget, type ZulipTarget } from "./zulip/send.js";
 
 const TOPIC_MARKER = ":topic:";
+
+function canonicalizeZulipRealm(baseUrl: string): string {
+  const normalized = normalizeZulipBaseUrl(baseUrl);
+  if (!normalized) {
+    throw new Error("Zulip base URL is required for isolated DM session routing");
+  }
+  const url = new URL(normalized);
+  url.hash = "";
+  url.search = "";
+  return url.toString().replace(/\/+$/, "");
+}
+
+export function buildZulipDirectPeerId(params: {
+  baseUrl: string;
+  botIdentity: string;
+  senderIdentity: string;
+}): string {
+  const botIdentity = params.botIdentity.trim().toLowerCase();
+  const senderIdentity = params.senderIdentity.trim().toLowerCase();
+  if (!botIdentity) {
+    throw new Error("Zulip bot identity is required for isolated DM session routing");
+  }
+  if (!senderIdentity) {
+    throw new Error("Zulip sender identity is required for isolated DM session routing");
+  }
+  const accountScopeHash = createHash("sha256")
+    .update(`${canonicalizeZulipRealm(params.baseUrl)}\n${botIdentity}`)
+    .digest("hex");
+  return `account-${accountScopeHash}:${senderIdentity}`;
+}
+
+export function buildZulipDirectSessionKey(params: {
+  agentId: string;
+  accountId?: string | null;
+  baseUrl: string;
+  botIdentity: string;
+  senderIdentity: string;
+}): string {
+  return buildAgentSessionKey({
+    agentId: params.agentId,
+    channel: "zulip",
+    accountId: params.accountId,
+    peer: {
+      kind: "direct",
+      id: buildZulipDirectPeerId(params),
+    },
+    dmScope: "per-account-channel-peer",
+  });
+}
 
 export function buildZulipStreamConversation(params: {
   streamId: string;
@@ -97,16 +153,40 @@ export function resolveZulipOutboundSessionRoute(
   }
 
   if (target.kind === "user") {
-    return buildChannelOutboundSessionRoute({
+    const account = resolveZulipAccount({ cfg: params.cfg, accountId: params.accountId });
+    if (!account.baseUrl || !account.email) {
+      return null;
+    }
+    const peer = {
+      kind: "direct" as const,
+      id: buildZulipDirectPeerId({
+        baseUrl: account.baseUrl,
+        botIdentity: account.email,
+        senderIdentity: target.email,
+      }),
+    };
+    const route = buildChannelOutboundSessionRoute({
       cfg: params.cfg,
       agentId: params.agentId,
       channel: "zulip",
       accountId: params.accountId,
-      peer: { kind: "direct", id: target.email },
+      peer,
       chatType: "direct",
       from: `zulip:${target.email}`,
       to: `user:${target.email}`,
     });
+    const sessionKey = buildZulipDirectSessionKey({
+      agentId: params.agentId,
+      accountId: params.accountId,
+      baseUrl: account.baseUrl,
+      botIdentity: account.email,
+      senderIdentity: target.email,
+    });
+    return {
+      ...route,
+      sessionKey,
+      baseSessionKey: sessionKey,
+    };
   }
 
   const topic = resolveOutboundZulipTopic({

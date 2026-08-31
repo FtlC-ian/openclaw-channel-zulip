@@ -323,7 +323,8 @@ const typingCallbacksMock = vi.fn(() => ({
   onIdle: vi.fn(),
 }));
 
-vi.mock("../sdk.js", () => ({
+vi.mock("../sdk.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../sdk.js")>(),
   createChannelPairingController: vi.fn(() => ({
     upsertPairingRequest: state.upsertPairingRequest,
     readStoreForDmPolicy: vi.fn(async () => state.pairingAllowFrom),
@@ -389,13 +390,19 @@ function makePrivateMessage(id: number, senderEmail = "user8@zlp.pubnerd.app") {
 async function runMonitorOnce(
   controller = new AbortController(),
   runtime?: RuntimeEnv,
-  options: { statusSink?: (patch: Record<string, unknown>) => void } = {},
+  options: {
+    statusSink?: (patch: Record<string, unknown>) => void;
+    email?: string;
+    baseUrl?: string;
+  } = {},
 ) {
   const { monitorZulipProvider } = await import("./monitor.js");
   state.abortController = controller;
   await monitorZulipProvider({
     config: state.core.config,
     runtime,
+    email: options.email,
+    baseUrl: options.baseUrl,
     abortSignal: state.abortController.signal,
     statusSink: options.statusSink,
   });
@@ -1633,7 +1640,9 @@ describe("monitorZulipProvider", () => {
     );
     expect(state.core.channel.session.updateLastRoute).toHaveBeenCalledWith({
       storePath: "/tmp/openclaw-session-store.json",
-      sessionKey: "agent:debbie:zulip:channel:4",
+      sessionKey: expect.stringMatching(
+        /^agent:debbie:zulip:default:direct:account-[0-9a-f]{64}:user8@zlp\.pubnerd\.app$/,
+      ),
       deliveryContext: {
         channel: "zulip",
         to: "user:user8@zlp.pubnerd.app",
@@ -1669,10 +1678,43 @@ describe("monitorZulipProvider", () => {
     );
     expect(state.core.channel.session.updateLastRoute).toHaveBeenCalledWith({
       storePath: "/tmp/openclaw-session-store.json",
-      sessionKey: "agent:debbie:zulip:channel:4",
+      sessionKey: expect.stringMatching(
+        /^agent:debbie:zulip:default:direct:account-[0-9a-f]{64}:123$/,
+      ),
       deliveryContext: {
         channel: "zulip",
         to: "user:123",
+        accountId: "default",
+      },
+    });
+  });
+
+  it("uses effective connection overrides to isolate private-message sessions", async () => {
+    const { buildZulipDirectSessionKey } = await import("../session-conversation.js");
+    state.pollResponses = [
+      {
+        result: "success",
+        events: [{ id: 1, type: "message", message: makePrivateMessage(1102) }],
+      },
+    ];
+
+    await runMonitorOnce(new AbortController(), undefined, {
+      baseUrl: "https://override-realm.example.test",
+      email: "override-bot@example.test",
+    });
+
+    expect(state.core.channel.session.updateLastRoute).toHaveBeenCalledWith({
+      storePath: "/tmp/openclaw-session-store.json",
+      sessionKey: buildZulipDirectSessionKey({
+        agentId: "debbie",
+        accountId: "default",
+        baseUrl: "https://override-realm.example.test",
+        botIdentity: "override-bot@example.test",
+        senderIdentity: "user8@zlp.pubnerd.app",
+      }),
+      deliveryContext: {
+        channel: "zulip",
+        to: "user:user8@zlp.pubnerd.app",
         accountId: "default",
       },
     });

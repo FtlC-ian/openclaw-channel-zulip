@@ -49,6 +49,7 @@ export {
   DEFAULT_ACCOUNT_ID,
   normalizeAccountId,
   applyAccountNameToChannelSection,
+  buildAgentSessionKey,
   buildChannelOutboundSessionRoute,
   deleteAccountFromConfigSection,
   formatPairingApproveHint,

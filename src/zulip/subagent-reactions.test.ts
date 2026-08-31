@@ -34,6 +34,47 @@ describe("Zulip subagent reaction correlation", () => {
     expect(hide).toHaveBeenCalledTimes(1);
   });
 
+  it("uses an exact routed session alias after the async turn context ends", async () => {
+    const show = vi.fn(async () => {});
+    const hide = vi.fn(async () => {});
+    const context = registerZulipSubagentReactionContext({
+      requesterSessionKey: "agent:main:main",
+      requesterSessionKeyAliases: ["agent:main:zulip:default:direct:user11@example.com"],
+      show,
+      hide,
+    });
+
+    await handleZulipSubagentSpawned(
+      { runId: "routed-run", requester: { channel: "zulip" } },
+      { requesterSessionKey: "agent:main:zulip:default:direct:user11@example.com" },
+    );
+    await context.finish();
+
+    expect(show).toHaveBeenCalledTimes(1);
+    expect(hide).not.toHaveBeenCalled();
+
+    await handleZulipSubagentEnded({ runId: "routed-run" }, {});
+    expect(hide).toHaveBeenCalledTimes(1);
+  });
+
+  it("removes every exact session alias when a context finishes", async () => {
+    const show = vi.fn(async () => {});
+    const context = registerZulipSubagentReactionContext({
+      requesterSessionKey: "agent:main:main",
+      requesterSessionKeyAliases: ["routed-requester"],
+      show,
+      hide: vi.fn(async () => {}),
+    });
+
+    await context.finish();
+    await handleZulipSubagentSpawned(
+      { runId: "late-run", requester: { channel: "zulip" } },
+      { requesterSessionKey: "routed-requester" },
+    );
+
+    expect(show).not.toHaveBeenCalled();
+  });
+
   it("uses the active Zulip async context when the hook route key differs", async () => {
     const show = vi.fn(async () => {});
     const hide = vi.fn(async () => {});

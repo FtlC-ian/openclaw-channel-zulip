@@ -1198,6 +1198,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     const subagentReaction = resolveZulipReactionSpec(statusReactionConfig.subagent);
     const subagentContext = registerZulipSubagentReactionContext({
       requesterSessionKey: String(ctxPayload.SessionKey ?? sessionKey),
+      requesterSessionKeyAliases: [sessionKey],
       show: () => addReactionSafe(subagentReaction),
       hide: () => removeReactionSafe(subagentReaction),
     });

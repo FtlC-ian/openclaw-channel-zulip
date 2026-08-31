@@ -2,10 +2,11 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { EventEmitter, once } from "node:events";
 import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { assertFinalPrivateTypingStop, assertMessageRemainsExact, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, drainEventQueueUntilQuiet, eventOccursBefore, EventQueue, extractExactUploadUrl, Gateway, hasFinalPrivateTypingStop, hasProvableMinimumMessageDelay, inspectChildTranscripts, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactPollMessage, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, isUsageCountedTranscriptName, lifecycleSummary, normalizeScenarioError, redactError, resolveUploadUrl, signalProcessTree, subagentCompletedBeforeReply, validateEnvironment, waitForProcessTreeExit, writeGatewayGeneration } from "./run.mjs";
+import { assertFinalPrivateTypingStop, assertMessageRemainsExact, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, drainEventQueueUntilQuiet, eventOccursBefore, EventQueue, extractExactUploadUrl, Gateway, hasFinalPrivateTypingStop, hasProvableMinimumMessageDelay, inspectChildTranscripts, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactPollMessage, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, isUsageCountedTranscriptName, lifecycleSummary, normalizeScenarioError, probeRunnerLocalGatewayHealth, redactError, resolveUploadUrl, signalProcessTree, subagentCompletedBeforeReply, validateEnvironment, waitForProcessTreeExit, writeGatewayGeneration } from "./run.mjs";
 
 const validEnv = {
   ZULIP_URL: "https://zulip.example.test/path",
@@ -474,22 +475,49 @@ test("waits for gateway exit after escalating to SIGKILL", async () => {
   assert.equal(gateway.process, undefined);
 });
 
-test("kills a health probe that exceeds its process deadline", async () => {
-  const probe = new EventEmitter();
-  probe.exitCode = null;
-  probe.signalCode = null;
-  probe.kill = (signal) => {
-    probe.signalCode = signal;
-    setImmediate(() => probe.emit("exit", null, signal));
-    return true;
-  };
-  const gateway = new Gateway(18789, { healthProbeSpawn: () => probe, healthProbeTimeoutMs: 5 });
-  const keepAlive = setInterval(() => {}, 1000);
+test("accepts only HTTP 200 from the runner-local health endpoint without auth", async () => {
+  const requests = [];
+  const server = createServer((request, response) => {
+    requests.push({ method: request.method, url: request.url, authorization: request.headers.authorization });
+    response.writeHead(request.url === "/healthz" ? 200 : 404).end();
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
-    assert.equal(await gateway.isHealthy(), false);
-    assert.equal(probe.signalCode, "SIGKILL");
+    const address = server.address();
+    assert.equal(await probeRunnerLocalGatewayHealth(address.port, 1000), true);
+    assert.deepEqual(requests, [{ method: "GET", url: "/healthz", authorization: undefined }]);
   } finally {
-    clearInterval(keepAlive);
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
+test("rejects redirects and other non-200 health responses", async () => {
+  const server = createServer((_request, response) => response.writeHead(302, { location: "/healthy" }).end());
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    assert.equal(await new Gateway(server.address().port).isHealthy(), false);
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
+test("fails closed when the runner-local health connection is refused", async () => {
+  const server = createServer();
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  assert.equal(await probeRunnerLocalGatewayHealth(port, 1000), false);
+});
+
+test("aborts a runner-local health request that exceeds its deadline", async () => {
+  const server = createServer(() => {});
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const started = Date.now();
+    assert.equal(await probeRunnerLocalGatewayHealth(server.address().port, 20), false);
+    assert.equal(Date.now() - started < 500, true);
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
 });
 

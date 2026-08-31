@@ -6,11 +6,30 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { assertFinalPrivateTypingStop, assertMessageRemainsExact, authenticatedUserId, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, drainEventQueueUntilQuiet, eventOccursBefore, EventQueue, extractExactUploadUrl, Gateway, hasFinalPrivateTypingStop, hasProvableMinimumMessageDelay, inspectChildTranscripts, inspectLifecycleTurnEvidence, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactPollMessage, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, isUsageCountedTranscriptName, lifecycleEvidenceCounts, lifecycleSummary, normalizeScenarioError, parseZulipSubagentDiagnostic, probeRunnerLocalGatewayHealth, redactError, resolveUploadUrl, signalProcessTree, subagentCompletedBeforeReply, validateEnvironment, waitForProcessTreeExit, writeGatewayGeneration } from "./run.mjs";
 import { selectSmokeModel } from "./prepare-config.mjs";
 
 const ACTOR_USER_ID = "42";
 const BOT_USER_ID = "91";
+
+function runCommand(command, args, { cwd, env = process.env } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.once("error", reject);
+    child.once("close", (code, signal) => resolve({ code, signal, stdout, stderr }));
+  });
+}
+
+async function runSuccessfulCommand(command, args, options) {
+  const result = await runCommand(command, args, options);
+  assert.equal(result.code, 0, `${command} ${args.join(" ")} failed: ${result.stderr}`);
+  return result.stdout.trim();
+}
 
 const validEnv = {
   ZULIP_URL: "https://zulip.example.test/path",
@@ -1033,15 +1052,99 @@ test("terminates the complete detached process group", { skip: process.platform 
   }
 });
 
+test("authorizes only owner-dispatched commits reachable from the requested same-repository branch", async () => {
+  const root = await mkdtemp(join(tmpdir(), "zulip-smoke-authorize-"));
+  const remoteDir = join(root, "remote.git");
+  const seedDir = join(root, "seed");
+  const runDir = join(root, "run");
+  const authorizeScript = fileURLToPath(new URL("./authorize-candidate.sh", import.meta.url));
+  let outputIndex = 0;
+  try {
+    await mkdir(seedDir);
+    await runSuccessfulCommand("git", ["init", "--bare", remoteDir]);
+    await runSuccessfulCommand("git", ["init", "-b", "main"], { cwd: seedDir });
+    await runSuccessfulCommand("git", ["config", "user.name", "Smoke Test"], { cwd: seedDir });
+    await runSuccessfulCommand("git", ["config", "user.email", "smoke@example.test"], { cwd: seedDir });
+    await writeFile(join(seedDir, "candidate.txt"), "main\n");
+    await runSuccessfulCommand("git", ["add", "candidate.txt"], { cwd: seedDir });
+    await runSuccessfulCommand("git", ["commit", "-m", "main"], { cwd: seedDir });
+    const mainSha = await runSuccessfulCommand("git", ["rev-parse", "HEAD"], { cwd: seedDir });
+    await runSuccessfulCommand("git", ["remote", "add", "origin", remoteDir], { cwd: seedDir });
+    await runSuccessfulCommand("git", ["push", "-u", "origin", "main"], { cwd: seedDir });
+
+    await runSuccessfulCommand("git", ["switch", "-c", "fix/test-candidate"], { cwd: seedDir });
+    await writeFile(join(seedDir, "candidate.txt"), "candidate\n");
+    await runSuccessfulCommand("git", ["commit", "-am", "candidate"], { cwd: seedDir });
+    const candidateSha = await runSuccessfulCommand("git", ["rev-parse", "HEAD"], { cwd: seedDir });
+    await runSuccessfulCommand("git", ["push", "origin", "HEAD"], { cwd: seedDir });
+
+    await runSuccessfulCommand("git", ["switch", "main"], { cwd: seedDir });
+    await runSuccessfulCommand("git", ["switch", "-c", "other"], { cwd: seedDir });
+    await writeFile(join(seedDir, "other.txt"), "other\n");
+    await runSuccessfulCommand("git", ["add", "other.txt"], { cwd: seedDir });
+    await runSuccessfulCommand("git", ["commit", "-m", "other"], { cwd: seedDir });
+    const otherSha = await runSuccessfulCommand("git", ["rev-parse", "HEAD"], { cwd: seedDir });
+    await runSuccessfulCommand("git", ["push", "origin", "HEAD"], { cwd: seedDir });
+    await runSuccessfulCommand("git", ["clone", "--branch", "main", remoteDir, runDir]);
+
+    const runAuthorization = async ({ actor = "FtlC-ian", requestedRef = "", requestedSha = mainSha } = {}) => {
+      const outputPath = join(root, `github-output-${outputIndex++}`);
+      await writeFile(outputPath, "");
+      const result = await runCommand(authorizeScript, [], { cwd: runDir, env: {
+        ...process.env,
+        DISPATCH_ACTOR: actor,
+        DISPATCH_REPOSITORY: "FtlC-ian/openclaw-channel-zulip",
+        DISPATCH_REF: "refs/heads/main",
+        GITHUB_OUTPUT: outputPath,
+        GITHUB_SHA: mainSha,
+        REQUESTED_REF: requestedRef,
+        REQUESTED_SHA: requestedSha,
+      } });
+      return { ...result, output: await readFile(outputPath, "utf8") };
+    };
+
+    await runSuccessfulCommand("git", ["update-ref", "-d", "refs/remotes/origin/main"], { cwd: runDir });
+    const defaultMain = await runAuthorization();
+    assert.equal(defaultMain.code, 0, defaultMain.stderr);
+    assert.equal(defaultMain.output, `sha=${mainSha}\n`);
+    assert.equal(await runSuccessfulCommand("git", ["rev-parse", "refs/remotes/origin/main"], { cwd: runDir }), mainSha);
+
+    await runSuccessfulCommand("git", ["update-ref", "-d", "refs/remotes/origin/fix/test-candidate"], { cwd: runDir });
+    const branchCandidate = await runAuthorization({ requestedRef: "fix/test-candidate", requestedSha: candidateSha });
+    assert.equal(branchCandidate.code, 0, branchCandidate.stderr);
+    assert.equal(branchCandidate.output, `sha=${candidateSha}\n`);
+    assert.equal(await runSuccessfulCommand("git", ["rev-parse", "refs/remotes/origin/fix/test-candidate"], { cwd: runDir }), candidateSha);
+
+    const nonOwner = await runAuthorization({ actor: "someone-else" });
+    assert.equal(nonOwner.code, 1);
+    assert.match(nonOwner.stderr, /only by the repository owner/);
+
+    const invalidRef = await runAuthorization({ requestedRef: "../invalid", requestedSha: candidateSha });
+    assert.equal(invalidRef.code, 1);
+    assert.match(invalidRef.stderr, /valid branch name/);
+
+    const nonAncestor = await runAuthorization({ requestedRef: "fix/test-candidate", requestedSha: otherSha });
+    assert.equal(nonAncestor.code, 1);
+    assert.match(nonAncestor.stderr, /not reachable from candidate_ref/);
+
+    const invalidSha = await runAuthorization({ requestedSha: "abc123" });
+    assert.equal(invalidSha.code, 1);
+    assert.match(invalidSha.stderr, /full lowercase commit SHA/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("workflow is manual, protected, pinned, and bounded", async () => {
   const workflow = await readFile(new URL("../../.github/workflows/zulip-live-smoke.yml", import.meta.url), "utf8");
   const agentProtocol = await readFile(new URL("./agent-workspace/AGENTS.md", import.meta.url), "utf8");
   assert.match(workflow, /workflow_dispatch:/);
   assert.doesNotMatch(workflow, /pull_request:|\n\s+push:/);
   assert.match(workflow, /environment: zulip-live-smoke/);
+  assert.match(workflow, /DISPATCH_ACTOR.*github\.actor/);
   assert.match(workflow, /DISPATCH_REF.*github\.ref/);
-  assert.match(workflow, /DISPATCH_REF\" != \"refs\/heads\/main/);
-  assert.match(workflow, /merge-base --is-ancestor/);
+  assert.match(workflow, /REQUESTED_REF.*inputs\.candidate_ref/);
+  assert.match(workflow, /run: scripts\/live-smoke\/authorize-candidate\.sh/);
   assert.match(workflow, /permissions:\n\s+contents: read/);
   assert.match(workflow, /timeout-minutes: 35/);
   assert.doesNotMatch(workflow, /timeout-minutes: 35\n\s+env:/);

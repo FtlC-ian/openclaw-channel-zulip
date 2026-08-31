@@ -4,7 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       candidate_sha:
-        description: Full commit SHA to test (must already be reachable from main)
+        description: Full commit SHA to test
+        required: false
+        type: string
+      candidate_ref:
+        description: Same-repository branch containing the candidate (defaults to main)
         required: false
         type: string
 
@@ -23,36 +27,19 @@ jobs:
     outputs:
       candidate_sha: ${{ steps.candidate.outputs.sha }}
     steps:
-      - name: Require dispatch from this repository's main branch
-        env:
-          DISPATCH_REPOSITORY: ${{ github.repository }}
-          DISPATCH_REF: ${{ github.ref }}
-        run: |
-          if [[ "$DISPATCH_REPOSITORY" != "FtlC-ian/openclaw-channel-zulip" || "$DISPATCH_REF" != "refs/heads/main" ]]; then
-            echo "Live credentials are available only to workflows dispatched from this repository's main branch" >&2
-            exit 1
-          fi
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Require a commit already reachable from main
+      - name: Require a commit reachable from the trusted candidate branch
         id: candidate
         env:
+          REQUESTED_REF: ${{ inputs.candidate_ref }}
           REQUESTED_SHA: ${{ inputs.candidate_sha }}
-        run: |
-          candidate="${REQUESTED_SHA:-$GITHUB_SHA}"
-          if [[ ! "$candidate" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "candidate_sha must be a full lowercase commit SHA" >&2
-            exit 1
-          fi
-          git fetch --no-tags origin main
-          git cat-file -e "$candidate^{commit}"
-          if ! git merge-base --is-ancestor "$candidate" origin/main; then
-            echo "Refusing to expose live credentials to a commit not reachable from main" >&2
-            exit 1
-          fi
-          echo "sha=$candidate" >> "$GITHUB_OUTPUT"
+          DISPATCH_ACTOR: ${{ github.actor }}
+          DISPATCH_REPOSITORY: ${{ github.repository }}
+          DISPATCH_REF: ${{ github.ref }}
+        run: scripts/live-smoke/authorize-candidate.sh
 
   live-smoke:
     name: Live Zulip scenarios

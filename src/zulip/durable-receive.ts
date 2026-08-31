@@ -111,6 +111,20 @@ export function createZulipDurableInboundReceiveJournal(accountId: string) {
     return normalized;
   };
 
+  const reconcileLegacyCompletion = async (
+    id: string,
+    completed: LegacyCompletedRecord,
+  ): Promise<void> => {
+    try {
+      await queueJournal.complete(id, {
+        metadata: completed.metadata,
+        completedAt: completed.completedAt,
+      });
+    } catch {
+      return;
+    }
+  };
+
   return {
     accept: async (
       id: string,
@@ -131,10 +145,7 @@ export function createZulipDurableInboundReceiveJournal(accountId: string) {
       if (!completedAfterAccept) {
         return result;
       }
-      await queueJournal.complete(key, {
-        metadata: completedAfterAccept.metadata,
-        completedAt: completedAfterAccept.completedAt,
-      });
+      await reconcileLegacyCompletion(key, completedAfterAccept);
       return {
         kind: "completed" as const,
         duplicate: true as const,
@@ -159,10 +170,7 @@ export function createZulipDurableInboundReceiveJournal(accountId: string) {
       for (const record of queuePending) {
         const completed = await legacyCompletedStore.lookup(record.id);
         if (completed) {
-          await queueJournal.complete(record.id, {
-            metadata: completed.metadata,
-            completedAt: completed.completedAt,
-          });
+          await reconcileLegacyCompletion(record.id, completed);
         } else {
           records.set(record.id, record);
         }

@@ -2328,6 +2328,7 @@ describe("monitorZulipProvider", () => {
       completedAt: 200,
       metadata: { queueEventId: 10 },
     });
+    queue!.complete.mockRejectedValueOnce(new Error("synthetic reconciliation failure"));
 
     await expect(journal.pending()).resolves.toEqual([]);
     expect(queue!.complete).toHaveBeenCalledWith(durableId, {
@@ -2341,6 +2342,43 @@ describe("monitorZulipProvider", () => {
       kind: "completed",
       duplicate: true,
     }));
+  });
+
+  it("suppresses delivery when post-accept legacy completion reconciliation fails", async () => {
+    enableDurableInboundJournal();
+    const {
+      createZulipDurableInboundMessageId,
+      createZulipDurableInboundReceiveJournal,
+      serializeZulipDurableInboundMessage,
+    } = await import("./durable-receive.js");
+    const message = makeChannelMessage(2102);
+    const durableId = createZulipDurableInboundMessageId({
+      accountId: state.account.accountId,
+      messageId: String(message.id),
+    });
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const queue = state.durableQueues.get(state.account.accountId);
+    const completedStore = Array.from(state.durableStores.entries()).find(([namespace]) =>
+      namespace.includes(".completed."),
+    )?.[1];
+    expect(queue).toBeDefined();
+    expect(completedStore).toBeDefined();
+    await completedStore!.register(durableId, {
+      id: durableId,
+      completedAt: 200,
+      metadata: { queueEventId: 11 },
+    });
+    completedStore!.lookup.mockResolvedValueOnce(undefined);
+    queue!.complete.mockRejectedValueOnce(new Error("synthetic reconciliation failure"));
+
+    await expect(journal.accept(durableId, {
+      message: serializeZulipDurableInboundMessage(message),
+      receivedAt: 300,
+    })).resolves.toEqual(expect.objectContaining({
+      kind: "completed",
+      duplicate: true,
+    }));
+    await expect(journal.pending()).resolves.toEqual([]);
   });
 
   it("completes fresh durable inbound messages without filling the legacy tombstone store", async () => {

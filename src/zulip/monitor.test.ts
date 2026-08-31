@@ -2343,7 +2343,7 @@ describe("monitorZulipProvider", () => {
     }));
   });
 
-  it("records and completes durable inbound messages when plugin state is available", async () => {
+  it("completes fresh durable inbound messages without filling the legacy tombstone store", async () => {
     enableDurableInboundJournal();
     state.pollResponses = [
       {
@@ -2361,10 +2361,11 @@ describe("monitorZulipProvider", () => {
       namespace.includes(".completed."),
     )?.[1];
     await expect(pendingStore?.entries()).resolves.toEqual([]);
-    const completedEntries = await completedStore?.entries();
-    expect(completedEntries).toHaveLength(1);
-    expect(completedEntries?.[0]?.value).toMatchObject({
+    await expect(completedStore?.entries()).resolves.toEqual([]);
+    const queue = state.durableQueues.get(state.account.accountId);
+    expect(queue?.complete).toHaveBeenCalledWith(expect.any(String), {
       metadata: { queueEventId: 2 },
+      completedAt: expect.any(Number),
     });
     expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(1);
   });
@@ -2390,7 +2391,7 @@ describe("monitorZulipProvider", () => {
       namespace.includes(".completed."),
     )?.[1];
     await expect(pendingStore?.entries()).resolves.toEqual([]);
-    await expect(completedStore?.entries()).resolves.toHaveLength(1);
+    await expect(completedStore?.entries()).resolves.toEqual([]);
     expect(state.editZulipMessage).toHaveBeenCalledExactlyOnceWith(state.client, {
       messageId: "outbound-1",
       content: "Turn failed.",
@@ -2438,7 +2439,7 @@ describe("monitorZulipProvider", () => {
       namespace.includes(".completed."),
     )?.[1];
     await expect(pendingStore?.entries()).resolves.toEqual([]);
-    await expect(completedStore?.entries()).resolves.toHaveLength(1);
+    await expect(completedStore?.entries()).resolves.toEqual([]);
     expect(state.sendMessageZulip).toHaveBeenNthCalledWith(
       3,
       "stream:debbie:zulip-plugin-pr",
@@ -2514,7 +2515,7 @@ describe("monitorZulipProvider", () => {
       await runMonitorOnce();
 
       await expect(journal.pending()).resolves.toEqual([]);
-      await expect(completedStore?.entries()).resolves.toHaveLength(1);
+      await expect(completedStore?.entries()).resolves.toEqual([]);
       expect(
         state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher,
       ).toHaveBeenCalledTimes(1);
@@ -2550,7 +2551,7 @@ describe("monitorZulipProvider", () => {
       namespace.includes(".completed."),
     )?.[1];
     await expect(pendingStore?.entries()).resolves.toEqual([]);
-    await expect(completedStore?.entries()).resolves.toHaveLength(1);
+    await expect(completedStore?.entries()).resolves.toEqual([]);
     expect(state.addZulipReaction).toHaveBeenCalledWith(
       state.client,
       expect.objectContaining({ messageId: "2110", emojiName: "cross_mark" }),
@@ -2739,7 +2740,7 @@ describe("monitorZulipProvider", () => {
     const completedStore = Array.from(state.durableStores.entries()).find(([namespace]) =>
       namespace.includes(".completed."),
     )?.[1];
-    await expect(completedStore?.entries()).resolves.toHaveLength(1);
+    await expect(completedStore?.entries()).resolves.toEqual([]);
 
     state.removeZulipReaction.mockResolvedValue(undefined);
     state.autoAbort = true;

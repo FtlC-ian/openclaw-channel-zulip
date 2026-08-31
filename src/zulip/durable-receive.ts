@@ -176,17 +176,22 @@ export function createZulipDurableInboundReceiveJournal(accountId: string) {
       options?: { metadata?: ZulipDurableInboundCompletedMetadata; completedAt?: number },
     ) => {
       const key = normalizeId(id);
+      const legacyPending = await legacyPendingStore.lookup(key);
       const completedAt = options?.completedAt ?? Date.now();
-      const record: LegacyCompletedRecord = {
-        id: key,
-        completedAt,
-        ...(options?.metadata === undefined ? {} : { metadata: options.metadata }),
-      };
-      await legacyCompletedStore.register(key, record, {
-        ttlMs: ZULIP_DURABLE_INBOUND_COMPLETED_TTL_MS,
-      });
+      if (legacyPending) {
+        const record: LegacyCompletedRecord = {
+          id: key,
+          completedAt,
+          ...(options?.metadata === undefined ? {} : { metadata: options.metadata }),
+        };
+        await legacyCompletedStore.register(key, record, {
+          ttlMs: ZULIP_DURABLE_INBOUND_COMPLETED_TTL_MS,
+        });
+      }
       await queueJournal.complete(key, { ...options, completedAt });
-      await legacyPendingStore.delete(key);
+      if (legacyPending) {
+        await legacyPendingStore.delete(key);
+      }
     },
     release: async (
       id: string,

@@ -11,7 +11,7 @@ describe("Zulip subagent reaction correlation", () => {
     await clearZulipSubagentReactionContexts();
   });
 
-  it("tracks concurrent OpenClaw sessions_spawn children through public hook events", async () => {
+  it("uses the exact requester session fallback outside async turn context", async () => {
     const show = vi.fn(async () => {});
     const hide = vi.fn(async () => {});
     const context = registerZulipSubagentReactionContext({ requesterSessionKey: "requester", show, hide });
@@ -32,6 +32,64 @@ describe("Zulip subagent reaction correlation", () => {
 
     await handleZulipSubagentEnded({ runId: "run-2" }, {});
     expect(hide).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the active Zulip async context when the hook route key differs", async () => {
+    const show = vi.fn(async () => {});
+    const hide = vi.fn(async () => {});
+    const context = registerZulipSubagentReactionContext({
+      requesterSessionKey: "agent:main:main",
+      show,
+      hide,
+    });
+
+    await context.run(() =>
+      handleZulipSubagentSpawned(
+        {
+          runId: "routed-run",
+          childSessionKey: "routed-child",
+          requester: { channel: "zulip" },
+        },
+        { requesterSessionKey: "agent:main:zulip:default:direct:user11@example.com" },
+      ));
+
+    expect(show).toHaveBeenCalledTimes(1);
+    await handleZulipSubagentEnded({ runId: "routed-run" }, {});
+    expect(hide).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps mismatched Zulip async contexts isolated across concurrent turns", async () => {
+    const first = { show: vi.fn(async () => {}), hide: vi.fn(async () => {}) };
+    const second = { show: vi.fn(async () => {}), hide: vi.fn(async () => {}) };
+    const firstContext = registerZulipSubagentReactionContext({
+      requesterSessionKey: "agent:first:main",
+      ...first,
+    });
+    const secondContext = registerZulipSubagentReactionContext({
+      requesterSessionKey: "agent:second:main",
+      ...second,
+    });
+
+    await Promise.all([
+      firstContext.run(() =>
+        handleZulipSubagentSpawned(
+          { runId: "first-run", requester: { channel: "zulip" } },
+          { requesterSessionKey: "agent:main:zulip:default:direct:first@example.com" },
+        )),
+      secondContext.run(() =>
+        handleZulipSubagentSpawned(
+          { runId: "second-run", requester: { channel: "zulip" } },
+          { requesterSessionKey: "agent:main:zulip:default:direct:second@example.com" },
+        )),
+    ]);
+
+    expect(first.show).toHaveBeenCalledTimes(1);
+    expect(second.show).toHaveBeenCalledTimes(1);
+    await handleZulipSubagentEnded({ runId: "first-run" }, {});
+    expect(first.hide).toHaveBeenCalledTimes(1);
+    expect(second.hide).not.toHaveBeenCalled();
+    await handleZulipSubagentEnded({ runId: "second-run" }, {});
+    expect(second.hide).toHaveBeenCalledTimes(1);
   });
 
   it("binds run completion to the exact inbound context active at spawn time", async () => {
@@ -194,15 +252,16 @@ describe("Zulip subagent reaction correlation", () => {
     expect(hide).toHaveBeenCalledTimes(1);
   });
 
-  it("does not create child-session fallback bindings for non-Zulip spawns", async () => {
+  it("ignores non-Zulip spawns even inside an active Zulip async context", async () => {
     const show = vi.fn(async () => {});
     const hide = vi.fn(async () => {});
-    registerZulipSubagentReactionContext({ requesterSessionKey: "requester", show, hide });
+    const context = registerZulipSubagentReactionContext({ requesterSessionKey: "requester", show, hide });
 
-    await handleZulipSubagentSpawned(
-      { runId: "discord-run", childSessionKey: "discord-child", requester: { channel: "discord" } },
-      { requesterSessionKey: "requester" },
-    );
+    await context.run(() =>
+      handleZulipSubagentSpawned(
+        { runId: "discord-run", childSessionKey: "discord-child", requester: { channel: "discord" } },
+        { requesterSessionKey: "requester" },
+      ));
     await handleZulipSubagentEnded(
       { targetSessionKey: "discord-child" },
       { childSessionKey: "discord-child" },

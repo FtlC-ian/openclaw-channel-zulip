@@ -145,20 +145,18 @@ export async function handleZulipSubagentSpawned(
   event: { runId: string; childSessionKey?: string; requester?: { channel?: string } },
   ctx: { runId?: string; childSessionKey?: string; requesterSessionKey?: string },
 ): Promise<void> {
-  if (event.requester?.channel && event.requester.channel !== "zulip") {
+  const requesterChannel = event.requester?.channel;
+  if (requesterChannel && requesterChannel !== "zulip") {
     return;
   }
   const runId = resolveRunId(event, ctx);
   const childSessionKey = resolveChildSessionKey(event, ctx);
   const requesterSessionKey = ctx.requesterSessionKey?.trim() ?? "";
-  if (!runId || !requesterSessionKey || bindingByRunId.has(runId)) {
+  if (!runId || bindingByRunId.has(runId)) {
     return;
   }
-  const asyncContext = reactionContextStorage.getStore();
-  const context =
-    asyncContext?.requesterSessionKey === requesterSessionKey
-      ? asyncContext
-      : currentContextBySession.get(requesterSessionKey);
+  const asyncContext = requesterChannel === "zulip" ? reactionContextStorage.getStore() : undefined;
+  const context = asyncContext ?? currentContextBySession.get(requesterSessionKey);
   if (!context || context.terminal) {
     return;
   }

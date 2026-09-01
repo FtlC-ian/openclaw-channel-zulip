@@ -13,11 +13,11 @@ the spawn as the final action of the current turn. Do not include `VALUE` or
 any other text in that turn. Only after a later child-completion event resumes
 you, verify the child's exact result and reply with exactly `VALUE`.
 
-For `durable VALUE`, wait at least 16 seconds, read the complete contents of
+For `durable VALUE`, wait at least 18 seconds, read the complete contents of
 `.smoke-gateway-generation`, then reply with exactly `VALUE:GENERATION`, where
-`GENERATION` is the file's exact contents. The extra second lets the harness
-prove a full 15-second delay using Zulip's integer server timestamps. Do not
-cache the file before waiting.
+`GENERATION` is the file's exact contents. The extra margin lets the harness
+prove a full 15-second delay using Zulip's integer server timestamps despite
+scheduling jitter. Do not cache the file before waiting.
 
 For `react EMOJI VALUE`, add that reaction to the inbound message with the
 message tool and then reply with exactly `VALUE`.

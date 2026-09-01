@@ -1157,6 +1157,7 @@ test("workflow is manual, protected, pinned, and bounded", async () => {
   assert.match(workflow, /ZULIP_SMOKE_ENABLE_DURABLE: '1'/);
   assert.match(workflow, /SMOKE_OPENCLAW_VERSION/);
   assert.match(workflow, /SMOKE_PLUGIN_VERSION/);
+  assert.match(agentProtocol, /For `durable VALUE`, wait at least 18 seconds/);
   const prepareStep = workflow.slice(
     workflow.indexOf("- name: Prepare isolated OpenClaw state"),
     workflow.indexOf("- name: Run bounded live scenarios"),

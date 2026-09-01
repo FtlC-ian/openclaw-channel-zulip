@@ -27,16 +27,19 @@ actions. Zulip applies the permissions of the selected bot credential. The
 three destructive actions additionally require the exact boolean
 `confirm: true` before any Zulip request.
 
-## Blocked provider-specific actions
+## Removed provider-specific actions
 
 The former `channel-subscribe`, `invite`, `resolve-topic`, `user-presence`,
 `user-deactivate`, `user-reactivate`, `org-settings`, and `org-settings-edit`
-handlers were unreachable through OpenClaw's public message-action contract.
-They are no longer implemented or directly dispatchable. OpenClaw currently
-uses a closed action-name union and fixed target-mode map, so a plugin cannot
-advertise or route those provider-specific names. The upstream SDK request and
-minimal reproduction are tracked in
-[openclaw/openclaw#134666](https://github.com/openclaw/openclaw/issues/134666).
+handlers were unreachable through OpenClaw's shared `message` action contract.
+They are no longer implemented or directly dispatchable. OpenClaw deliberately
+keeps that cross-channel action vocabulary closed and directs provider-specific
+operations to plugin-owned agent tools with their own schemas and target
+semantics. The extension request and minimal reproduction were
+[closed by design](https://github.com/openclaw/openclaw/issues/134666#issuecomment-5488003013).
+Future Zulip-specific operations must use a separately reviewed Zulip-owned
+agent tool or remain removed; they must not be hidden behind string casts in the
+shared adapter.
 
 `enableAdminActions` remains accepted as an inert legacy configuration field so
 existing strict configurations continue to load. It does not expose hidden

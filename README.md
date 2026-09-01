@@ -196,7 +196,7 @@ Add the plugin id to `plugins.allow` in `~/.openclaw/openclaw.json`:
       },
 
       // Legacy compatibility field. Accepted but intentionally has no runtime effect.
-      // Provider-specific admin actions require an upstream OpenClaw SDK extension.
+      // Provider-specific operations need a separately reviewed Zulip-owned agent tool.
       "enableAdminActions": false,
 
       // Multi-account: uncomment to run multiple bots

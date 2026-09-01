@@ -276,7 +276,7 @@
         },
         "enableAdminActions": {
           "label": "Legacy Admin Actions Flag",
-          "description": "Accepted for configuration compatibility but intentionally inert until OpenClaw supports plugin-defined action names and target modes."
+          "description": "Accepted for configuration compatibility but intentionally inert; provider-specific operations need a separately reviewed Zulip-owned agent tool."
         },
         "reactions.enabled": {
           "label": "Lifecycle Reaction Indicators"
@@ -332,7 +332,7 @@
     },
     "enableAdminActions": {
       "label": "Legacy Admin Actions Flag",
-      "description": "Accepted for configuration compatibility but intentionally inert until OpenClaw supports plugin-defined action names and target modes."
+      "description": "Accepted for configuration compatibility but intentionally inert; provider-specific operations need a separately reviewed Zulip-owned agent tool."
     },
     "reactions.enabled": {
       "label": "Lifecycle Reaction Indicators"

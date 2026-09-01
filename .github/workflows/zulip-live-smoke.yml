@@ -78,12 +78,24 @@ jobs:
           import { writeFileSync } from "node:fs";
           import { selectSmokeModel } from "./scripts/live-smoke/prepare-config.mjs";
           const config = JSON.parse(process.env.OPENCLAW_SMOKE_CONFIG_JSON);
-          const zulip = config?.channels?.zulip ?? {};
+          const zulip = config?.channels?.zulip;
+          if (!zulip || typeof zulip !== "object" || Array.isArray(zulip)) {
+            throw new Error("Protected smoke config must contain a Zulip channel object");
+          }
+          zulip.markHandledRead = true;
           const { accounts: accountConfigs = {}, ...baseZulip } = zulip;
+          for (const account of Object.values(accountConfigs)) {
+            if (account && typeof account === "object" && !Array.isArray(account)) {
+              account.markHandledRead = true;
+            }
+          }
           const accounts = [baseZulip,
             ...Object.values(accountConfigs).map((account) => ({ ...baseZulip, ...account }))];
           if (accounts.some((account) => account.chatmode !== "onmessage" || account.requireMention !== false)) {
             throw new Error("Protected smoke config must disable stream mention gating");
+          }
+          if (accounts.some((account) => account.markHandledRead !== true)) {
+            throw new Error("Protected smoke config must enable handled-message read state");
           }
           const configured = accounts.map((account) => account?.reactions?.subagent)
             .filter((value) => value !== undefined);

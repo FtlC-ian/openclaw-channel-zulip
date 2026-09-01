@@ -161,6 +161,7 @@ const ZulipAccountSchemaBase = z
     groupAllowFrom: z.array(z.union([z.string(), z.number()])).optional(),
     groupPolicy: GroupPolicySchema.optional(),
     mediaMaxMb: z.number().int().positive().optional(),
+    markHandledRead: z.boolean().optional(),
     reactions: z
       .object({
         enabled: z.boolean().optional(),

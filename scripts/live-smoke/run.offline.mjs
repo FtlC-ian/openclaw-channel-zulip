@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { assertFinalPrivateTypingStop, assertMessageRemainsExact, authenticatedUserId, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, drainEventQueueUntilQuiet, DURABLE_OFFLINE_DELAY_MS, eventOccursBefore, EventQueue, extractExactUploadUrl, Gateway, hasFinalPrivateTypingStop, hasProvableMinimumMessageDelay, inspectChildTranscripts, inspectLifecycleTurnEvidence, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactPollMessage, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, isUsageCountedTranscriptName, lifecycleEvidenceCounts, lifecycleSummary, normalizeScenarioError, parseZulipSubagentDiagnostic, probeRunnerLocalGatewayHealth, redactError, resolveUploadUrl, signalProcessTree, subagentCompletedBeforeReply, validateEnvironment, waitForProcessTreeExit, writeGatewayGeneration } from "./run.mjs";
+import { assertFinalPrivateTypingStop, assertMessageRemainsExact, authenticatedUserId, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, drainEventQueueUntilQuiet, DURABLE_OFFLINE_DELAY_MS, eventOccursBefore, EventQueue, extractExactUploadUrl, Gateway, hasFinalPrivateTypingStop, hasProvableMinimumMessageDelay, inspectChildTranscripts, inspectLifecycleTurnEvidence, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactPollMessage, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, isUsageCountedTranscriptName, lifecycleEvidenceCounts, lifecycleSummary, normalizeScenarioError, parseZulipSubagentDiagnostic, probeRunnerLocalGatewayHealth, readZulipMessageFlags, redactError, resolveUploadUrl, signalProcessTree, subagentCompletedBeforeReply, validateEnvironment, waitForProcessTreeExit, waitForZulipMessageRead, writeGatewayGeneration } from "./run.mjs";
 import { selectSmokeModel } from "./prepare-config.mjs";
 import { stageBundledPlugin } from "./stage-bundled-plugin.mjs";
 
@@ -280,6 +280,21 @@ test("proves the durable delay from Zulip server message timestamps", () => {
   assert.equal(hasProvableMinimumMessageDelay(commandEvent, { message: { timestamp: 116 } }, 15), true);
   assert.equal(hasProvableMinimumMessageDelay(commandEvent, { message: { timestamp: 115 } }, 15), false);
   assert.equal(hasProvableMinimumMessageDelay(commandEvent, { message: {} }, 15), false);
+});
+
+test("reads message flags and waits for the handled read transition", async () => {
+  const responses = [
+    { message: { flags: ["starred"] } },
+    { message: { flags: ["starred", "read"] } },
+  ];
+  const client = { request: async () => responses.shift() };
+  assert.deepEqual(await readZulipMessageFlags(client, "42"), ["starred"]);
+  await waitForZulipMessageRead(client, "42", 1000);
+  assert.equal(responses.length, 0);
+  await assert.rejects(
+    readZulipMessageFlags({ request: async () => ({ message: {} }) }, "42"),
+    /flags were unavailable/,
+  );
 });
 
 test("captures every attributable reply id before an early failure", () => {
@@ -1167,6 +1182,8 @@ test("workflow is manual, protected, pinned, and bounded", async () => {
     workflow.indexOf("- name: Run bounded live scenarios"),
     workflow.indexOf("- name: Record release evidence"),
   );
+  assert.match(prepareStep, /markHandledRead = true/);
+  assert.match(prepareStep, /must enable handled-message read state/);
   assert.equal(workflow.match(/secrets\.OPENCLAW_SMOKE_CONFIG_JSON/g)?.length, 1);
   assert.match(prepareStep, /secrets\.OPENCLAW_SMOKE_CONFIG_JSON/);
   for (const secret of ["ZULIP_URL", "ZULIP_SMOKE_USER_EMAIL", "ZULIP_SMOKE_USER_API_KEY", "ZULIP_SMOKE_BOT_EMAIL", "ZULIP_SMOKE_BOT_API_KEY"]) {

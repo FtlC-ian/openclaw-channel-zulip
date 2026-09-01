@@ -3,6 +3,30 @@ import { describe, expect, it } from "vitest";
 import { zulipChannelConfigSchema } from "./config-schema.js";
 
 describe("Zulip lifecycle reaction config", () => {
+  it("accepts the conservative handled-read account opt-in and exposes it in the manifest", () => {
+    expect(zulipChannelConfigSchema.runtime.safeParse({ markHandledRead: true }).success).toBe(true);
+    expect(zulipChannelConfigSchema.runtime.safeParse({ markHandledRead: false }).success).toBe(true);
+    expect(zulipChannelConfigSchema.runtime.safeParse({}).success).toBe(true);
+
+    const manifest = JSON.parse(
+      fs.readFileSync(new URL("../openclaw.plugin.json", import.meta.url), "utf8"),
+    ) as {
+      channelConfigs: {
+        zulip: {
+          schema: {
+            $defs: { zulipAccount: { properties: Record<string, unknown> } };
+            properties: Record<string, unknown>;
+          };
+          uiHints: Record<string, unknown>;
+        };
+      };
+    };
+    const config = manifest.channelConfigs.zulip;
+    expect(config.schema.properties).toHaveProperty("markHandledRead");
+    expect(config.schema.$defs.zulipAccount.properties).toHaveProperty("markHandledRead");
+    expect(config.uiHints).toHaveProperty("markHandledRead");
+  });
+
   it("accepts strict per-stream inbound policy fields", () => {
     const result = zulipChannelConfigSchema.runtime.safeParse({
       streamOverrides: {

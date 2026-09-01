@@ -152,6 +152,10 @@ Add the plugin id to `plugins.allow` in `~/.openclaw/openclaw.json`:
       // Group policy: "open" | "allowlist" | "disabled"
       "groupPolicy": "open",
 
+      // Opt in to marking successfully handled inbound messages read.
+      // Default: false.
+      "markHandledRead": true,
+
       // Truthful lifecycle reactions on the inbound message. The defaults show
       // queued, thinking, tool category, compaction, stalls, done/error, and
       // a separate robot while one or more spawned children are active.
@@ -209,6 +213,20 @@ Then restart the Gateway:
 ```sh
 openclaw gateway restart
 ```
+
+### Handled-message read state
+
+`markHandledRead` is disabled by default and may be enabled globally or for an
+individual account. When enabled, the plugin marks an inbound DM, stream, or
+topic message read only after reply dispatch has settled successfully and its
+accepted durable receive record has completed. A successful silent turn is
+handled; a cancelled or failed turn is not. Messages dropped by authorization
+or routing policy, messages already read, duplicate deliveries, and messages
+without durable-completion proof are not changed.
+
+The read update is best-effort and safely batched per account. An API failure is
+logged without turning an otherwise successful reply into a failure or causing
+the message to be dispatched again.
 
 ### Per-stream inbound policy and migration
 
@@ -378,7 +396,9 @@ The workflow stages the already-authorized, exact-SHA candidate inside the
 locked OpenClaw package's bundled extension directory. It verifies that the
 host reports Zulip as a loaded bundled plugin before credentials are used, then
 runs durable receive interruption, replay, completion, and deduplication with
-plugin keyed state enabled. This staging exists only in the ephemeral runner;
+plugin keyed state enabled. It also proves that the durable command remains
+unread while accepted but unfinished, then becomes read only after successful
+reply settlement and journal completion. This staging exists only in the ephemeral runner;
 release installation remains the separately published plugin package.
 
 The scheduled **OpenClaw compatibility (advisory)** workflow is intentionally separate from release gating. Once a week it chooses the first eligible release from OpenClaw's `latest` and `extended-stable` npm channels that has been published for at least 24 hours, then installs and tests it in a temporary copy of the plugin. That temporary install and the packed-artifact smoke test enforce pnpm's 24-hour release-age rule and may update only disposable lockfiles; they never change or commit this repository's lockfile. A failure identifies compatibility work to investigate; it does not replace the locked CI evidence required for a release.

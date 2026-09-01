@@ -201,6 +201,25 @@ export async function assertMessageRemainsExact(client, id, expected, minimumMs,
   await assertCurrent();
 }
 
+export async function readZulipMessageFlags(client, id, signal) {
+  const result = await client.request(`messages/${id}`, { signal });
+  if (!Array.isArray(result.message?.flags)) {
+    throw new Error("Zulip message flags were unavailable");
+  }
+  return result.message.flags.map(String);
+}
+
+export async function waitForZulipMessageRead(client, id, timeoutMs, signal) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if ((await readZulipMessageFlags(client, id, signal)).includes("read")) {
+      return;
+    }
+    await delay(250, undefined, { signal });
+  }
+  throw new Error("Handled Zulip message did not become read before timeout");
+}
+
 export async function countCompletedChildTranscripts(stateDir, marker) {
   return (await inspectChildTranscripts(stateDir, marker)).completedExact;
 }
@@ -1128,6 +1147,9 @@ async function main() {
           String(e.message?.id) === inboundId && sameUserId(e.message?.sender_id, actorUserId),
         timeoutMs, "durable command event", signal);
         await queue.waitFor((e) => e.type === "reaction" && e.op === "add" && String(e.message_id) === inboundId, timeoutMs, "durable accept signal", signal);
+        if ((await readZulipMessageFlags(bot, inboundId, signal)).includes("read")) {
+          throw new Error("Durable command became read before reply settlement and journal completion");
+        }
         await delay(2000, undefined, { signal });
         if (captureReplies().length) {
           throw new Error("Durable reply completed before interruption; replay was not exercised");
@@ -1155,6 +1177,7 @@ async function main() {
           return true;
         }, timeoutMs, "durable replay reply", signal);
         messageIds.bot.add(String(reply.message.id));
+        await waitForZulipMessageRead(bot, inboundId, timeoutMs, signal);
         const settleDeadline = Date.now() + 10000;
         while (Date.now() < settleDeadline) { await queue.poll(signal); await delay(500, undefined, { signal }); }
         const replies = captureReplies();

@@ -84,6 +84,8 @@ export type ZulipAccountConfig = {
   groupPolicy?: GroupPolicy;
   /** Inbound media max size (MB). Default: 5. */
   mediaMaxMb?: number;
+  /** Mark successfully handled inbound messages read after durable completion. Default: false. */
+  markHandledRead?: boolean;
   /** Automatic lifecycle reactions on the inbound Zulip message. */
   reactions?: {
     enabled?: boolean;

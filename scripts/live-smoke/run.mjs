@@ -20,6 +20,8 @@ export const REQUIRED_ENV = [
   "OPENCLAW_STATE_DIR",
 ];
 
+export const DURABLE_OFFLINE_DELAY_MS = 16_000;
+
 export function validateEnvironment(env) {
   const missing = REQUIRED_ENV.filter((name) => !env[name]?.trim());
   if (missing.length) throw new Error(`Missing required protected configuration: ${missing.join(", ")}`);
@@ -1131,6 +1133,7 @@ async function main() {
           throw new Error("Durable reply completed before interruption; replay was not exercised");
         }
         await gateway.stop();
+        await delay(DURABLE_OFFLINE_DELAY_MS, undefined, { signal });
         const replacementGeneration = randomBytes(16).toString("hex");
         await writeGatewayGeneration(gatewayGenerationPath, replacementGeneration);
         await gateway.start(signal);
@@ -1142,7 +1145,12 @@ async function main() {
             throw new Error("Durable reply did not contain the replacement gateway generation");
           }
           if (!hasProvableMinimumMessageDelay(commandEvent, e, 15)) {
-            throw new Error("Durable reply did not prove the required 15-second delay");
+            const commandTimestamp = commandEvent?.message?.timestamp;
+            const replyTimestamp = e?.message?.timestamp;
+            const timestampDelta = Number.isSafeInteger(commandTimestamp) && Number.isSafeInteger(replyTimestamp)
+              ? replyTimestamp - commandTimestamp
+              : "unavailable";
+            throw new Error(`Durable reply did not prove the required 15-second delay (timestamp delta: ${timestampDelta})`);
           }
           return true;
         }, timeoutMs, "durable replay reply", signal);

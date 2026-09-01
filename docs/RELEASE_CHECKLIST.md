@@ -55,6 +55,9 @@ transcript and reads the edited Zulip message before and after its required
 four-second visibility window. Durable replay uses a random generation value
 written only after the old gateway process group is fully down; the replacement
 must read and return that value, so a queued pre-restart reply cannot pass.
+The protected config enables `markHandledRead`. The durable command must remain
+unread after acceptance and become read only after the replacement reply settles
+and durable journal completion succeeds.
 The protected workflow enables the durable scenario unconditionally. Its
 summary records the exact candidate SHA, plugin version, OpenClaw version, and
 run URL; the console report must show

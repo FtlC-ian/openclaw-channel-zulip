@@ -2,8 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 import {
   addZulipReaction,
   createZulipClient,
+  createZulipReadBatcher,
   registerZulipQueue,
   removeZulipReaction,
+  updateZulipMessageFlag,
+  updateZulipMessageFlags,
   zulipRequestWithRetry,
   type ZulipRequestLogger,
 } from "./client.js";
@@ -314,5 +317,102 @@ describe("Zulip reactions", () => {
     await expect(
       addZulipReaction(client, { messageId: "123", emojiName: "not an emoji" }),
     ).rejects.toThrow("Zulip add reaction failed: Invalid emoji name");
+  });
+});
+
+describe("Zulip message flags", () => {
+  it("updates a safe batch without replacing unrelated message flags", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({ result: "success" }),
+    );
+    const client = createZulipClient({
+      baseUrl: "https://zulip.example.test/",
+      email: "bot@example.test",
+      apiKey: "secret",
+      fetchImpl,
+    });
+
+    await updateZulipMessageFlags(client, {
+      messageIds: [101, "102"],
+      flag: "read",
+      op: "add",
+    });
+
+    const [url, init] = fetchImpl.mock.calls[0] ?? [];
+    const body = new URLSearchParams(String(init?.body));
+    expect(url).toBe("https://zulip.example.test/api/v1/messages/flags");
+    expect(body.get("messages")).toBe("[101,102]");
+    expect(body.get("flag")).toBe("read");
+    expect(body.get("op")).toBe("add");
+  });
+
+  it("keeps the single-message starred action compatible", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({ result: "success" }),
+    );
+    const client = createZulipClient({
+      baseUrl: "https://zulip.example.test/",
+      email: "bot@example.test",
+      apiKey: "secret",
+      fetchImpl,
+    });
+
+    await updateZulipMessageFlag(client, {
+      messageId: "103",
+      flag: "starred",
+      op: "remove",
+    });
+
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    const body = new URLSearchParams(String(init?.body));
+    expect(body.get("messages")).toBe("[103]");
+    expect(body.get("flag")).toBe("starred");
+    expect(body.get("op")).toBe("remove");
+  });
+
+  it("rejects invalid or empty batches before requesting Zulip", async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const client = createZulipClient({
+      baseUrl: "https://zulip.example.test/",
+      email: "bot@example.test",
+      apiKey: "secret",
+      fetchImpl,
+    });
+
+    await expect(updateZulipMessageFlags(client, {
+      messageIds: ["103oops"],
+      flag: "read",
+      op: "add",
+    })).rejects.toThrow("Invalid messageId");
+    await expect(updateZulipMessageFlags(client, {
+      messageIds: [],
+      flag: "read",
+      op: "add",
+    })).rejects.toThrow("At least one messageId is required");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("coalesces concurrent read updates and deduplicates message ids", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({ result: "success" }),
+    );
+    const client = createZulipClient({
+      baseUrl: "https://zulip.example.test/",
+      email: "bot@example.test",
+      apiKey: "secret",
+      fetchImpl,
+    });
+    const batcher = createZulipReadBatcher(client);
+
+    await Promise.all([
+      batcher.markRead("104"),
+      batcher.markRead(105),
+      batcher.markRead("104"),
+    ]);
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    const body = new URLSearchParams(String(init?.body));
+    expect(body.get("messages")).toBe("[104,105]");
   });
 });

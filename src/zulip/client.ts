@@ -76,6 +76,7 @@ export type ZulipSubscription = {
 
 export type ZulipMessage = {
   id: string;
+  flags?: string[];
   sender_id?: string | null;
   sender_email?: string | null;
   sender_full_name?: string | null;
@@ -86,6 +87,13 @@ export type ZulipMessage = {
   display_recipient?: string | Array<{ id: number; email: string; full_name: string }> | null;
   subject?: string | null;
   recipient_id?: string | null;
+};
+
+export type ZulipEvent = {
+  id: number;
+  type: string;
+  message?: ZulipMessage;
+  flags?: string[];
 };
 
 export function normalizeZulipBaseUrl(raw?: string | null): string | undefined {
@@ -421,7 +429,7 @@ export async function getZulipEvents(
     dontBlock?: boolean;
   },
 ): Promise<
-  ZulipApiResponse & { events?: Array<{ id: number; type: string; message?: ZulipMessage }> }
+  ZulipApiResponse & { events?: ZulipEvent[] }
 > {
   const qs = new URLSearchParams({
     queue_id: params.queueId,
@@ -442,7 +450,7 @@ export async function getZulipEvents(
   const timeout = setTimeout(() => controller.abort(), timeoutMs + 15000);
   try {
     return await client.request<
-      ZulipApiResponse & { events?: Array<{ id: number; type: string; message?: ZulipMessage }> }
+      ZulipApiResponse & { events?: ZulipEvent[] }
     >(`/events?${qs.toString()}`, { signal: controller.signal });
   } finally {
     clearTimeout(timeout);
@@ -460,7 +468,7 @@ export async function getZulipEventsWithRetry(
     dontBlock?: boolean;
   },
 ): Promise<
-  ZulipApiResponse & { events?: Array<{ id: number; type: string; message?: ZulipMessage }> }
+  ZulipApiResponse & { events?: ZulipEvent[] }
 > {
   const qs = new URLSearchParams({
     queue_id: params.queueId,
@@ -481,7 +489,7 @@ export async function getZulipEventsWithRetry(
   const timeout = setTimeout(() => controller.abort(), timeoutMs + 15000);
   try {
     return await zulipRequestWithRetry<
-      ZulipApiResponse & { events?: Array<{ id: number; type: string; message?: ZulipMessage }> }
+      ZulipApiResponse & { events?: ZulipEvent[] }
     >(
       client,
       `/events?${qs.toString()}`,
@@ -907,18 +915,38 @@ export async function updateZulipMessageFlag(
   client: ZulipClient,
   params: {
     messageId: string | number;
-    flag: "starred";
+    flag: "read" | "starred";
     op: "add" | "remove";
   },
 ): Promise<void> {
-  // Convert messageId to integer
-  const messageIdInt =
-    typeof params.messageId === "number" ? params.messageId : parseInt(params.messageId, 10);
-  if (isNaN(messageIdInt)) {
-    throw new Error(`Invalid messageId: ${params.messageId}`);
+  await updateZulipMessageFlags(client, {
+    messageIds: [params.messageId],
+    flag: params.flag,
+    op: params.op,
+  });
+}
+
+export async function updateZulipMessageFlags(
+  client: ZulipClient,
+  params: {
+    messageIds: Array<string | number>;
+    flag: "read" | "starred";
+    op: "add" | "remove";
+  },
+): Promise<void> {
+  const messageIds = params.messageIds.map((messageId) => {
+    const messageIdInt =
+      typeof messageId === "number" ? messageId : Number(messageId);
+    if (!Number.isSafeInteger(messageIdInt) || messageIdInt < 0) {
+      throw new Error(`Invalid messageId: ${messageId}`);
+    }
+    return messageIdInt;
+  });
+  if (messageIds.length === 0) {
+    throw new Error("At least one messageId is required");
   }
   const body = new URLSearchParams({
-    messages: JSON.stringify([messageIdInt]),
+    messages: JSON.stringify(messageIds),
     flag: params.flag,
     op: params.op,
   });
@@ -927,6 +955,58 @@ export async function updateZulipMessageFlag(
     body: body.toString(),
   });
   assertSuccess(payload, "Zulip update message flags failed");
+}
+
+export function createZulipReadBatcher(client: ZulipClient): {
+  markRead: (messageId: string | number) => Promise<void>;
+} {
+  let pending = new Map<string, Array<{ resolve: () => void; reject: (error: unknown) => void }>>();
+  let flushScheduled = false;
+
+  const scheduleFlush = () => {
+    if (flushScheduled) {
+      return;
+    }
+    flushScheduled = true;
+    queueMicrotask(async () => {
+      flushScheduled = false;
+      const batch = pending;
+      pending = new Map();
+      try {
+        await updateZulipMessageFlags(client, {
+          messageIds: Array.from(batch.keys()),
+          flag: "read",
+          op: "add",
+        });
+        for (const waiters of batch.values()) {
+          for (const waiter of waiters) {
+            waiter.resolve();
+          }
+        }
+      } catch (error) {
+        for (const waiters of batch.values()) {
+          for (const waiter of waiters) {
+            waiter.reject(error);
+          }
+        }
+      }
+      if (pending.size > 0) {
+        scheduleFlush();
+      }
+    });
+  };
+
+  return {
+    markRead(messageId) {
+      const key = String(messageId);
+      return new Promise<void>((resolve, reject) => {
+        const waiters = pending.get(key) ?? [];
+        waiters.push({ resolve, reject });
+        pending.set(key, waiters);
+        scheduleFlush();
+      });
+    },
+  };
 }
 
 export async function updateZulipMessageTopic(

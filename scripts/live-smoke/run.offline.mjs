@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { assertFinalPrivateTypingStop, assertMessageRemainsExact, authenticatedUserId, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, drainEventQueueUntilQuiet, DURABLE_OFFLINE_DELAY_MS, eventOccursBefore, EventQueue, extractExactUploadUrl, Gateway, hasFinalPrivateTypingStop, hasProvableMinimumMessageDelay, inspectChildTranscripts, inspectLifecycleTurnEvidence, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactPollMessage, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, isUsageCountedTranscriptName, lifecycleEvidenceCounts, lifecycleSummary, normalizeScenarioError, parseZulipSubagentDiagnostic, probeRunnerLocalGatewayHealth, redactError, resolveUploadUrl, signalProcessTree, subagentCompletedBeforeReply, validateEnvironment, waitForProcessTreeExit, writeGatewayGeneration } from "./run.mjs";
+import { assertFinalPrivateTypingStop, assertMessageRemainsExact, authenticatedUserId, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, drainEventQueueUntilQuiet, DURABLE_OFFLINE_DELAY_MS, enableHandledReadForSmokeConfig, eventOccursBefore, EventQueue, extractExactUploadUrl, Gateway, hasFinalPrivateTypingStop, hasProvableMinimumMessageDelay, inspectChildTranscripts, inspectLifecycleTurnEvidence, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactPollMessage, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, isUsageCountedTranscriptName, lifecycleEvidenceCounts, lifecycleSummary, normalizeScenarioError, parseZulipHandledReadDiagnostic, parseZulipSubagentDiagnostic, probeRunnerLocalGatewayHealth, readZulipMessageFlags, redactError, resolveUploadUrl, signalProcessTree, subagentCompletedBeforeReply, validateEnvironment, waitForProcessTreeExit, waitForZulipMessageRead, writeGatewayGeneration } from "./run.mjs";
 import { selectSmokeModel } from "./prepare-config.mjs";
 import { stageBundledPlugin } from "./stage-bundled-plugin.mjs";
 
@@ -280,6 +280,55 @@ test("proves the durable delay from Zulip server message timestamps", () => {
   assert.equal(hasProvableMinimumMessageDelay(commandEvent, { message: { timestamp: 116 } }, 15), true);
   assert.equal(hasProvableMinimumMessageDelay(commandEvent, { message: { timestamp: 115 } }, 15), false);
   assert.equal(hasProvableMinimumMessageDelay(commandEvent, { message: {} }, 15), false);
+});
+
+test("reads message flags and waits for the handled read transition", async () => {
+  const responses = [
+    { message: { flags: ["starred"] } },
+    { message: { flags: ["starred", "read"] } },
+  ];
+  const client = { request: async () => responses.shift() };
+  assert.deepEqual(await readZulipMessageFlags(client, "42"), ["starred"]);
+  await waitForZulipMessageRead(client, "42", 1000);
+  assert.equal(responses.length, 0);
+  await assert.rejects(
+    readZulipMessageFlags({ request: async () => ({ message: {} }) }, "42"),
+    /flags were unavailable/,
+  );
+});
+
+test("enables handled-read proof in the checked-out durable smoke harness", async () => {
+  const root = await mkdtemp(join(tmpdir(), "zulip-smoke-config-"));
+  const configPath = join(root, "openclaw.json");
+  try {
+    await writeFile(configPath, JSON.stringify({
+      channels: { zulip: { markHandledRead: false, accounts: {
+        primary: { markHandledRead: false }, secondary: {},
+      } } },
+    }), { mode: 0o644 });
+    await enableHandledReadForSmokeConfig(configPath);
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    assert.equal(config.channels.zulip.markHandledRead, true);
+    assert.equal(config.channels.zulip.accounts.primary.markHandledRead, true);
+    assert.equal(config.channels.zulip.accounts.secondary.markHandledRead, true);
+    assert.equal((await stat(configPath)).mode & 0o777, 0o600);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("refuses a symlinked durable smoke config", async () => {
+  const root = await mkdtemp(join(tmpdir(), "zulip-smoke-config-link-"));
+  const targetPath = join(root, "target.json");
+  const linkPath = join(root, "openclaw.json");
+  try {
+    await writeFile(targetPath, JSON.stringify({ channels: { zulip: {} } }), { mode: 0o600 });
+    await symlink(targetPath, linkPath);
+    await assert.rejects(enableHandledReadForSmokeConfig(linkPath));
+    assert.equal(JSON.parse(await readFile(targetPath, "utf8")).channels.zulip.markHandledRead, undefined);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("captures every attributable reply id before an early failure", () => {
@@ -640,11 +689,13 @@ test("captures only bounded allowlisted gateway lifecycle diagnostics", () => {
   gateway.captureDiagnostics("ZULIP_SUBAGENT_DIAGNOSTIC event=run_ended binding_found=ABC123\n");
   gateway.captureDiagnostics("ZULIP_SUBAGENT_DIAGNOSTIC event=indicator_");
   gateway.captureDiagnostics("shown\n");
+  gateway.captureDiagnostics("ZULIP_HANDLED_READ_DIAGNOSTIC event=attempted\n");
   for (let index = 0; index < 250; index += 1) {
     gateway.captureDiagnostics("ZULIP_SUBAGENT_DIAGNOSTIC event=reaction_add_succeeded\n");
   }
 
   assert.equal(gateway.diagnostics[0], "ZULIP_SUBAGENT_DIAGNOSTIC event=indicator_shown");
+  assert.equal(gateway.diagnostics[1], "ZULIP_HANDLED_READ_DIAGNOSTIC event=attempted");
   assert.equal(gateway.diagnostics.length, 200);
   assert.equal(gateway.diagnostics.some((line) => line.includes("secret")), false);
 });
@@ -690,6 +741,9 @@ test("rejects unknown lifecycle diagnostic schemas and secret-shaped values", ()
   assert.equal(parseZulipSubagentDiagnostic("ZULIP_SUBAGENT_DIAGNOSTIC event=run_ended unknown=true"), undefined);
   assert.equal(parseZulipSubagentDiagnostic("ZULIP_SUBAGENT_DIAGNOSTIC event=run_ended binding_found=ABC123"), undefined);
   assert.equal(parseZulipSubagentDiagnostic("ZULIP_SUBAGENT_DIAGNOSTIC event=context_registered key_count=999 active_contexts=1"), undefined);
+  assert.equal(parseZulipHandledReadDiagnostic("ZULIP_HANDLED_READ_DIAGNOSTIC event=succeeded"), "ZULIP_HANDLED_READ_DIAGNOSTIC event=succeeded");
+  assert.equal(parseZulipHandledReadDiagnostic("ZULIP_HANDLED_READ_DIAGNOSTIC event=unknown"), undefined);
+  assert.equal(parseZulipHandledReadDiagnostic("ZULIP_HANDLED_READ_DIAGNOSTIC event=failed secret=ABC123"), undefined);
 });
 
 test("reconciles a placeholder update into cached message matching and cleanup attribution", async () => {

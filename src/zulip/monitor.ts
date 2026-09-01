@@ -35,6 +35,7 @@ import {
   removeZulipReaction,
   editZulipMessage,
   deleteZulipMessage,
+  createZulipReadBatcher,
   type ZulipMessage,
   type ZulipStream,
   type ZulipSubscription,
@@ -384,8 +385,16 @@ async function saveZulipMediaBuffer(params: {
 const ABORTED_INBOUND_MESSAGE = Symbol("aborted-inbound-message");
 const RETRYABLE_INBOUND_MESSAGE = Symbol("retryable-inbound-message");
 const RETRYABLE_STREAM_POLICY = Symbol("retryable-stream-policy");
+const HANDLED_INBOUND_MESSAGE = Symbol("handled-inbound-message");
 const activeMonitorReactionCleanups = new Set<() => Promise<void>>();
 let monitorReactionShutdownStarted = false;
+
+function logHandledReadDiagnostic(event: string): void {
+  if (process.env.ZULIP_HANDLED_READ_DIAGNOSTICS !== "1") {
+    return;
+  }
+  process.stderr.write(`ZULIP_HANDLED_READ_DIAGNOSTIC event=${event}\n`);
+}
 
 export function startZulipMonitorReactionLifecycles(): void {
   monitorReactionShutdownStarted = false;
@@ -1561,7 +1570,10 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     }
 
     opts.statusSink?.({ lastInboundAt: Date.now() });
-    return retryableNoDelivery ? RETRYABLE_INBOUND_MESSAGE : undefined;
+    if (retryableNoDelivery) {
+      return RETRYABLE_INBOUND_MESSAGE;
+    }
+    return terminalError ? undefined : HANDLED_INBOUND_MESSAGE;
   };
 
   // Register event queue
@@ -1606,6 +1618,32 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         : undefined,
     );
   };
+  const handledReadBatcher = createZulipReadBatcher(client);
+
+  const markHandledInboundMessageRead = async (message: ZulipMessage): Promise<void> => {
+    if (account.config.markHandledRead !== true) {
+      logHandledReadDiagnostic("disabled");
+      return;
+    }
+    const messageId = String(message.id ?? "");
+    if (!messageId) {
+      logHandledReadDiagnostic("missing_id");
+      return;
+    }
+    if (message.flags?.includes("read")) {
+      logHandledReadDiagnostic("already_read");
+      return;
+    }
+    try {
+      logHandledReadDiagnostic("attempted");
+      await handledReadBatcher.markRead(messageId);
+      logHandledReadDiagnostic("succeeded");
+      logVerboseMessage(`zulip: marked handled inbound message ${messageId} read`);
+    } catch (err) {
+      logHandledReadDiagnostic("failed");
+      runtime.error?.(`zulip: failed to mark handled inbound message ${messageId} read: ${String(err)}`);
+    }
+  };
 
   const deliverDurableInboundMessage = async (
     durableId: string | undefined,
@@ -1617,7 +1655,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       acceptInbound?: () => Promise<boolean>;
       durableAccepted?: () => boolean;
     } = {},
-  ): Promise<"settled" | "pending-delivery" | "pending-completion"> => {
+  ): Promise<"settled" | "pending-delivery" | "pending-completion" | "pending-completion-handled"> => {
     try {
       const outcome = await handleMessage(message, {
         skipRecentDedupe: options.replay,
@@ -1653,11 +1691,19 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         return "pending-delivery";
       }
       if (manageDurableRecord) {
+        logHandledReadDiagnostic(
+          outcome === HANDLED_INBOUND_MESSAGE ? "delivery_handled" : "delivery_unhandled",
+        );
         try {
           await completeDurableInboundMessage(durableId, metadata);
         } catch (err) {
           runtime.error?.(`zulip: durable inbound completion failed: ${String(err)}`);
-          return "pending-completion";
+          return outcome === HANDLED_INBOUND_MESSAGE
+            ? "pending-completion-handled"
+            : "pending-completion";
+        }
+        if (outcome === HANDLED_INBOUND_MESSAGE) {
+          await markHandledInboundMessageRead(message);
         }
       }
       return "settled";
@@ -1686,6 +1732,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
 
   const deferredDurableReplayIds = new Set<string>();
   const deferredDurableCompletionIds = new Set<string>();
+  const deferredDurableHandledIds = new Set<string>();
   const deferredDurableRetryState = new Map<
     string,
     { delayMs: number; nextAttemptAt: number }
@@ -1762,9 +1809,19 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
           const pending = await durableInboundJournal.pending();
           const record = pending.find((entry) => entry.id === durableId);
           if (record) {
-            let disposition: "settled" | "pending-delivery" | "pending-completion";
+            let disposition:
+              | "settled"
+              | "pending-delivery"
+              | "pending-completion"
+              | "pending-completion-handled";
             if (deferredDurableCompletionIds.has(durableId)) {
               await completeDurableInboundMessage(record.id, record.metadata);
+              if (deferredDurableHandledIds.has(durableId)) {
+                const payload = record.payload as ZulipDurableInboundPayload;
+                await markHandledInboundMessageRead(
+                  deserializeZulipDurableInboundMessage<ZulipMessage>(payload.message),
+                );
+              }
               disposition = "settled";
             } else {
               const payload = record.payload as ZulipDurableInboundPayload;
@@ -1776,8 +1833,14 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
               );
             }
             if (disposition !== "settled") {
-              if (disposition === "pending-completion") {
+              if (
+                disposition === "pending-completion" ||
+                disposition === "pending-completion-handled"
+              ) {
                 deferredDurableCompletionIds.add(durableId);
+                if (disposition === "pending-completion-handled") {
+                  deferredDurableHandledIds.add(durableId);
+                }
               }
               deferDurableReplayRetry(durableId);
               continue;
@@ -1785,6 +1848,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
           }
           deferredDurableReplayIds.delete(durableId);
           deferredDurableCompletionIds.delete(durableId);
+          deferredDurableHandledIds.delete(durableId);
           deferredDurableRetryState.delete(durableId);
         } catch (err) {
           runtime.error?.(`zulip: deferred durable replay failed: ${String(err)}`);
@@ -1810,8 +1874,11 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     wakeDeferredDurableReplay?.();
     startDeferredDurableReplay();
   };
-  const schedulePendingDurableCompletion = (durableId: string) => {
+  const schedulePendingDurableCompletion = (durableId: string, handled: boolean) => {
     deferredDurableCompletionIds.add(durableId);
+    if (handled) {
+      deferredDurableHandledIds.add(durableId);
+    }
     schedulePendingDurableReplay(durableId);
   };
 
@@ -1896,8 +1963,14 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       acceptInbound,
       durableAccepted: () => durableAccepted,
     });
-    if (disposition === "pending-completion" && durableId) {
-      schedulePendingDurableCompletion(durableId);
+    if (
+      (disposition === "pending-completion" || disposition === "pending-completion-handled") &&
+      durableId
+    ) {
+      schedulePendingDurableCompletion(
+        durableId,
+        disposition === "pending-completion-handled",
+      );
     }
   };
 
@@ -1922,8 +1995,14 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         record.metadata,
         { replay: true },
       );
-      if (disposition === "pending-completion") {
-        schedulePendingDurableCompletion(record.id);
+      if (
+        disposition === "pending-completion" ||
+        disposition === "pending-completion-handled"
+      ) {
+        schedulePendingDurableCompletion(
+          record.id,
+          disposition === "pending-completion-handled",
+        );
       }
     }
   };
@@ -1991,11 +2070,14 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
           }
 
           if (event.type === "message" && event.message) {
+            const inboundMessage = event.flags
+              ? { ...event.message, flags: [...event.flags] }
+              : event.message;
             let streamResolution: InboundStreamResolution;
             try {
               streamResolution = {
                 ok: true,
-                decision: await resolveInboundStreamDecision(event.message),
+                decision: await resolveInboundStreamDecision(inboundMessage),
               };
             } catch (error) {
               streamResolution = { ok: false, error };
@@ -2008,13 +2090,13 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
               if (streamDecision && !streamDecision.accepted) {
                 logRejectedStreamDecision(
                   streamDecision,
-                  event.message.sender_email?.trim() || String(event.message.sender_id ?? ""),
+                  inboundMessage.sender_email?.trim() || String(inboundMessage.sender_id ?? ""),
                 );
                 continue;
               }
             }
             // Start processing without awaiting (fire-and-forget with error handling)
-            const messageTask = processMessage(event.message, validEventId, streamResolution).catch(
+            const messageTask = processMessage(inboundMessage, validEventId, streamResolution).catch(
               (err) => {
                 runtime.error?.(`zulip: message processing failed: ${String(err)}`);
               },

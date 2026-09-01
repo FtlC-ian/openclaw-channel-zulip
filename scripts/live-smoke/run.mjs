@@ -201,6 +201,66 @@ export async function assertMessageRemainsExact(client, id, expected, minimumMs,
   await assertCurrent();
 }
 
+export async function readZulipMessageFlags(client, id, signal) {
+  const result = await client.request(`messages/${id}`, { signal });
+  if (!Array.isArray(result.message?.flags)) {
+    throw new Error("Zulip message flags were unavailable");
+  }
+  return result.message.flags.map(String);
+}
+
+export async function waitForZulipMessageRead(client, id, timeoutMs, signal) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if ((await readZulipMessageFlags(client, id, signal)).includes("read")) {
+      return;
+    }
+    await delay(250, undefined, { signal });
+  }
+  throw new Error("Handled Zulip message did not become read before timeout");
+}
+
+export async function enableHandledReadForSmokeConfig(configPath) {
+  const handle = await open(configPath, constants.O_RDWR | constants.O_NOFOLLOW);
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile()) throw new Error("Smoke OpenClaw config must be a regular file");
+    const config = JSON.parse(await handle.readFile("utf8"));
+    const zulip = config?.channels?.zulip;
+    if (!zulip || typeof zulip !== "object" || Array.isArray(zulip)) {
+      throw new Error("Smoke OpenClaw config must contain a Zulip channel object");
+    }
+    zulip.markHandledRead = true;
+    const accounts = zulip.accounts ?? {};
+    if (!accounts || typeof accounts !== "object" || Array.isArray(accounts)) {
+      throw new Error("Smoke Zulip accounts must be an object");
+    }
+    for (const account of Object.values(accounts)) {
+      if (!account || typeof account !== "object" || Array.isArray(account)) {
+        throw new Error("Smoke Zulip account entries must be objects");
+      }
+      account.markHandledRead = true;
+    }
+    const serialized = Buffer.from(JSON.stringify(config));
+    await handle.truncate(0);
+    let offset = 0;
+    while (offset < serialized.length) {
+      const { bytesWritten } = await handle.write(
+        serialized,
+        offset,
+        serialized.length - offset,
+        offset,
+      );
+      if (bytesWritten <= 0) throw new Error("Failed to write smoke OpenClaw config");
+      offset += bytesWritten;
+    }
+    await handle.chmod(0o600);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
 export async function countCompletedChildTranscripts(stateDir, marker) {
   return (await inspectChildTranscripts(stateDir, marker)).completedExact;
 }
@@ -721,6 +781,22 @@ export function parseZulipSubagentDiagnostic(line) {
   return observed.size === Object.keys(schema).length ? line : undefined;
 }
 
+const zulipHandledReadDiagnosticEvents = new Set([
+  "delivery_handled",
+  "delivery_unhandled",
+  "disabled",
+  "missing_id",
+  "already_read",
+  "attempted",
+  "succeeded",
+  "failed",
+]);
+
+export function parseZulipHandledReadDiagnostic(line) {
+  const match = line.match(/^ZULIP_HANDLED_READ_DIAGNOSTIC event=([a-z_]+)$/);
+  return match && zulipHandledReadDiagnosticEvents.has(match[1]) ? line : undefined;
+}
+
 export class Gateway {
   constructor(port, {
     termTimeoutMs = 10000,
@@ -772,7 +848,8 @@ export class Gateway {
         } else if (newline < 0) {
           state.remainder = candidate;
         } else {
-          const diagnostic = parseZulipSubagentDiagnostic(candidate);
+          const diagnostic = parseZulipSubagentDiagnostic(candidate) ??
+            parseZulipHandledReadDiagnostic(candidate);
           if (diagnostic && this.diagnostics.length < 200) this.diagnostics.push(diagnostic);
           state.remainder = "";
         }
@@ -937,6 +1014,12 @@ function command(value) { return `SMOKE_COMMAND\n${value}\nEND_SMOKE_COMMAND`; }
 
 async function main() {
   const env = validateEnvironment(process.env);
+  if (env.ZULIP_SMOKE_ENABLE_DURABLE === "1") {
+    const configPath = env.OPENCLAW_CONFIG_PATH?.trim();
+    if (!configPath) throw new Error("OPENCLAW_CONFIG_PATH is required for durable smoke");
+    await enableHandledReadForSmokeConfig(configPath);
+    process.env.ZULIP_HANDLED_READ_DIAGNOSTICS = "1";
+  }
   const timeoutMs = Number(env.SMOKE_SCENARIO_TIMEOUT_MS || 120000);
   if (!Number.isFinite(timeoutMs) || timeoutMs < 10000 || timeoutMs > 300000) throw new Error("Invalid SMOKE_SCENARIO_TIMEOUT_MS");
   const runId = `smoke-${env.SMOKE_TESTED_SHA.slice(0, 8)}-${randomBytes(5).toString("hex")}`;
@@ -1123,20 +1206,29 @@ async function main() {
       try {
         const oldGeneration = randomBytes(16).toString("hex");
         await writeGatewayGeneration(gatewayGenerationPath, oldGeneration);
+        console.log("durable-receive-completion-deduplication phase=send_command");
         const inboundId = await sendDm(command(`durable ${marker}`), signal);
         const commandEvent = await queue.waitFor((e) => e.type === "message" &&
           String(e.message?.id) === inboundId && sameUserId(e.message?.sender_id, actorUserId),
         timeoutMs, "durable command event", signal);
+        console.log(`durable-receive-completion-deduplication phase=command_observed message_id=${inboundId}`);
         await queue.waitFor((e) => e.type === "reaction" && e.op === "add" && String(e.message_id) === inboundId, timeoutMs, "durable accept signal", signal);
+        const preInterruptionFlags = await readZulipMessageFlags(bot, inboundId, signal);
+        if (preInterruptionFlags.includes("read")) {
+          throw new Error("Durable command became read before reply settlement and journal completion");
+        }
+        console.log("durable-receive-completion-deduplication phase=accepted_unread");
         await delay(2000, undefined, { signal });
         if (captureReplies().length) {
           throw new Error("Durable reply completed before interruption; replay was not exercised");
         }
         await gateway.stop();
+        console.log("durable-receive-completion-deduplication phase=gateway_stopped");
         await delay(DURABLE_OFFLINE_DELAY_MS, undefined, { signal });
         const replacementGeneration = randomBytes(16).toString("hex");
         await writeGatewayGeneration(gatewayGenerationPath, replacementGeneration);
         await gateway.start(signal);
+        console.log("durable-receive-completion-deduplication phase=replacement_started");
         const replacementReply = `${marker}:${replacementGeneration}`;
         const reply = await queue.waitFor((e) => {
           if (!isAttributable(e)) return false;
@@ -1155,6 +1247,9 @@ async function main() {
           return true;
         }, timeoutMs, "durable replay reply", signal);
         messageIds.bot.add(String(reply.message.id));
+        console.log(`durable-receive-completion-deduplication phase=reply_observed message_id=${reply.message.id}`);
+        await waitForZulipMessageRead(bot, inboundId, timeoutMs, signal);
+        console.log("durable-receive-completion-deduplication phase=read_observed");
         const settleDeadline = Date.now() + 10000;
         while (Date.now() < settleDeadline) { await queue.poll(signal); await delay(500, undefined, { signal }); }
         const replies = captureReplies();
@@ -1162,6 +1257,7 @@ async function main() {
         if (replies.length !== 1 || validReplies.length !== 1) {
           throw new Error(`Durable receive produced ${replies.length} attributable replies (${validReplies.length} valid); expected exactly one valid replacement reply`);
         }
+        console.log("durable-receive-completion-deduplication phase=complete");
       } finally {
         captureReplies();
       }

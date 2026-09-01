@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Features
+- **Handled-message read state**: Add an account-level `markHandledRead` opt-in that marks DM and stream/topic messages read only after successful dispatch settlement and durable receive completion, with safe batching and non-fatal failure reporting.
 - **Trusted durable live smoke**: Stage protected exact-SHA candidates through OpenClaw's bundled-plugin trust path and require interruption/replay/completion/deduplication evidence with exact host and plugin versions.
 - **Per-stream inbound policy**: Add deterministic name/ID `streamOverrides` for inbound activation, mention requirements, and allowed/excluded topics while preserving legacy `streams`, `topics`, and `streamTopics` behavior.
 - **Early inbound filtering**: Resolve stream policy before durable acceptance, attachment downloads, reactions, typing, routing, or agent dispatch. Outbound access remains independent.

@@ -211,6 +211,7 @@ const state = vi.hoisted(() => {
     deleteZulipMessage: vi.fn(async () => {}),
     addZulipReaction: vi.fn(async () => {}),
     removeZulipReaction: vi.fn(async () => {}),
+    updateZulipMessageFlags: vi.fn(async () => {}),
     sendMessageZulip: vi.fn(async () => ({ messageId: "outbound-1", channelId: "debbie" })),
     client: { authHeader: "fake-auth" },
     botUser: {
@@ -283,6 +284,13 @@ vi.mock("./client.js", () => ({
   removeZulipReaction: state.removeZulipReaction,
   editZulipMessage: state.editZulipMessage,
   deleteZulipMessage: state.deleteZulipMessage,
+  createZulipReadBatcher: vi.fn(() => ({
+    markRead: (messageId: string | number) => state.updateZulipMessageFlags(state.client, {
+      messageIds: [messageId],
+      flag: "read",
+      op: "add",
+    }),
+  })),
 }));
 
 vi.mock("./accounts.js", () => ({
@@ -523,6 +531,7 @@ describe("monitorZulipProvider", () => {
     state.deleteZulipMessage.mockReset();
     state.addZulipReaction.mockReset();
     state.removeZulipReaction.mockReset();
+    state.updateZulipMessageFlags.mockReset().mockResolvedValue(undefined);
     state.sendMessageZulip.mockReset();
     state.sendMessageZulip.mockResolvedValue({ messageId: "outbound-1", channelId: "debbie" });
     downloadZulipUploadMock.mockClear();
@@ -671,7 +680,9 @@ describe("monitorZulipProvider", () => {
   });
 
   it("aborts active replies and clears reactions when the monitor stops", async () => {
+    enableDurableInboundJournal();
     state.autoAbort = false;
+    state.account.config.markHandledRead = true;
     state.account.config.reactions = {
       enabled: true,
       timing: { doneHoldMs: 500 },
@@ -717,6 +728,7 @@ describe("monitorZulipProvider", () => {
       state.client,
       expect.objectContaining({ messageId: "1094", emojiName: "cross_mark" }),
     );
+    expect(state.updateZulipMessageFlags).not.toHaveBeenCalled();
   });
 
   it("retries a transient placeholder deletion failure during ordinary abort", async () => {
@@ -2850,6 +2862,164 @@ describe("monitorZulipProvider", () => {
     expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(1);
   });
 
+  it("marks an opt-in handled stream message read only after durable completion", async () => {
+    enableDurableInboundJournal();
+    state.account.config.markHandledRead = true;
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
+      async ({ dispatcherOptions }) => {
+        await dispatcherOptions.deliver({ text: "handled reply" });
+        return { counts: { tool: 0, block: 0, final: 1 } };
+      },
+    );
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 23, type: "message", message: makeChannelMessage(2120) }],
+    }];
+
+    await runMonitorOnce();
+
+    const queue = state.durableQueues.get(state.account.accountId);
+    expect(queue?.complete).toHaveBeenCalledTimes(1);
+    expect(state.updateZulipMessageFlags).toHaveBeenCalledExactlyOnceWith(state.client, {
+      messageIds: ["2120"],
+      flag: "read",
+      op: "add",
+    });
+    expect(queue?.complete.mock.invocationCallOrder[0]).toBeLessThan(
+      state.updateZulipMessageFlags.mock.invocationCallOrder[0] ?? 0,
+    );
+  });
+
+  it("marks an opt-in silent DM completion read", async () => {
+    enableDurableInboundJournal();
+    state.account.config.markHandledRead = true;
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 24, type: "message", message: makePrivateMessage(2121) }],
+    }];
+
+    await runMonitorOnce();
+
+    expect(state.sendMessageZulip).not.toHaveBeenCalled();
+    expect(state.updateZulipMessageFlags).toHaveBeenCalledExactlyOnceWith(state.client, {
+      messageIds: ["2121"],
+      flag: "read",
+      op: "add",
+    });
+  });
+
+  it("does not mark a failed delivery read", async () => {
+    enableDurableInboundJournal();
+    state.account.config.markHandledRead = true;
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementationOnce(
+      async () => ({
+        counts: { tool: 0, block: 0, final: 0 },
+        failedCounts: { tool: 0, block: 0, final: 1 },
+      }),
+    );
+    const failed = makeChannelMessage(2122);
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 25, type: "message", message: failed }],
+    }];
+
+    await runMonitorOnce();
+
+    expect(state.updateZulipMessageFlags).not.toHaveBeenCalled();
+  });
+
+  it("does not mark unauthorized, duplicate, or already-read messages newly read", async () => {
+    enableDurableInboundJournal();
+    state.account.config.markHandledRead = true;
+    const alreadyRead = makeChannelMessage(2123);
+
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 26, type: "message", message: alreadyRead, flags: ["read"] }],
+    }];
+    await runMonitorOnce();
+    expect(state.updateZulipMessageFlags).not.toHaveBeenCalled();
+
+    state.account.config.dmPolicy = "disabled";
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 27, type: "message", message: makePrivateMessage(2124) }],
+    }];
+    await runMonitorOnce();
+    expect(state.updateZulipMessageFlags).not.toHaveBeenCalled();
+
+    state.account.config.dmPolicy = "open";
+    const handled = makePrivateMessage(2127);
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 28, type: "message", message: handled }],
+    }];
+    await runMonitorOnce();
+    expect(state.updateZulipMessageFlags).toHaveBeenCalledTimes(1);
+
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 29, type: "message", message: handled }],
+    }];
+    await runMonitorOnce();
+    expect(state.updateZulipMessageFlags).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps mark-read failure observable without replaying a completed reply", async () => {
+    enableDurableInboundJournal();
+    state.account.config.markHandledRead = true;
+    state.updateZulipMessageFlags.mockRejectedValueOnce(new Error("synthetic mark-read failure"));
+    const runtimeError = vi.fn();
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 31, type: "message", message: makePrivateMessage(2125) }],
+    }];
+
+    await runMonitorOnce(new AbortController(), {
+      log: vi.fn(),
+      error: runtimeError,
+      exit: vi.fn(),
+    });
+
+    expect(runtimeError).toHaveBeenCalledWith(
+      "zulip: failed to mark handled inbound message 2125 read: Error: synthetic mark-read failure",
+    );
+    const queue = state.durableQueues.get(state.account.accountId);
+    expect(queue?.listPending).toHaveBeenCalled();
+    await expect(queue?.listPending()).resolves.toEqual([]);
+
+    await runMonitorOnce();
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+    expect(state.updateZulipMessageFlags).toHaveBeenCalledTimes(1);
+  });
+
+  it("marks read once after completion-only retry succeeds without redispatch", async () => {
+    enableDurableInboundJournal({ queueCompletionFailures: 1 });
+    state.account.config.markHandledRead = true;
+    state.autoAbort = false;
+    const controller = new AbortController();
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 30, type: "message", message: makePrivateMessage(2126) }],
+    }];
+
+    const monitorPromise = runMonitorOnce(controller);
+    await vi.waitFor(() => {
+      const queue = state.durableQueues.get(state.account.accountId);
+      expect(queue?.complete).toHaveBeenCalledTimes(2);
+      expect(state.updateZulipMessageFlags).toHaveBeenCalledTimes(1);
+    });
+    controller.abort();
+    await monitorPromise;
+
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+    expect(state.updateZulipMessageFlags).toHaveBeenCalledExactlyOnceWith(state.client, {
+      messageIds: ["2126"],
+      flag: "read",
+      op: "add",
+    });
+  });
+
   it("commits edited placeholder error feedback and does not replay it", async () => {
     enableDurableInboundJournal();
     state.account.config.thinkingPlaceholder = { enabled: true, errorText: "Turn failed." };
@@ -3005,6 +3175,7 @@ describe("monitorZulipProvider", () => {
 
   it("completes durable inbound after a visible partial reply even when final delivery fails", async () => {
     enableDurableInboundJournal();
+    state.account.config.markHandledRead = true;
     state.account.config.reactions = { enabled: true, clearOnFinish: false };
     state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
       async ({ dispatcherOptions }) => {
@@ -3039,6 +3210,7 @@ describe("monitorZulipProvider", () => {
     expect(
       state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher,
     ).toHaveBeenCalledTimes(1);
+    expect(state.updateZulipMessageFlags).not.toHaveBeenCalled();
   });
 
   it("keeps durable journal store caps below the plugin state row limit", async () => {

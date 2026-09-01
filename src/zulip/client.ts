@@ -89,6 +89,13 @@ export type ZulipMessage = {
   recipient_id?: string | null;
 };
 
+export type ZulipEvent = {
+  id: number;
+  type: string;
+  message?: ZulipMessage;
+  flags?: string[];
+};
+
 export function normalizeZulipBaseUrl(raw?: string | null): string | undefined {
   const trimmed = raw?.trim();
   if (!trimmed) {
@@ -422,7 +429,7 @@ export async function getZulipEvents(
     dontBlock?: boolean;
   },
 ): Promise<
-  ZulipApiResponse & { events?: Array<{ id: number; type: string; message?: ZulipMessage }> }
+  ZulipApiResponse & { events?: ZulipEvent[] }
 > {
   const qs = new URLSearchParams({
     queue_id: params.queueId,
@@ -443,7 +450,7 @@ export async function getZulipEvents(
   const timeout = setTimeout(() => controller.abort(), timeoutMs + 15000);
   try {
     return await client.request<
-      ZulipApiResponse & { events?: Array<{ id: number; type: string; message?: ZulipMessage }> }
+      ZulipApiResponse & { events?: ZulipEvent[] }
     >(`/events?${qs.toString()}`, { signal: controller.signal });
   } finally {
     clearTimeout(timeout);
@@ -461,7 +468,7 @@ export async function getZulipEventsWithRetry(
     dontBlock?: boolean;
   },
 ): Promise<
-  ZulipApiResponse & { events?: Array<{ id: number; type: string; message?: ZulipMessage }> }
+  ZulipApiResponse & { events?: ZulipEvent[] }
 > {
   const qs = new URLSearchParams({
     queue_id: params.queueId,
@@ -482,7 +489,7 @@ export async function getZulipEventsWithRetry(
   const timeout = setTimeout(() => controller.abort(), timeoutMs + 15000);
   try {
     return await zulipRequestWithRetry<
-      ZulipApiResponse & { events?: Array<{ id: number; type: string; message?: ZulipMessage }> }
+      ZulipApiResponse & { events?: ZulipEvent[] }
     >(
       client,
       `/events?${qs.toString()}`,

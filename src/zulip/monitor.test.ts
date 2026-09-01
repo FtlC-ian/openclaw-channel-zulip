@@ -2931,11 +2931,11 @@ describe("monitorZulipProvider", () => {
   it("does not mark unauthorized, duplicate, or already-read messages newly read", async () => {
     enableDurableInboundJournal();
     state.account.config.markHandledRead = true;
-    const alreadyRead = { ...makeChannelMessage(2123), flags: ["read"] };
+    const alreadyRead = makeChannelMessage(2123);
 
     state.pollResponses = [{
       result: "success",
-      events: [{ id: 26, type: "message", message: alreadyRead }],
+      events: [{ id: 26, type: "message", message: alreadyRead, flags: ["read"] }],
     }];
     await runMonitorOnce();
     expect(state.updateZulipMessageFlags).not.toHaveBeenCalled();

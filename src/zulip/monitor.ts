@@ -2070,11 +2070,14 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
           }
 
           if (event.type === "message" && event.message) {
+            const inboundMessage = event.flags
+              ? { ...event.message, flags: [...event.flags] }
+              : event.message;
             let streamResolution: InboundStreamResolution;
             try {
               streamResolution = {
                 ok: true,
-                decision: await resolveInboundStreamDecision(event.message),
+                decision: await resolveInboundStreamDecision(inboundMessage),
               };
             } catch (error) {
               streamResolution = { ok: false, error };
@@ -2087,13 +2090,13 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
               if (streamDecision && !streamDecision.accepted) {
                 logRejectedStreamDecision(
                   streamDecision,
-                  event.message.sender_email?.trim() || String(event.message.sender_id ?? ""),
+                  inboundMessage.sender_email?.trim() || String(inboundMessage.sender_id ?? ""),
                 );
                 continue;
               }
             }
             // Start processing without awaiting (fire-and-forget with error handling)
-            const messageTask = processMessage(event.message, validEventId, streamResolution).catch(
+            const messageTask = processMessage(inboundMessage, validEventId, streamResolution).catch(
               (err) => {
                 runtime.error?.(`zulip: message processing failed: ${String(err)}`);
               },

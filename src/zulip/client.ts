@@ -38,19 +38,6 @@ export type ZulipUser = {
   is_admin?: boolean | null;
 };
 
-export type ZulipPresenceEntry = {
-  status?: "active" | "idle" | string;
-  timestamp?: number;
-  client?: string | null;
-  [key: string]: unknown;
-};
-
-export type ZulipPresenceMap = Record<string, ZulipPresenceEntry>;
-
-export type ZulipServerSettings = ZulipApiResponse & Record<string, unknown>;
-
-export type ZulipRealmUpdate = Record<string, string | number | boolean>;
-
 export type ZulipStream = {
   id: string;
   name?: string | null;
@@ -701,35 +688,6 @@ export async function resolveZulipStreamId(
   throw new Error(`Zulip stream not found: ${streamIdOrName}`);
 }
 
-export async function subscribeZulipStream(client: ZulipClient, stream: string): Promise<void> {
-  const body = new URLSearchParams({
-    subscriptions: JSON.stringify([{ name: stream }]),
-  });
-  const payload = await client.request<ZulipApiResponse>("/users/me/subscriptions", {
-    method: "POST",
-    body: body.toString(),
-  });
-  assertSuccess(payload, "Zulip stream subscribe failed");
-}
-
-export async function inviteZulipUsersToStream(
-  client: ZulipClient,
-  params: {
-    stream: string;
-    principals: Array<string | number>;
-  },
-): Promise<void> {
-  const body = new URLSearchParams({
-    subscriptions: JSON.stringify([{ name: params.stream }]),
-    principals: JSON.stringify(params.principals),
-  });
-  const payload = await client.request<ZulipApiResponse>("/users/me/subscriptions", {
-    method: "POST",
-    body: body.toString(),
-  });
-  assertSuccess(payload, "Zulip stream invite failed");
-}
-
 export async function createZulipStream(
   client: ZulipClient,
   params: {
@@ -1009,25 +967,6 @@ export function createZulipReadBatcher(client: ZulipClient): {
   };
 }
 
-export async function updateZulipMessageTopic(
-  client: ZulipClient,
-  params: {
-    messageId: string;
-    topic: string;
-    propagateMode?: "change_one" | "change_all";
-  },
-): Promise<void> {
-  const body = new URLSearchParams({
-    topic: params.topic,
-    propagate_mode: params.propagateMode ?? "change_all",
-  });
-  const payload = await client.request<ZulipApiResponse>(`/messages/${params.messageId}`, {
-    method: "PATCH",
-    body: body.toString(),
-  });
-  assertSuccess(payload, "Zulip update message topic failed");
-}
-
 export async function fetchZulipMessages(
   client: ZulipClient,
   params: {
@@ -1082,66 +1021,4 @@ export async function searchZulipMessages(
   );
   assertSuccess(payload, "Zulip search failed");
   return payload.messages ?? [];
-}
-
-export async function fetchZulipUserPresence(
-  client: ZulipClient,
-  userIdOrEmail: string,
-): Promise<ZulipPresenceMap> {
-  const trimmed = userIdOrEmail?.trim();
-  if (!trimmed) {
-    throw new Error("userId or email is required to fetch Zulip presence.");
-  }
-  const encoded = encodeURIComponent(trimmed);
-  const payload = await client.request<ZulipApiResponse & { presence?: ZulipPresenceMap }>(
-    `/users/${encoded}/presence`,
-  );
-  assertSuccess(payload, "Zulip user presence failed");
-  return payload.presence ?? {};
-}
-
-export async function deactivateZulipUser(client: ZulipClient, userId: string): Promise<void> {
-  const trimmed = userId?.trim();
-  if (!trimmed) {
-    throw new Error("userId is required to deactivate a Zulip user.");
-  }
-  const payload = await client.request<ZulipApiResponse>(`/users/${trimmed}` as const, {
-    method: "DELETE",
-  });
-  assertSuccess(payload, "Zulip deactivate user failed");
-}
-
-export async function reactivateZulipUser(client: ZulipClient, userId: string): Promise<void> {
-  const trimmed = userId?.trim();
-  if (!trimmed) {
-    throw new Error("userId is required to reactivate a Zulip user.");
-  }
-  const payload = await client.request<ZulipApiResponse>(`/users/${trimmed}/reactivate` as const, {
-    method: "POST",
-  });
-  assertSuccess(payload, "Zulip reactivate user failed");
-}
-
-export async function fetchZulipServerSettings(client: ZulipClient): Promise<ZulipServerSettings> {
-  const payload = await client.request<ZulipServerSettings>("/server_settings");
-  assertSuccess(payload, "Zulip server settings failed");
-  return payload;
-}
-
-export async function updateZulipRealm(
-  client: ZulipClient,
-  params: ZulipRealmUpdate,
-): Promise<void> {
-  const body = new URLSearchParams();
-  for (const [key, value] of Object.entries(params)) {
-    body.set(key, String(value));
-  }
-  if (Array.from(body.keys()).length === 0) {
-    throw new Error("No realm settings provided to update.");
-  }
-  const payload = await client.request<ZulipApiResponse>("/realm", {
-    method: "PATCH",
-    body: body.toString(),
-  });
-  assertSuccess(payload, "Zulip realm update failed");
 }

@@ -12,6 +12,9 @@
 ### Compatibility
 - **OpenClaw 2026.8.1 compatibility**: Use the shared ingress queue and typed media-runtime SDK surfaces while retaining OpenClaw 2026.7.1-2 as the minimum supported host, draining legacy durable records, and keeping command access-group checks enabled.
 
+### Security
+- **Action capability contract**: Make advertised, schema-described, and handled message actions share one allowlist; remove unreachable provider-specific admin handlers; reject hidden and unadvertised actions before credential or network access; and document the upstream SDK blocker in a checked-in capability matrix.
+
 ## 2026.5.26
 
 ### Features

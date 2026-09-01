@@ -1,9 +1,22 @@
 import type { OpenClawConfig } from "./sdk.js";
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
-import { splitStreamTarget, zulipMessageActions } from "./actions.js";
+import {
+  splitStreamTarget,
+  ZULIP_ADVERTISED_ACTIONS,
+  zulipMessageActions,
+} from "./actions.js";
 
 type CoreAction = Parameters<NonNullable<typeof zulipMessageActions.handleAction>>[0]["action"];
-type AnyAction = CoreAction | "user-deactivate" | "org-settings-edit";
+type HiddenAction =
+  | "channel-subscribe"
+  | "invite"
+  | "resolve-topic"
+  | "user-presence"
+  | "user-deactivate"
+  | "user-reactivate"
+  | "org-settings"
+  | "org-settings-edit";
+type AnyAction = CoreAction | HiddenAction;
 type FetchMock = Mock<typeof fetch>;
 
 function jsonResponse(body: unknown): Response {
@@ -47,7 +60,12 @@ afterEach(() => {
 async function runAction(
   action: AnyAction,
   params: Record<string, unknown>,
-  options?: { dryRun?: boolean; fetchImpl?: FetchMock },
+  options?: {
+    accountId?: string;
+    cfg?: OpenClawConfig;
+    dryRun?: boolean;
+    fetchImpl?: FetchMock;
+  },
 ) {
   const fetchImpl =
     options?.fetchImpl ??
@@ -56,7 +74,8 @@ async function runAction(
   const result = await zulipMessageActions.handleAction?.({
     channel: "zulip",
     action: action as CoreAction,
-    cfg,
+    cfg: options?.cfg ?? cfg,
+    accountId: options?.accountId,
     params,
     dryRun: options?.dryRun,
   });
@@ -73,20 +92,12 @@ async function expectRejectedWithoutFetch(
 }
 
 describe("destructive action confirmation", () => {
-  it("rejects delete without confirm", async () => {
-    await expectRejectedWithoutFetch("delete", { messageId: "123" });
+  it.each(["delete", "unsend"] as const)("rejects %s without confirm", async (action) => {
+    await expectRejectedWithoutFetch(action, { messageId: "123" });
   });
 
   it("rejects channel-delete without confirm", async () => {
     await expectRejectedWithoutFetch("channel-delete", { streamId: "general" });
-  });
-
-  it("rejects user-deactivate without confirm", async () => {
-    await expectRejectedWithoutFetch("user-deactivate", { userId: "42" });
-  });
-
-  it("rejects org-settings-edit without confirm", async () => {
-    await expectRejectedWithoutFetch("org-settings-edit", { settings: { name: "X" } });
   });
 
   it("rejects delete when confirm is false", async () => {
@@ -98,16 +109,20 @@ describe("destructive action confirmation", () => {
   });
 
   it("scopes the confirmation schema to advertised destructive actions", () => {
-    expect(zulipMessageActions.describeMessageTool({ cfg })).toMatchObject({
-      schema: {
-        actions: ["channel-delete", "delete"],
-        properties: { confirm: { type: "boolean" } },
-      },
-    });
+    const discovery = zulipMessageActions.describeMessageTool({ cfg });
+    expect(discovery?.schema).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          actions: ["channel-delete", "delete", "unsend"],
+          properties: { confirm: expect.objectContaining({ type: "boolean" }) },
+        }),
+      ]),
+    );
   });
 
   it.each([
     ["delete", { messageId: "123", confirm: true }],
+    ["unsend", { messageId: "123", confirm: true }],
     ["channel-delete", { streamId: "general", confirm: true }],
   ] as const)("does not send Zulip requests for %s dry runs", async (action, params) => {
     const fetchImpl = vi.fn<typeof fetch>();
@@ -116,44 +131,20 @@ describe("destructive action confirmation", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it.each([
-    ["user-deactivate", { userId: "42", confirm: true }],
-    ["org-settings-edit", { settings: { name: "X" }, confirm: true }],
-  ] as const)("does not send Zulip requests for hidden %s dry runs", async (action, params) => {
-    const adminCfg: OpenClawConfig = {
-      channels: {
-        zulip: {
-          apiKey: "secret",
-          email: "bot@example.test",
-          url: "https://zulip.example.test",
-          enableAdminActions: true,
-        },
-      },
-    };
-    const fetchImpl = vi.fn<typeof fetch>();
-    vi.stubGlobal("fetch", fetchImpl);
-    const result = await zulipMessageActions.handleAction?.({
-      channel: "zulip",
-      action: action as CoreAction,
-      cfg: adminCfg,
-      params,
-      dryRun: true,
-    });
-    expect(result?.details).toMatchObject({ ok: true, dryRun: true, action });
-    expect(fetchImpl).not.toHaveBeenCalled();
-  });
-
-  it("succeeds delete when confirm is true and all other gates pass", async () => {
-    const { result, fetchImpl } = await runAction("delete", {
-      messageId: "123",
-      confirm: true,
-    });
-    expect(result?.details).toMatchObject({ ok: true, deleted: "123" });
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchImpl.mock.calls[0] ?? [];
-    expect(String(url)).toContain("/messages/123");
-    expect(init?.method).toBe("DELETE");
-  });
+  it.each(["delete", "unsend"] as const)(
+    "succeeds %s when confirm is true and all other gates pass",
+    async (action) => {
+      const { result, fetchImpl } = await runAction(action, {
+        messageId: "123",
+        confirm: true,
+      });
+      expect(result?.details).toMatchObject({ ok: true, deleted: "123" });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchImpl.mock.calls[0] ?? [];
+      expect(String(url)).toContain("/messages/123");
+      expect(init?.method).toBe("DELETE");
+    },
+  );
 
   it("succeeds channel-delete when confirm is true and all other gates pass", async () => {
     const fetchImpl = vi
@@ -176,97 +167,171 @@ describe("destructive action confirmation", () => {
     expect(result?.details).toMatchObject({ ok: true, streamId: "7" });
   });
 
-  it("cannot bypass admin check via confirmation on user-deactivate", async () => {
-    const adminCfg: OpenClawConfig = {
-      channels: {
-        zulip: {
-          apiKey: "secret",
-          email: "bot@example.test",
-          url: "https://zulip.example.test",
-          enableAdminActions: true,
-        },
-      },
-    };
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      jsonResponse({
-        result: "success",
-        user: { user_id: 1, is_admin: false },
-      }),
-    );
-    vi.stubGlobal("fetch", fetchImpl);
-    await expect(
-      zulipMessageActions.handleAction?.({
-        channel: "zulip",
-        action: "user-deactivate" as CoreAction,
-        cfg: adminCfg,
-        params: { userId: "42", confirm: true },
-      }),
-    ).rejects.toThrow("admin privileges");
-  });
-
-  it("cannot bypass enableAdminActions via confirmation on org-settings-edit", async () => {
-    const lockedCfg: OpenClawConfig = {
-      channels: {
-        zulip: {
-          apiKey: "secret",
-          email: "bot@example.test",
-          url: "https://zulip.example.test",
-          enableAdminActions: false,
-        },
-      },
-    };
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      jsonResponse({ result: "success", user: { user_id: 1, is_admin: true } }),
-    );
-    vi.stubGlobal("fetch", fetchImpl);
-    await expect(
-      zulipMessageActions.handleAction?.({
-        channel: "zulip",
-        action: "org-settings-edit" as CoreAction,
-        cfg: lockedCfg,
-        params: { settings: { name: "X" }, confirm: true },
-      }),
-    ).rejects.toThrow("enableAdminActions");
-  });
-
-  it("cannot bypass enableAdminActions via confirmation on user-deactivate", async () => {
+  it.each<HiddenAction>([
+    "channel-subscribe",
+    "invite",
+    "resolve-topic",
+    "user-presence",
+    "user-deactivate",
+    "user-reactivate",
+    "org-settings",
+    "org-settings-edit",
+  ])("rejects hidden action %s before calling Zulip", async (action) => {
     const fetchImpl = vi.fn<typeof fetch>();
-    vi.stubGlobal("fetch", fetchImpl);
+    await expect(runAction(action, {}, { fetchImpl })).rejects.toThrow(
+      `Action ${action} is not supported`,
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe("action capability consistency", () => {
+  it("advertises the shared action list and supports exactly plugin-handled actions", () => {
+    expect(zulipMessageActions.describeMessageTool({ cfg }).actions).toEqual(
+      ZULIP_ADVERTISED_ACTIONS,
+    );
+    for (const action of ZULIP_ADVERTISED_ACTIONS) {
+      expect(zulipMessageActions.supportsAction?.({ action })).toBe(action !== "poll");
+    }
+  });
+
+  it.each(["ban", "rename-group", "set-group-icon"] as CoreAction[])(
+    "does not claim unadvertised canonical action %s",
+    (action) => {
+      expect(zulipMessageActions.supportsAction?.({ action })).toBe(false);
+    },
+  );
+
+  it("rejects the core-owned poll action before credential or network access", async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
     await expect(
-      zulipMessageActions.handleAction?.({
-        channel: "zulip",
-        action: "user-deactivate" as CoreAction,
-        cfg,
-        params: { userId: "42", confirm: true },
-      }),
-    ).rejects.toThrow("enableAdminActions");
+      runAction("poll", {}, { cfg: {}, fetchImpl }),
+    ).rejects.toThrow("Action poll is not supported");
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it("cannot bypass Zulip admin check via confirmation on org-settings-edit", async () => {
-    const adminCfg: OpenClawConfig = {
+  it("discovers actions for the requested configured account", () => {
+    const namedAccountConfig: OpenClawConfig = {
       channels: {
         zulip: {
-          apiKey: "secret",
-          email: "bot@example.test",
-          url: "https://zulip.example.test",
-          enableAdminActions: true,
+          accounts: {
+            primary: {
+              apiKey: "named-secret",
+              email: "named@example.test",
+              url: "https://named.example.test",
+            },
+          },
         },
       },
     };
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      jsonResponse({ result: "success", user: { user_id: 1, is_admin: false } }),
+    expect(
+      zulipMessageActions.describeMessageTool({
+        cfg: namedAccountConfig,
+        accountId: "primary",
+      }).actions,
+    ).toEqual(ZULIP_ADVERTISED_ACTIONS);
+    expect(zulipMessageActions.describeMessageTool({ cfg: namedAccountConfig }).actions).toEqual(
+      [],
     );
-    vi.stubGlobal("fetch", fetchImpl);
-    await expect(
-      zulipMessageActions.handleAction?.({
-        channel: "zulip",
-        action: "org-settings-edit" as CoreAction,
-        cfg: adminCfg,
-        params: { settings: { name: "X" }, confirm: true },
+  });
+
+  it("contributes every Zulip-only handler parameter under its action scope", () => {
+    const discovery = zulipMessageActions.describeMessageTool({ cfg });
+    const contributions = Array.isArray(discovery?.schema) ? discovery.schema : [];
+    const propertiesFor = (action: CoreAction) =>
+      Object.assign(
+        {},
+        ...contributions
+          .filter((entry) => entry.actions?.includes(action))
+          .map((entry) => entry.properties),
+      ) as Record<string, unknown>;
+
+    expect(propertiesFor("channel-list")).toHaveProperty("includeAllPublic");
+    expect(propertiesFor("channel-create")).toMatchObject({
+      description: { type: "string" },
+      principals: { type: "array" },
+      announce: { type: "boolean" },
+      inviteOnly: { type: "boolean" },
+      isWebPublic: { type: "boolean" },
+      isDefaultStream: { type: "boolean" },
+      historyPublicToSubscribers: { type: "boolean" },
+    });
+    expect(propertiesFor("channel-edit")).toMatchObject({
+      description: { type: "string" },
+      newName: { type: "string" },
+      isPrivate: { type: "boolean" },
+      isWebPublic: { type: "boolean" },
+      isDefaultStream: { type: "boolean" },
+      historyPublicToSubscribers: { type: "boolean" },
+    });
+    expect(propertiesFor("react")).toMatchObject({
+      emojiCode: { type: "string" },
+      reactionType: { type: "string" },
+    });
+  });
+});
+
+describe("reachable action routes", () => {
+  it.each([
+    ["send", { to: "user:person@example.test", message: "hello" }],
+    ["channel-create", { name: "new-stream", description: "description" }],
+    ["channel-edit", { channelId: "7", newName: "renamed" }],
+    ["edit", { messageId: "123", message: "replacement" }],
+    ["pin", { messageId: "123" }],
+    ["unpin", { messageId: "123" }],
+  ] as const)("keeps %s dry runs network-free", async (action, params) => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const { result } = await runAction(action, params, { dryRun: true, fetchImpl });
+    expect(result?.details).toMatchObject({ ok: true, dryRun: true, action });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["channel-list", { includeAllPublic: true }, "/users/me/subscriptions"],
+    ["read", { to: "stream:general:topic", limit: 3 }, "/messages?"],
+    ["member-info", { userId: "42" }, "/users/42"],
+    ["search", { query: "needle", stream: "general" }, "/messages?"],
+  ] as const)("routes %s to its Zulip read endpoint", async (action, params, path) => {
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () =>
+      jsonResponse({
+        result: "success",
+        subscriptions: [],
+        streams: [],
+        messages: [],
+        user: { user_id: 42 },
       }),
-    ).rejects.toThrow("admin privileges");
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    );
+    const { result } = await runAction(action, params, { fetchImpl });
+    expect(result?.details).toMatchObject({ ok: true });
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toContain(path);
+  });
+
+  it.each(["pin", "unpin"] as const)(
+    "rejects malformed %s message ids without truncating them",
+    async (action) => {
+      const fetchImpl = vi.fn<typeof fetch>();
+      await expect(runAction(action, { messageId: "123junk" }, { fetchImpl })).rejects.toThrow(
+        "Invalid messageId: 123junk",
+      );
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ["send", { to: "user:person@example.test", message: "hello" }, "/messages", "POST"],
+    ["channel-create", { name: "new-stream", announce: true }, "/users/me/subscriptions", "POST"],
+    ["channel-edit", { channelId: "7", newName: "renamed" }, "/streams/7", "PATCH"],
+    ["edit", { messageId: "123", message: "replacement" }, "/messages/123", "PATCH"],
+    ["pin", { messageId: "123" }, "/messages/flags", "POST"],
+    ["unpin", { messageId: "123" }, "/messages/flags", "POST"],
+  ] as const)("routes %s mutations to the expected endpoint", async (action, params, path, method) => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockImplementation(async () => jsonResponse({ result: "success", id: 99 }));
+    await runAction(action, params, { fetchImpl });
+    const [url, init] = fetchImpl.mock.calls[0] ?? [];
+    expect(String(url)).toContain(path);
+    expect(init?.method).toBe(method);
   });
 });
 

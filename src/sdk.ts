@@ -1,6 +1,11 @@
 export type { ChannelPlugin, OpenClawConfig, OpenClawPluginApi, PluginRuntime } from "openclaw/plugin-sdk/core";
 export { emptyPluginConfigSchema } from "openclaw/plugin-sdk/core";
-export type { ChannelAccountSnapshot, ChannelMessageActionAdapter, ChannelMessageActionName } from "openclaw/plugin-sdk/channel-contract";
+export type {
+  ChannelAccountSnapshot,
+  ChannelMessageActionAdapter,
+  ChannelMessageActionName,
+  ChannelMessageToolSchemaContribution,
+} from "openclaw/plugin-sdk/channel-contract";
 export type { ReplyPayload } from "openclaw/plugin-sdk/reply-runtime";
 export type { MessagePresentation } from "openclaw/plugin-sdk/interactive-runtime";
 export { normalizeMessagePresentation, resolveMessagePresentationActionValue } from "openclaw/plugin-sdk/interactive-runtime";

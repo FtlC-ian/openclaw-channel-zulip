@@ -1,6 +1,6 @@
 # openclaw-channel-zulip
 
-> Zulip channel plugin for [OpenClaw](https://github.com/openclaw/openclaw) — concurrent message processing, native session conversation binding, file uploads, approval hooks, and full actions API.
+> Zulip channel plugin for [OpenClaw](https://github.com/openclaw/openclaw) — concurrent message processing, native session conversation binding, file uploads, approval hooks, and native message actions.
 
 [![npm version](https://img.shields.io/npm/v/openclaw-channel-zulip.svg)](https://www.npmjs.com/package/openclaw-channel-zulip)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -12,7 +12,7 @@
 - ✅ **Concurrent message processing** — events fire-and-forget with staggered start times (200 ms apart), so a burst of incoming messages is handled in parallel rather than queued sequentially
 - ✅ **Native session conversation binding** — stream topics resolve through the SDK session-conversation hook instead of hand-rolled session key grammar
 - ✅ **File uploads** — inbound Zulip file attachments are downloaded and forwarded to the AI pipeline; outbound media is uploaded via Zulip's file upload API
-- ✅ **Full actions API** — react, edit, delete, archive, move messages/topics; subscribe/unsubscribe streams; user management (requires `enableAdminActions: true`)
+- ✅ **Native message actions** — send, read, search, react, edit, delete/unsend, pin/unpin, polls, member lookup, and stream list/create/edit/delete with an [audited capability matrix](docs/ACTION_CAPABILITIES.md)
 - ✅ **Topic directives** — reply topics can be scoped per-message, enabling organized thread-based conversations
 - ✅ **Multi-account support** — run multiple Zulip bot accounts in one OpenClaw instance via the `accounts` map
 - ✅ **DM & channel policies** — open / pairing / allowlist / disabled per account
@@ -195,7 +195,8 @@ Add the plugin id to `plugins.allow` in `~/.openclaw/openclaw.json`:
         "idleMs": 1000
       },
 
-      // Enable admin-level actions (move/archive streams, manage users)
+      // Legacy compatibility field. Accepted but intentionally has no runtime effect.
+      // Provider-specific operations need a separately reviewed Zulip-owned agent tool.
       "enableAdminActions": false,
 
       // Multi-account: uncomment to run multiple bots

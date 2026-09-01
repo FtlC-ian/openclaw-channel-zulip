@@ -274,6 +274,10 @@
           "label": "Mark Successfully Handled Messages Read",
           "description": "Opt in to marking an inbound message read only after successful dispatch settlement and durable receive completion."
         },
+        "enableAdminActions": {
+          "label": "Legacy Admin Actions Flag",
+          "description": "Accepted for configuration compatibility but intentionally inert; provider-specific operations need a separately reviewed Zulip-owned agent tool."
+        },
         "reactions.enabled": {
           "label": "Lifecycle Reaction Indicators"
         },
@@ -325,6 +329,10 @@
     },
     "requireMention": {
       "label": "Require @mention in Streams"
+    },
+    "enableAdminActions": {
+      "label": "Legacy Admin Actions Flag",
+      "description": "Accepted for configuration compatibility but intentionally inert; provider-specific operations need a separately reviewed Zulip-owned agent tool."
     },
     "reactions.enabled": {
       "label": "Lifecycle Reaction Indicators"

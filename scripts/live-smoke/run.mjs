@@ -220,6 +220,47 @@ export async function waitForZulipMessageRead(client, id, timeoutMs, signal) {
   throw new Error("Handled Zulip message did not become read before timeout");
 }
 
+export async function enableHandledReadForSmokeConfig(configPath) {
+  const handle = await open(configPath, constants.O_RDWR | constants.O_NOFOLLOW);
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile()) throw new Error("Smoke OpenClaw config must be a regular file");
+    const config = JSON.parse(await handle.readFile("utf8"));
+    const zulip = config?.channels?.zulip;
+    if (!zulip || typeof zulip !== "object" || Array.isArray(zulip)) {
+      throw new Error("Smoke OpenClaw config must contain a Zulip channel object");
+    }
+    zulip.markHandledRead = true;
+    const accounts = zulip.accounts ?? {};
+    if (!accounts || typeof accounts !== "object" || Array.isArray(accounts)) {
+      throw new Error("Smoke Zulip accounts must be an object");
+    }
+    for (const account of Object.values(accounts)) {
+      if (!account || typeof account !== "object" || Array.isArray(account)) {
+        throw new Error("Smoke Zulip account entries must be objects");
+      }
+      account.markHandledRead = true;
+    }
+    const serialized = Buffer.from(JSON.stringify(config));
+    await handle.truncate(0);
+    let offset = 0;
+    while (offset < serialized.length) {
+      const { bytesWritten } = await handle.write(
+        serialized,
+        offset,
+        serialized.length - offset,
+        offset,
+      );
+      if (bytesWritten <= 0) throw new Error("Failed to write smoke OpenClaw config");
+      offset += bytesWritten;
+    }
+    await handle.chmod(0o600);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
 export async function countCompletedChildTranscripts(stateDir, marker) {
   return (await inspectChildTranscripts(stateDir, marker)).completedExact;
 }
@@ -973,6 +1014,12 @@ function command(value) { return `SMOKE_COMMAND\n${value}\nEND_SMOKE_COMMAND`; }
 
 async function main() {
   const env = validateEnvironment(process.env);
+  if (env.ZULIP_SMOKE_ENABLE_DURABLE === "1") {
+    const configPath = env.OPENCLAW_CONFIG_PATH?.trim();
+    if (!configPath) throw new Error("OPENCLAW_CONFIG_PATH is required for durable smoke");
+    await enableHandledReadForSmokeConfig(configPath);
+    process.env.ZULIP_HANDLED_READ_DIAGNOSTICS = "1";
+  }
   const timeoutMs = Number(env.SMOKE_SCENARIO_TIMEOUT_MS || 120000);
   if (!Number.isFinite(timeoutMs) || timeoutMs < 10000 || timeoutMs > 300000) throw new Error("Invalid SMOKE_SCENARIO_TIMEOUT_MS");
   const runId = `smoke-${env.SMOKE_TESTED_SHA.slice(0, 8)}-${randomBytes(5).toString("hex")}`;

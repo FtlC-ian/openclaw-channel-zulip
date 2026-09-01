@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { assertFinalPrivateTypingStop, assertMessageRemainsExact, authenticatedUserId, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, drainEventQueueUntilQuiet, DURABLE_OFFLINE_DELAY_MS, eventOccursBefore, EventQueue, extractExactUploadUrl, Gateway, hasFinalPrivateTypingStop, hasProvableMinimumMessageDelay, inspectChildTranscripts, inspectLifecycleTurnEvidence, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactPollMessage, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, isUsageCountedTranscriptName, lifecycleEvidenceCounts, lifecycleSummary, normalizeScenarioError, parseZulipHandledReadDiagnostic, parseZulipSubagentDiagnostic, probeRunnerLocalGatewayHealth, readZulipMessageFlags, redactError, resolveUploadUrl, signalProcessTree, subagentCompletedBeforeReply, validateEnvironment, waitForProcessTreeExit, waitForZulipMessageRead, writeGatewayGeneration } from "./run.mjs";
+import { assertFinalPrivateTypingStop, assertMessageRemainsExact, authenticatedUserId, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, drainEventQueueUntilQuiet, DURABLE_OFFLINE_DELAY_MS, enableHandledReadForSmokeConfig, eventOccursBefore, EventQueue, extractExactUploadUrl, Gateway, hasFinalPrivateTypingStop, hasProvableMinimumMessageDelay, inspectChildTranscripts, inspectLifecycleTurnEvidence, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactPollMessage, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, isUsageCountedTranscriptName, lifecycleEvidenceCounts, lifecycleSummary, normalizeScenarioError, parseZulipHandledReadDiagnostic, parseZulipSubagentDiagnostic, probeRunnerLocalGatewayHealth, readZulipMessageFlags, redactError, resolveUploadUrl, signalProcessTree, subagentCompletedBeforeReply, validateEnvironment, waitForProcessTreeExit, waitForZulipMessageRead, writeGatewayGeneration } from "./run.mjs";
 import { selectSmokeModel } from "./prepare-config.mjs";
 import { stageBundledPlugin } from "./stage-bundled-plugin.mjs";
 
@@ -295,6 +295,40 @@ test("reads message flags and waits for the handled read transition", async () =
     readZulipMessageFlags({ request: async () => ({ message: {} }) }, "42"),
     /flags were unavailable/,
   );
+});
+
+test("enables handled-read proof in the checked-out durable smoke harness", async () => {
+  const root = await mkdtemp(join(tmpdir(), "zulip-smoke-config-"));
+  const configPath = join(root, "openclaw.json");
+  try {
+    await writeFile(configPath, JSON.stringify({
+      channels: { zulip: { markHandledRead: false, accounts: {
+        primary: { markHandledRead: false }, secondary: {},
+      } } },
+    }), { mode: 0o644 });
+    await enableHandledReadForSmokeConfig(configPath);
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    assert.equal(config.channels.zulip.markHandledRead, true);
+    assert.equal(config.channels.zulip.accounts.primary.markHandledRead, true);
+    assert.equal(config.channels.zulip.accounts.secondary.markHandledRead, true);
+    assert.equal((await stat(configPath)).mode & 0o777, 0o600);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("refuses a symlinked durable smoke config", async () => {
+  const root = await mkdtemp(join(tmpdir(), "zulip-smoke-config-link-"));
+  const targetPath = join(root, "target.json");
+  const linkPath = join(root, "openclaw.json");
+  try {
+    await writeFile(targetPath, JSON.stringify({ channels: { zulip: {} } }), { mode: 0o600 });
+    await symlink(targetPath, linkPath);
+    await assert.rejects(enableHandledReadForSmokeConfig(linkPath));
+    assert.equal(JSON.parse(await readFile(targetPath, "utf8")).channels.zulip.markHandledRead, undefined);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("captures every attributable reply id before an early failure", () => {
@@ -1176,7 +1210,6 @@ test("workflow is manual, protected, pinned, and bounded", async () => {
   assert.match(workflow, /plugin\.origin !== "bundled"/);
   assert.match(workflow, /plugin\.status !== "loaded"/);
   assert.match(workflow, /ZULIP_SMOKE_ENABLE_DURABLE: '1'/);
-  assert.match(workflow, /ZULIP_HANDLED_READ_DIAGNOSTICS: '1'/);
   assert.match(workflow, /SMOKE_OPENCLAW_VERSION/);
   assert.match(workflow, /SMOKE_PLUGIN_VERSION/);
   assert.match(agentProtocol, /For `durable VALUE`, wait at least 18 seconds/);
@@ -1188,8 +1221,6 @@ test("workflow is manual, protected, pinned, and bounded", async () => {
     workflow.indexOf("- name: Run bounded live scenarios"),
     workflow.indexOf("- name: Record release evidence"),
   );
-  assert.match(prepareStep, /markHandledRead = true/);
-  assert.match(prepareStep, /must enable handled-message read state/);
   assert.equal(workflow.match(/secrets\.OPENCLAW_SMOKE_CONFIG_JSON/g)?.length, 1);
   assert.match(prepareStep, /secrets\.OPENCLAW_SMOKE_CONFIG_JSON/);
   for (const secret of ["ZULIP_URL", "ZULIP_SMOKE_USER_EMAIL", "ZULIP_SMOKE_USER_API_KEY", "ZULIP_SMOKE_BOT_EMAIL", "ZULIP_SMOKE_BOT_API_KEY"]) {

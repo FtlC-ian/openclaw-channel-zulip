@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Features
+- **Trusted durable live smoke**: Stage protected exact-SHA candidates through OpenClaw's bundled-plugin trust path and require interruption/replay/completion/deduplication evidence with exact host and plugin versions.
 - **Per-stream inbound policy**: Add deterministic name/ID `streamOverrides` for inbound activation, mention requirements, and allowed/excluded topics while preserving legacy `streams`, `topics`, and `streamTopics` behavior.
 - **Early inbound filtering**: Resolve stream policy before durable acceptance, attachment downloads, reactions, typing, routing, or agent dispatch. Outbound access remains independent.
 - **DM session isolation**: Force realm/account/sender-scoped direct-message sessions independently of global `session.dmScope`, and document deterministic migration plus host-owned idle rotation.

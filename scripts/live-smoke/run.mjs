@@ -1160,7 +1160,7 @@ async function main() {
     });
     else skipScenario(
       "durable-receive-completion-deduplication",
-      "skipped because protected checkout smoke installs the candidate as a local, non-trusted plugin; durable plugin keyed state requires a bundled or trusted official install",
+      "skipped because durable smoke is disabled; durable plugin keyed state requires a bundled or trusted official install",
     );
   } catch (error) {
     runError = error;

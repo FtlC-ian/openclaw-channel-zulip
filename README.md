@@ -374,6 +374,12 @@ same-repository candidate branch so live-only fixes can be tested repeatedly
 before one final pull request is opened. Dedicated-realm credentials remain
 unavailable until approval through the protected `zulip-live-smoke` GitHub Environment. See
 [the release checklist](docs/RELEASE_CHECKLIST.md) for setup and evidence rules.
+The workflow stages the already-authorized, exact-SHA candidate inside the
+locked OpenClaw package's bundled extension directory. It verifies that the
+host reports Zulip as a loaded bundled plugin before credentials are used, then
+runs durable receive interruption, replay, completion, and deduplication with
+plugin keyed state enabled. This staging exists only in the ephemeral runner;
+release installation remains the separately published plugin package.
 
 The scheduled **OpenClaw compatibility (advisory)** workflow is intentionally separate from release gating. Once a week it chooses the first eligible release from OpenClaw's `latest` and `extended-stable` npm channels that has been published for at least 24 hours, then installs and tests it in a temporary copy of the plugin. That temporary install and the packed-artifact smoke test enforce pnpm's 24-hour release-age rule and may update only disposable lockfiles; they never change or commit this repository's lockfile. A failure identifies compatibility work to investigate; it does not replace the locked CI evidence required for a release.
 

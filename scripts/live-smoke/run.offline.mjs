@@ -9,6 +9,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { assertFinalPrivateTypingStop, assertMessageRemainsExact, authenticatedUserId, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, drainEventQueueUntilQuiet, eventOccursBefore, EventQueue, extractExactUploadUrl, Gateway, hasFinalPrivateTypingStop, hasProvableMinimumMessageDelay, inspectChildTranscripts, inspectLifecycleTurnEvidence, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactPollMessage, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, isUsageCountedTranscriptName, lifecycleEvidenceCounts, lifecycleSummary, normalizeScenarioError, parseZulipSubagentDiagnostic, probeRunnerLocalGatewayHealth, redactError, resolveUploadUrl, signalProcessTree, subagentCompletedBeforeReply, validateEnvironment, waitForProcessTreeExit, writeGatewayGeneration } from "./run.mjs";
 import { selectSmokeModel } from "./prepare-config.mjs";
+import { stageBundledPlugin } from "./stage-bundled-plugin.mjs";
 
 const ACTOR_USER_ID = "42";
 const BOT_USER_ID = "91";
@@ -1148,6 +1149,14 @@ test("workflow is manual, protected, pinned, and bounded", async () => {
   assert.match(workflow, /permissions:\n\s+contents: read/);
   assert.match(workflow, /timeout-minutes: 35/);
   assert.doesNotMatch(workflow, /timeout-minutes: 35\n\s+env:/);
+  assert.match(workflow, /Stage candidate through the bundled-plugin trust path/);
+  assert.match(workflow, /node scripts\/live-smoke\/stage-bundled-plugin\.mjs/);
+  assert.doesNotMatch(workflow, /plugins install -l/);
+  assert.match(workflow, /plugin\.origin !== "bundled"/);
+  assert.match(workflow, /plugin\.status !== "loaded"/);
+  assert.match(workflow, /ZULIP_SMOKE_ENABLE_DURABLE: '1'/);
+  assert.match(workflow, /SMOKE_OPENCLAW_VERSION/);
+  assert.match(workflow, /SMOKE_PLUGIN_VERSION/);
   const prepareStep = workflow.slice(
     workflow.indexOf("- name: Prepare isolated OpenClaw state"),
     workflow.indexOf("- name: Run bounded live scenarios"),
@@ -1176,4 +1185,63 @@ test("workflow is manual, protected, pinned, and bounded", async () => {
   assert.match(agentProtocol, /\.smoke-gateway-generation/);
   assert.match(agentProtocol, /at least six\nseconds/);
   for (const use of workflow.matchAll(/uses:\s+([^\s]+)/g)) assert.match(use[1], /@[0-9a-f]{40}$/);
+});
+
+test("stages a built candidate only inside the host bundled extension root", async () => {
+  const root = await mkdtemp(join(tmpdir(), "zulip-smoke-bundled-stage-"));
+  const hostRoot = join(root, "host");
+  const pluginRoot = join(root, "candidate");
+  try {
+    await mkdir(join(hostRoot, "dist", "extensions"), { recursive: true });
+    await mkdir(join(pluginRoot, "dist"), { recursive: true });
+    await writeFile(join(hostRoot, "package.json"), JSON.stringify({ name: "openclaw", version: "2026.7.1-2" }));
+    await writeFile(join(pluginRoot, "package.json"), JSON.stringify({
+      name: "openclaw-channel-zulip",
+      version: "2026.5.26",
+      openclaw: { extensions: ["./dist/index.js"] },
+    }));
+    await writeFile(join(pluginRoot, "openclaw.plugin.json"), JSON.stringify({ id: "zulip" }));
+    await writeFile(join(pluginRoot, "dist", "index.js"), "export default {};\n");
+
+    const result = await stageBundledPlugin({ hostRoot, pluginRoot });
+
+    assert.equal(result.pluginId, "zulip");
+    assert.equal(result.pluginVersion, "2026.5.26");
+    assert.equal(result.openclawVersion, "2026.7.1-2");
+    assert.equal(await readFile(join(hostRoot, "dist", "extensions", "zulip", "dist", "index.js"), "utf8"), "export default {};\n");
+    assert.equal((await stat(join(pluginRoot, "dist", "index.js"))).isFile(), true);
+    await assert.rejects(
+      stageBundledPlugin({ hostRoot, pluginRoot }),
+      /already contains a bundled Zulip plugin/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("refuses symbolic links while staging a bundled candidate", async () => {
+  const root = await mkdtemp(join(tmpdir(), "zulip-smoke-bundled-link-"));
+  const hostRoot = join(root, "host");
+  const pluginRoot = join(root, "candidate");
+  try {
+    await mkdir(join(hostRoot, "dist", "extensions"), { recursive: true });
+    await mkdir(join(pluginRoot, "dist"), { recursive: true });
+    await writeFile(join(hostRoot, "package.json"), JSON.stringify({ name: "openclaw", version: "2026.7.1-2" }));
+    await writeFile(join(pluginRoot, "package.json"), JSON.stringify({
+      name: "openclaw-channel-zulip",
+      version: "2026.5.26",
+      openclaw: { extensions: ["./dist/index.js"] },
+    }));
+    await writeFile(join(pluginRoot, "openclaw.plugin.json"), JSON.stringify({ id: "zulip" }));
+    await writeFile(join(root, "outside.js"), "export default {};\n");
+    await symlink(join(root, "outside.js"), join(pluginRoot, "dist", "index.js"));
+
+    await assert.rejects(
+      stageBundledPlugin({ hostRoot, pluginRoot }),
+      /Candidate must be built|Refusing to stage symbolic link/,
+    );
+    await assert.rejects(stat(join(hostRoot, "dist", "extensions", "zulip")), /ENOENT/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

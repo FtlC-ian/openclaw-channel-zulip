@@ -34,7 +34,10 @@ Only the repository owner can dispatch a branch candidate, the candidate must
 be reachable from the named same-repository branch, and environment approval is
 still required before credentials are released.
 
-The isolated configuration must enable the checked-out local Zulip plugin, use
+The workflow must stage the exact checked-out candidate through
+`scripts/live-smoke/stage-bundled-plugin.mjs` and verify that OpenClaw reports
+the Zulip plugin with `origin: bundled` and `status: loaded`; it must not install
+the checkout as a local linked plugin. The isolated configuration must use
 the dedicated bot account, allow DMs from the smoke actor, monitor the smoke
 stream with an open group policy, and disable stream mention gating with
 `chatmode: "onmessage"` and `requireMention: false` at the root and for every
@@ -52,3 +55,7 @@ transcript and reads the edited Zulip message before and after its required
 four-second visibility window. Durable replay uses a random generation value
 written only after the old gateway process group is fully down; the replacement
 must read and return that value, so a queued pre-restart reply cannot pass.
+The protected workflow enables the durable scenario unconditionally. Its
+summary records the exact candidate SHA, plugin version, OpenClaw version, and
+run URL; the console report must show
+`PASS durable-receive-completion-deduplication` rather than `SKIP`.

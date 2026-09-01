@@ -64,6 +64,8 @@ jobs:
         run: |
           pnpm install --frozen-lockfile --config.minimumReleaseAge=1440
           pnpm run build
+      - name: Stage candidate through the bundled-plugin trust path
+        run: node scripts/live-smoke/stage-bundled-plugin.mjs
       - name: Prepare isolated OpenClaw state
         env:
           OPENCLAW_SMOKE_CONFIG_JSON: ${{ secrets.OPENCLAW_SMOKE_CONFIG_JSON }}
@@ -106,9 +108,22 @@ jobs:
           selectSmokeModel(config, targetId);
           writeFileSync(process.env.OPENCLAW_CONFIG_PATH, JSON.stringify(config), { mode: 0o600 });
           NODE
-          pnpm exec openclaw plugins install -l "$GITHUB_WORKSPACE"
           pnpm exec openclaw config set agents.defaults.workspace "$GITHUB_WORKSPACE/scripts/live-smoke/agent-workspace"
           pnpm exec openclaw config validate
+          plugin_list="$(mktemp "$RUNNER_TEMP/zulip-plugin-list.XXXXXX.json")"
+          trap 'rm -f "$plugin_list"' EXIT
+          pnpm exec openclaw plugins list --json > "$plugin_list"
+          node --input-type=module - "$plugin_list" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const report = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          const plugin = report.plugins?.find((entry) => entry.id === "zulip");
+          if (!plugin || plugin.origin !== "bundled" || plugin.status !== "loaded") {
+            throw new Error("Protected smoke requires the loaded Zulip candidate to have bundled origin");
+          }
+          if (plugin.version !== process.env.SMOKE_PLUGIN_VERSION) {
+            throw new Error("Loaded Zulip version does not match the staged candidate");
+          }
+          NODE
       - name: Run bounded live scenarios
         env:
           ZULIP_URL: ${{ secrets.ZULIP_URL }}
@@ -123,6 +138,7 @@ jobs:
           OPENCLAW_STATE_DIR: ${{ runner.temp }}/openclaw-smoke/state
           SMOKE_GATEWAY_PORT: '18789'
           ZULIP_SUBAGENT_DIAGNOSTICS: '1'
+          ZULIP_SMOKE_ENABLE_DURABLE: '1'
         run: node scripts/live-smoke/run.mjs
       - name: Record release evidence
         if: always()
@@ -134,5 +150,7 @@ jobs:
             echo ""
             echo "- Result: ${{ job.status }}"
             echo "- Tested commit: \`$TESTED_SHA\`"
+            echo "- Plugin version: \`$SMOKE_PLUGIN_VERSION\`"
+            echo "- OpenClaw version: \`$SMOKE_OPENCLAW_VERSION\`"
             echo "- Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           } >> "$GITHUB_STEP_SUMMARY"

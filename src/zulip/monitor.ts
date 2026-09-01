@@ -389,6 +389,13 @@ const HANDLED_INBOUND_MESSAGE = Symbol("handled-inbound-message");
 const activeMonitorReactionCleanups = new Set<() => Promise<void>>();
 let monitorReactionShutdownStarted = false;
 
+function logHandledReadDiagnostic(event: string): void {
+  if (process.env.ZULIP_HANDLED_READ_DIAGNOSTICS !== "1") {
+    return;
+  }
+  process.stderr.write(`ZULIP_HANDLED_READ_DIAGNOSTIC event=${event}\n`);
+}
+
 export function startZulipMonitorReactionLifecycles(): void {
   monitorReactionShutdownStarted = false;
 }
@@ -1615,19 +1622,25 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
 
   const markHandledInboundMessageRead = async (message: ZulipMessage): Promise<void> => {
     if (account.config.markHandledRead !== true) {
+      logHandledReadDiagnostic("disabled");
       return;
     }
     const messageId = String(message.id ?? "");
     if (!messageId) {
+      logHandledReadDiagnostic("missing_id");
       return;
     }
     if (message.flags?.includes("read")) {
+      logHandledReadDiagnostic("already_read");
       return;
     }
     try {
+      logHandledReadDiagnostic("attempted");
       await handledReadBatcher.markRead(messageId);
+      logHandledReadDiagnostic("succeeded");
       logVerboseMessage(`zulip: marked handled inbound message ${messageId} read`);
     } catch (err) {
+      logHandledReadDiagnostic("failed");
       runtime.error?.(`zulip: failed to mark handled inbound message ${messageId} read: ${String(err)}`);
     }
   };
@@ -1678,6 +1691,9 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         return "pending-delivery";
       }
       if (manageDurableRecord) {
+        logHandledReadDiagnostic(
+          outcome === HANDLED_INBOUND_MESSAGE ? "delivery_handled" : "delivery_unhandled",
+        );
         try {
           await completeDurableInboundMessage(durableId, metadata);
         } catch (err) {

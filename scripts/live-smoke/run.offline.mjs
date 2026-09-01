@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { assertFinalPrivateTypingStop, assertMessageRemainsExact, authenticatedUserId, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, drainEventQueueUntilQuiet, DURABLE_OFFLINE_DELAY_MS, eventOccursBefore, EventQueue, extractExactUploadUrl, Gateway, hasFinalPrivateTypingStop, hasProvableMinimumMessageDelay, inspectChildTranscripts, inspectLifecycleTurnEvidence, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactPollMessage, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, isUsageCountedTranscriptName, lifecycleEvidenceCounts, lifecycleSummary, normalizeScenarioError, parseZulipSubagentDiagnostic, probeRunnerLocalGatewayHealth, readZulipMessageFlags, redactError, resolveUploadUrl, signalProcessTree, subagentCompletedBeforeReply, validateEnvironment, waitForProcessTreeExit, waitForZulipMessageRead, writeGatewayGeneration } from "./run.mjs";
+import { assertFinalPrivateTypingStop, assertMessageRemainsExact, authenticatedUserId, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, drainEventQueueUntilQuiet, DURABLE_OFFLINE_DELAY_MS, eventOccursBefore, EventQueue, extractExactUploadUrl, Gateway, hasFinalPrivateTypingStop, hasProvableMinimumMessageDelay, inspectChildTranscripts, inspectLifecycleTurnEvidence, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactPollMessage, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, isUsageCountedTranscriptName, lifecycleEvidenceCounts, lifecycleSummary, normalizeScenarioError, parseZulipHandledReadDiagnostic, parseZulipSubagentDiagnostic, probeRunnerLocalGatewayHealth, readZulipMessageFlags, redactError, resolveUploadUrl, signalProcessTree, subagentCompletedBeforeReply, validateEnvironment, waitForProcessTreeExit, waitForZulipMessageRead, writeGatewayGeneration } from "./run.mjs";
 import { selectSmokeModel } from "./prepare-config.mjs";
 import { stageBundledPlugin } from "./stage-bundled-plugin.mjs";
 
@@ -655,11 +655,13 @@ test("captures only bounded allowlisted gateway lifecycle diagnostics", () => {
   gateway.captureDiagnostics("ZULIP_SUBAGENT_DIAGNOSTIC event=run_ended binding_found=ABC123\n");
   gateway.captureDiagnostics("ZULIP_SUBAGENT_DIAGNOSTIC event=indicator_");
   gateway.captureDiagnostics("shown\n");
+  gateway.captureDiagnostics("ZULIP_HANDLED_READ_DIAGNOSTIC event=attempted\n");
   for (let index = 0; index < 250; index += 1) {
     gateway.captureDiagnostics("ZULIP_SUBAGENT_DIAGNOSTIC event=reaction_add_succeeded\n");
   }
 
   assert.equal(gateway.diagnostics[0], "ZULIP_SUBAGENT_DIAGNOSTIC event=indicator_shown");
+  assert.equal(gateway.diagnostics[1], "ZULIP_HANDLED_READ_DIAGNOSTIC event=attempted");
   assert.equal(gateway.diagnostics.length, 200);
   assert.equal(gateway.diagnostics.some((line) => line.includes("secret")), false);
 });
@@ -705,6 +707,9 @@ test("rejects unknown lifecycle diagnostic schemas and secret-shaped values", ()
   assert.equal(parseZulipSubagentDiagnostic("ZULIP_SUBAGENT_DIAGNOSTIC event=run_ended unknown=true"), undefined);
   assert.equal(parseZulipSubagentDiagnostic("ZULIP_SUBAGENT_DIAGNOSTIC event=run_ended binding_found=ABC123"), undefined);
   assert.equal(parseZulipSubagentDiagnostic("ZULIP_SUBAGENT_DIAGNOSTIC event=context_registered key_count=999 active_contexts=1"), undefined);
+  assert.equal(parseZulipHandledReadDiagnostic("ZULIP_HANDLED_READ_DIAGNOSTIC event=succeeded"), "ZULIP_HANDLED_READ_DIAGNOSTIC event=succeeded");
+  assert.equal(parseZulipHandledReadDiagnostic("ZULIP_HANDLED_READ_DIAGNOSTIC event=unknown"), undefined);
+  assert.equal(parseZulipHandledReadDiagnostic("ZULIP_HANDLED_READ_DIAGNOSTIC event=failed secret=ABC123"), undefined);
 });
 
 test("reconciles a placeholder update into cached message matching and cleanup attribution", async () => {
@@ -1171,6 +1176,7 @@ test("workflow is manual, protected, pinned, and bounded", async () => {
   assert.match(workflow, /plugin\.origin !== "bundled"/);
   assert.match(workflow, /plugin\.status !== "loaded"/);
   assert.match(workflow, /ZULIP_SMOKE_ENABLE_DURABLE: '1'/);
+  assert.match(workflow, /ZULIP_HANDLED_READ_DIAGNOSTICS: '1'/);
   assert.match(workflow, /SMOKE_OPENCLAW_VERSION/);
   assert.match(workflow, /SMOKE_PLUGIN_VERSION/);
   assert.match(agentProtocol, /For `durable VALUE`, wait at least 18 seconds/);

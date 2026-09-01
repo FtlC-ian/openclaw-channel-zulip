@@ -740,6 +740,22 @@ export function parseZulipSubagentDiagnostic(line) {
   return observed.size === Object.keys(schema).length ? line : undefined;
 }
 
+const zulipHandledReadDiagnosticEvents = new Set([
+  "delivery_handled",
+  "delivery_unhandled",
+  "disabled",
+  "missing_id",
+  "already_read",
+  "attempted",
+  "succeeded",
+  "failed",
+]);
+
+export function parseZulipHandledReadDiagnostic(line) {
+  const match = line.match(/^ZULIP_HANDLED_READ_DIAGNOSTIC event=([a-z_]+)$/);
+  return match && zulipHandledReadDiagnosticEvents.has(match[1]) ? line : undefined;
+}
+
 export class Gateway {
   constructor(port, {
     termTimeoutMs = 10000,
@@ -791,7 +807,8 @@ export class Gateway {
         } else if (newline < 0) {
           state.remainder = candidate;
         } else {
-          const diagnostic = parseZulipSubagentDiagnostic(candidate);
+          const diagnostic = parseZulipSubagentDiagnostic(candidate) ??
+            parseZulipHandledReadDiagnostic(candidate);
           if (diagnostic && this.diagnostics.length < 200) this.diagnostics.push(diagnostic);
           state.remainder = "";
         }

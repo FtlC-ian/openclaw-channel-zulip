@@ -150,6 +150,7 @@ jobs:
           OPENCLAW_STATE_DIR: ${{ runner.temp }}/openclaw-smoke/state
           SMOKE_GATEWAY_PORT: '18789'
           ZULIP_SUBAGENT_DIAGNOSTICS: '1'
+          ZULIP_HANDLED_READ_DIAGNOSTICS: '1'
           ZULIP_SMOKE_ENABLE_DURABLE: '1'
         run: node scripts/live-smoke/run.mjs
       - name: Record release evidence

@@ -1142,23 +1142,29 @@ async function main() {
       try {
         const oldGeneration = randomBytes(16).toString("hex");
         await writeGatewayGeneration(gatewayGenerationPath, oldGeneration);
+        console.log("durable-receive-completion-deduplication phase=send_command");
         const inboundId = await sendDm(command(`durable ${marker}`), signal);
         const commandEvent = await queue.waitFor((e) => e.type === "message" &&
           String(e.message?.id) === inboundId && sameUserId(e.message?.sender_id, actorUserId),
         timeoutMs, "durable command event", signal);
+        console.log(`durable-receive-completion-deduplication phase=command_observed message_id=${inboundId}`);
         await queue.waitFor((e) => e.type === "reaction" && e.op === "add" && String(e.message_id) === inboundId, timeoutMs, "durable accept signal", signal);
-        if ((await readZulipMessageFlags(bot, inboundId, signal)).includes("read")) {
+        const preInterruptionFlags = await readZulipMessageFlags(bot, inboundId, signal);
+        if (preInterruptionFlags.includes("read")) {
           throw new Error("Durable command became read before reply settlement and journal completion");
         }
+        console.log("durable-receive-completion-deduplication phase=accepted_unread");
         await delay(2000, undefined, { signal });
         if (captureReplies().length) {
           throw new Error("Durable reply completed before interruption; replay was not exercised");
         }
         await gateway.stop();
+        console.log("durable-receive-completion-deduplication phase=gateway_stopped");
         await delay(DURABLE_OFFLINE_DELAY_MS, undefined, { signal });
         const replacementGeneration = randomBytes(16).toString("hex");
         await writeGatewayGeneration(gatewayGenerationPath, replacementGeneration);
         await gateway.start(signal);
+        console.log("durable-receive-completion-deduplication phase=replacement_started");
         const replacementReply = `${marker}:${replacementGeneration}`;
         const reply = await queue.waitFor((e) => {
           if (!isAttributable(e)) return false;
@@ -1177,7 +1183,9 @@ async function main() {
           return true;
         }, timeoutMs, "durable replay reply", signal);
         messageIds.bot.add(String(reply.message.id));
+        console.log(`durable-receive-completion-deduplication phase=reply_observed message_id=${reply.message.id}`);
         await waitForZulipMessageRead(bot, inboundId, timeoutMs, signal);
+        console.log("durable-receive-completion-deduplication phase=read_observed");
         const settleDeadline = Date.now() + 10000;
         while (Date.now() < settleDeadline) { await queue.poll(signal); await delay(500, undefined, { signal }); }
         const replies = captureReplies();
@@ -1185,6 +1193,7 @@ async function main() {
         if (replies.length !== 1 || validReplies.length !== 1) {
           throw new Error(`Durable receive produced ${replies.length} attributable replies (${validReplies.length} valid); expected exactly one valid replacement reply`);
         }
+        console.log("durable-receive-completion-deduplication phase=complete");
       } finally {
         captureReplies();
       }

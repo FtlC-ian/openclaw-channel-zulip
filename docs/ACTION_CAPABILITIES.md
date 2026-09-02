@@ -18,14 +18,20 @@ and plugin-handler allowlist so those surfaces cannot silently diverge.
 | `unsend` | plugin alias for `delete` | `to` | Zulip credential permission | `confirm: true` | yes | action tests |
 | `search` | plugin | none | configured account credential | no | host read-only | action tests |
 | `member-info` | plugin | none | configured account credential | no | host read-only | action tests |
-| `pin` | plugin | `to` | Zulip credential permission | no | yes | action tests |
-| `unpin` | plugin | `to` | Zulip credential permission | no | yes | action tests |
 | `poll` | OpenClaw core via `outbound.sendPoll` | `to` | configured account credential | no | host-owned | channel/outbound tests |
 
 The adapter does not add a separate owner/trusted-requester gate to mutable
 actions. Zulip applies the permissions of the selected bot credential. The
 three destructive actions additionally require the exact boolean
 `confirm: true` before any Zulip request.
+
+## Unsupported shared actions
+
+OpenClaw's shared `pin` and `unpin` actions mean provider-visible shared
+pinning. Zulip's message-flag API only exposes the authenticated account's
+personal `starred` flag, so this plugin deliberately does not advertise or
+handle either action. It also does not expose a misleading shared-action alias
+for personal starring.
 
 ## Removed provider-specific actions
 

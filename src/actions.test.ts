@@ -202,6 +202,20 @@ describe("action capability consistency", () => {
     },
   );
 
+  it.each(["pin", "unpin"] as CoreAction[])(
+    "does not advertise or handle %s because Zulip starred messages are personal",
+    async (action) => {
+      expect(ZULIP_ADVERTISED_ACTIONS).not.toContain(action);
+      expect(zulipMessageActions.supportsAction?.({ action })).toBe(false);
+
+      const fetchImpl = vi.fn<typeof fetch>();
+      await expect(runAction(action, { messageId: "123" }, { fetchImpl })).rejects.toThrow(
+        `Action ${action} is not supported`,
+      );
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
+
   it("rejects the core-owned poll action before credential or network access", async () => {
     const fetchImpl = vi.fn<typeof fetch>();
     await expect(
@@ -292,8 +306,6 @@ describe("reachable action routes", () => {
     ["channel-create", { name: "new-stream", description: "description" }],
     ["channel-edit", { channelId: "7", newName: "renamed" }],
     ["edit", { messageId: "123", message: "replacement" }],
-    ["pin", { messageId: "123" }],
-    ["unpin", { messageId: "123" }],
   ] as const)("keeps %s dry runs network-free", async (action, params) => {
     const fetchImpl = vi.fn<typeof fetch>();
     const { result } = await runAction(action, params, { dryRun: true, fetchImpl });
@@ -321,24 +333,11 @@ describe("reachable action routes", () => {
     expect(String(fetchImpl.mock.calls[0]?.[0])).toContain(path);
   });
 
-  it.each(["pin", "unpin"] as const)(
-    "rejects malformed %s message ids without truncating them",
-    async (action) => {
-      const fetchImpl = vi.fn<typeof fetch>();
-      await expect(runAction(action, { messageId: "123junk" }, { fetchImpl })).rejects.toThrow(
-        "Invalid messageId: 123junk",
-      );
-      expect(fetchImpl).not.toHaveBeenCalled();
-    },
-  );
-
   it.each([
     ["send", { to: "user:person@example.test", message: "hello" }, "/messages", "POST"],
     ["channel-create", { name: "new-stream", announce: true }, "/users/me/subscriptions", "POST"],
     ["channel-edit", { channelId: "7", newName: "renamed" }, "/streams/7", "PATCH"],
     ["edit", { messageId: "123", message: "replacement" }, "/messages/123", "PATCH"],
-    ["pin", { messageId: "123" }, "/messages/flags", "POST"],
-    ["unpin", { messageId: "123" }, "/messages/flags", "POST"],
   ] as const)("routes %s mutations to the expected endpoint", async (action, params, path, method) => {
     const fetchImpl = vi
       .fn<typeof fetch>()

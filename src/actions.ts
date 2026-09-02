@@ -27,7 +27,6 @@ import {
   searchZulipMessages,
   sendZulipPrivateMessage,
   sendZulipStreamMessage,
-  updateZulipMessageFlag,
   updateZulipStream,
 } from "./zulip/client.js";
 import { presentationToZulipWidgetContent } from "./zulip/send.js";
@@ -49,8 +48,6 @@ export const ZULIP_ADVERTISED_ACTIONS = [
   "unsend",
   "search",
   "member-info",
-  "pin",
-  "unpin",
   "poll",
 ] as const satisfies readonly ChannelMessageActionName[];
 
@@ -817,31 +814,6 @@ export const zulipMessageActions: ChannelMessageActionAdapter = {
       }
       await deleteZulipMessage(client, { messageId });
       return jsonResult({ ok: true, deleted: messageId });
-    }
-
-    if (action === "pin" || action === "unpin") {
-      const messageId = readMessageId(params);
-      // Convert messageId to integer for API call
-      if (!/^\d+$/.test(messageId)) {
-        throw new Error(`Invalid messageId: ${messageId}`);
-      }
-      const messageIdInt = Number(messageId);
-      if (!Number.isSafeInteger(messageIdInt)) {
-        throw new Error(`Invalid messageId: ${messageId}`);
-      }
-      if (dryRun) {
-        return jsonResult({ ok: true, dryRun: true, action, messageId });
-      }
-      await updateZulipMessageFlag(client, {
-        messageId: messageIdInt,
-        flag: "starred",
-        op: action === "pin" ? "add" : "remove",
-      });
-      return jsonResult({
-        ok: true,
-        messageId,
-        starred: action === "pin",
-      });
     }
 
     if (action === "search") {

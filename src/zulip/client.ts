@@ -924,21 +924,6 @@ export async function deleteZulipMessage(
   assertSuccess(payload, "Zulip delete message failed");
 }
 
-export async function updateZulipMessageFlag(
-  client: ZulipClient,
-  params: {
-    messageId: string | number;
-    flag: "read" | "starred";
-    op: "add" | "remove";
-  },
-): Promise<void> {
-  await updateZulipMessageFlags(client, {
-    messageIds: [params.messageId],
-    flag: params.flag,
-    op: params.op,
-  });
-}
-
 export async function updateZulipMessageFlags(
   client: ZulipClient,
   params: {

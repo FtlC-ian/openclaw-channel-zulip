@@ -9,7 +9,6 @@ import {
   removeZulipReaction,
   searchZulipMessages,
   sendZulipStreamMessage,
-  updateZulipMessageFlag,
   updateZulipMessageFlags,
   zulipRequestWithRetry,
   type ZulipRequestLogger,
@@ -442,30 +441,6 @@ describe("Zulip message flags", () => {
     expect(body.get("messages")).toBe("[101,102]");
     expect(body.get("flag")).toBe("read");
     expect(body.get("op")).toBe("add");
-  });
-
-  it("keeps the single-message starred action compatible", async () => {
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      jsonResponse({ result: "success" }),
-    );
-    const client = createZulipClient({
-      baseUrl: "https://zulip.example.test/",
-      email: "bot@example.test",
-      apiKey: "secret",
-      fetchImpl,
-    });
-
-    await updateZulipMessageFlag(client, {
-      messageId: "103",
-      flag: "starred",
-      op: "remove",
-    });
-
-    const [, init] = fetchImpl.mock.calls[0] ?? [];
-    const body = new URLSearchParams(String(init?.body));
-    expect(body.get("messages")).toBe("[103]");
-    expect(body.get("flag")).toBe("starred");
-    expect(body.get("op")).toBe("remove");
   });
 
   it("rejects invalid or empty batches before requesting Zulip", async () => {

@@ -2773,25 +2773,47 @@ describe("monitorZulipProvider", () => {
       ],
     }];
 
+    vi.useFakeTimers();
+    const startedAt = Date.now();
     const monitorPromise = runMonitorOnce(controller);
-    await vi.waitFor(() => {
+    try {
+      await vi.advanceTimersByTimeAsync(0);
       const queue = state.durableQueues.get(state.account.accountId);
-      expect(queue?.release).toHaveBeenCalledWith(retryableDurableId, {
+      expect(queue?.release).toHaveBeenCalledExactlyOnceWith(retryableDurableId, {
         lastError: "Zulip stream metadata unavailable during durable replay",
       });
-      expect(queue?.complete).toHaveBeenCalledWith(readyDurableId, {
-        metadata: { queueEventId: 20 },
-        completedAt: expect.any(Number),
-      });
-    });
-    controller.abort();
-    await monitorPromise;
+      expect(queue?.complete).not.toHaveBeenCalled();
 
-    expect(
-      state.core.channel.inbound.buildContext.mock.calls.map(([input]) => input.messageId),
-    ).toEqual(["99205"]);
-    expect(state.durableQueues.get(state.account.accountId)?.release).toHaveBeenCalledTimes(1);
-    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(queue?.release).toHaveBeenCalledTimes(1);
+      expect(queue?.complete).toHaveBeenCalledExactlyOnceWith(readyDurableId, {
+        metadata: { queueEventId: 20 },
+        completedAt: startedAt + 200,
+      });
+      expect(
+        state.core.channel.inbound.buildContext.mock.calls.map(([input]) => input.messageId),
+      ).toEqual(["99205"]);
+      expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(49);
+      expect(queue?.release).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(queue?.release).toHaveBeenCalledTimes(2);
+      expect(queue?.release).toHaveBeenLastCalledWith(retryableDurableId, {
+        lastError: "Zulip stream metadata unavailable during durable replay",
+      });
+      expect(queue?.complete).toHaveBeenCalledTimes(1);
+      expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(1);
+      expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+    } finally {
+      controller.abort();
+      try {
+        await monitorPromise;
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    }
   });
 
   it("serializes deferred durable replay and queues one follow-up pass", async () => {

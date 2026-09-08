@@ -23,12 +23,14 @@
 
 ## Installation
 
-This source supports OpenClaw **2026.7.1-2 through 2026.8.1**. The development
-dependency and minimum host version remain pinned to 2026.7.1-2, so the same
-plugin build can still be installed and tested on the current stable host.
+The minimum supported OpenClaw host remains **2026.7.1-2**, with the development
+dependency pinned to that version. Compatibility checks against newer hosts are
+separate from the minimum-host release gate; they are not a guarantee for every
+intervening version or a recommendation to upgrade a production Gateway.
 
 Durable inbound handling uses the shared ingress queue API available in both
-supported versions. When upgrading an existing installation, pending records and
+the minimum host and OpenClaw 2026.8.1. When upgrading an existing installation,
+pending records and
 deduplication tombstones from the older keyed-store journal retain their original
 namespaces and retention. They are replayed or completed through the compatibility
 journal instead of being silently discarded.
@@ -37,9 +39,8 @@ Outbound media loading uses the typed media-runtime SDK surface shared by both
 versions. Command access-group authorization remains enabled even if an older
 configuration still contains the removed `commands.useAccessGroups` toggle.
 
-OpenClaw 2026.8.1 compatibility does not require upgrading a running Gateway.
-Keep production on 2026.7.1-2 until the separate 2026.8.1 core startup regressions
-are resolved.
+Plugin compatibility does not require upgrading a running Gateway. Validate host
+upgrades separately in an isolated environment before changing production.
 
 ### Via plugin manager (recommended)
 
@@ -57,7 +58,10 @@ cd openclaw-channel-zulip
 # 2. Install dependencies
 npm install
 
-# 3. Install as a local linked plugin
+# 3. Build the compiled entry points
+npm run build
+
+# 4. Install as a local linked plugin
 openclaw plugins install -l .
 ```
 
@@ -377,6 +381,8 @@ If installed from local source:
 ```sh
 cd openclaw-channel-zulip
 git pull
+npm install
+npm run build
 openclaw gateway restart
 ```
 

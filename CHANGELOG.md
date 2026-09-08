@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased
+## 2026.9.8 — DRAFT (unpublished)
+
+Release candidate only; the version is not a publication date. Exact-commit CI,
+independent review, and protected live validation remain release gates.
+
+### Maintenance
+- **Release packaging**: Include the action capability matrix and release checklist linked from the packaged README; document building before local linking and after source updates.
+- **Compatibility guidance**: Preserve the minimum host and Node engine policy while separating newer-host compatibility checks from production upgrade advice.
+- **Deterministic retry coverage**: Control the deferred retry fairness test clock without changing runtime behavior.
 
 ### Features
 - **Handled-message read state**: Add an account-level `markHandledRead` opt-in that marks DM and stream/topic messages read only after successful dispatch settlement and durable receive completion, with safe batching and non-fatal failure reporting.

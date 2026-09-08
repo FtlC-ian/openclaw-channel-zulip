@@ -202,6 +202,7 @@ vi.mock("./accounts.js", () => ({
 vi.mock("./client.js", () => ({
   createZulipClient: vi.fn(() => ({ authHeader: "Basic fake" })),
   normalizeZulipBaseUrl: vi.fn((url?: string) => url ?? ""),
+  resolveZulipStreamId: vi.fn(async (_client, stream: string) => stream === "general" ? "4" : "5"),
   sendZulipPrivateMessage: sendState.sendZulipPrivateMessage,
   sendZulipStreamMessage: sendState.sendZulipStreamMessage,
   uploadZulipFile: vi.fn(async () => ({ url: "/user_uploads/test/report.pdf" })),
@@ -286,7 +287,8 @@ describe("sendMessageZulip media and presentation", () => {
     expect(register).toHaveBeenCalledWith(
       expect.objectContaining({
         accountId: "default",
-        conversation: { kind: "stream", stream: "general", topic: "deploys" },
+        conversation: { kind: "stream", stream: "4", topic: "deploys" },
+        deliveryConversation: { kind: "stream", stream: "general", topic: "deploys" },
         authorizedSenderId: "alice@example.test",
         sourceMessageId: "9002",
         sourceText: askPayload.text,
@@ -338,6 +340,31 @@ describe("sendMessageZulip media and presentation", () => {
     register.mockRestore();
   });
 
+  it("does not send an unbindable question when canonical stream lookup fails", async () => {
+    const { resolveZulipStreamId } = await import("./client.js");
+    vi.mocked(resolveZulipStreamId).mockRejectedValueOnce(new Error("stream lookup failed"));
+    const sendsBefore = sendState.sendZulipStreamMessage.mock.calls.length;
+    const register = vi.spyOn(zulipQuestionZformStore, "register");
+    const questionId = "ask_0123456789abcdef0123456789abcdef";
+    try {
+      await expect(runWithZulipQuestionDeliveryContext({
+        authorizedSenderId: "alice@example.test",
+        conversation: { kind: "stream", stream: "42", topic: "deploys" },
+      }, () => sendMessageZulip("stream:missing:deploys", "Choose one", {
+        cfg: {},
+        channelData: { askUser: { questionId, optionValues: ["One", "Two"] } },
+        presentation: { blocks: [{ type: "buttons", buttons: [
+          { label: "One", action: { type: "question", questionId, optionValue: "One" } },
+          { label: "Two", action: { type: "question", questionId, optionValue: "Two" } },
+        ] }] },
+      }))).rejects.toThrow("stream lookup failed");
+      expect(sendState.sendZulipStreamMessage).toHaveBeenCalledTimes(sendsBefore);
+      expect(register).not.toHaveBeenCalled();
+    } finally {
+      register.mockRestore();
+    }
+  });
+
   it.each([
     {
       name: "stream context for a sent DM",
@@ -350,7 +377,7 @@ describe("sendMessageZulip media and presentation", () => {
       name: "DM context for a sent stream",
       context: { kind: "dm" as const, recipient: "context@example.test" },
       target: "stream:actual:real-topic",
-      expected: { kind: "stream" as const, stream: "actual", topic: "real-topic" },
+      expected: { kind: "stream" as const, stream: "5", topic: "real-topic" },
       sourceMessageId: "9002",
     },
   ])("binds $name to the successful outbound destination", async ({ context, target, expected, sourceMessageId }) => {

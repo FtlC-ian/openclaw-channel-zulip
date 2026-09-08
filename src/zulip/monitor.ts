@@ -770,33 +770,14 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     const questionConversation: ZulipQuestionConversation = isDM
       ? { kind: "dm", recipient: dmTargetIdentity }
       : { kind: "stream", stream: streamId, topic };
-    const questionControl = await zulipQuestionZformStore.intercept({
-      message: {
-        accountId: account.accountId,
-        conversation: questionConversation,
-        senderId: senderIdentity,
-        text: rawText,
-        html: message.content ?? "",
-        expectedBotMention: botUsername,
-      },
-      cfg,
-      logDebug: logVerboseMessage,
-    });
-    if (questionControl.recognized) {
-      if (questionControl.status !== "answered") {
-        try {
-          await sendMessageZulip(
-            isDM ? `user:${dmTargetIdentity}` : `stream:${streamName || streamId}:${topic}`,
-            questionControl.feedback,
-            { cfg, accountId: account.accountId, topic },
-          );
-          opts.statusSink?.({ lastOutboundAt: Date.now() });
-        } catch (error) {
-          logVerboseMessage(`zulip: failed sending ask_user control feedback: ${String(error)}`);
-        }
-      }
-      return;
-    }
+    const questionMessage = {
+      accountId: account.accountId,
+      conversation: questionConversation,
+      senderId: senderIdentity,
+      text: rawText,
+      html: message.content ?? "",
+      expectedBotMention: botUsername,
+    };
     const oncharResult = stripOncharPrefix(rawText, oncharPrefixes);
 
     const oncharTriggered = oncharEnabled && oncharResult.triggered;
@@ -834,7 +815,8 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       cfg,
       surface: "zulip",
     });
-    const hasControlCommand = core.channel.text.hasControlCommand(rawText, cfg);
+    const isQuestionControl = zulipQuestionZformStore.recognizes(questionMessage);
+    const hasControlCommand = isQuestionControl || core.channel.text.hasControlCommand(rawText, cfg);
     const isControlCommand = allowTextCommands && hasControlCommand;
     const useAccessGroups = true;
     const senderAllowedForCommands = isSenderAllowed({
@@ -870,7 +852,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         return;
       }
       if (dmPolicy !== "open" && !senderAllowedForCommands) {
-        if (dmPolicy === "pairing") {
+        if (dmPolicy === "pairing" && !isQuestionControl) {
           const { code, created } = await pairing.upsertPairingRequest({
             id: senderIdentity,
             meta: { name: senderName },
@@ -921,6 +903,31 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         reason: "control command (unauthorized)",
         target: senderIdentity,
       });
+      return;
+    }
+
+    if (isQuestionControl && !commandAuthorized) {
+      return;
+    }
+
+    const questionControl = await zulipQuestionZformStore.intercept({
+      message: questionMessage,
+      cfg,
+      logDebug: logVerboseMessage,
+    });
+    if (questionControl.recognized) {
+      if (questionControl.status !== "answered") {
+        try {
+          await sendMessageZulip(
+            isDM ? `user:${dmTargetIdentity}` : `stream:${streamName || streamId}:${topic}`,
+            questionControl.feedback,
+            { cfg, accountId: account.accountId, topic },
+          );
+          opts.statusSink?.({ lastOutboundAt: Date.now() });
+        } catch (error) {
+          logVerboseMessage(`zulip: failed sending ask_user control feedback: ${String(error)}`);
+        }
+      }
       return;
     }
 

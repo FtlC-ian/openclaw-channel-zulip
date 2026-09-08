@@ -13,6 +13,7 @@ import { resolveZulipRuntimeAccount } from "./accounts.js";
 import {
   createZulipClient,
   normalizeZulipBaseUrl,
+  resolveZulipStreamId,
   sendZulipPrivateMessage,
   sendZulipStreamMessage,
   uploadZulipFile,
@@ -452,6 +453,9 @@ export async function sendMessageZulip(
   const presentationWidget = questionPreparation
     ? undefined
     : presentationToZulipWidgetContent(opts.presentation);
+  const questionStreamId = questionPreparation && target.kind !== "user"
+    ? await resolveZulipStreamId(client, target.stream)
+    : undefined;
   const widgetContent = questionPreparation?.widgetContent ?? presentationWidget ?? resolveZulipWidgetContent({
     presentation: undefined,
     channelData: opts.channelData,
@@ -527,7 +531,10 @@ export async function sendMessageZulip(
     if (!zulipQuestionZformStore.register({
       preparation: questionPreparation,
       accountId: account.accountId,
-      conversation,
+      conversation: conversation.kind === "stream"
+        ? { ...conversation, stream: questionStreamId! }
+        : conversation,
+      deliveryConversation: conversation,
       authorizedSenderId: questionDeliveryContext!.authorizedSenderId,
       sourceMessageId: messageId,
       sourceText: message,

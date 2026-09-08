@@ -216,6 +216,7 @@ const state = vi.hoisted(() => {
     durableStores: new Map<string, ReturnType<typeof createMemoryKeyedStore>>(),
     durableQueues: new Map<string, ReturnType<typeof createMemoryIngressQueue>>(),
     pollResponses: [] as Array<Record<string, unknown>>,
+    nextQuestionMessageId: 59000,
     pairingAllowFrom: [] as string[],
     pairingUpsertError: undefined as Error | undefined,
     upsertPairingRequest: vi.fn(async () => ({ code: "123456", created: false })),
@@ -229,7 +230,14 @@ const state = vi.hoisted(() => {
     removeZulipReaction: vi.fn(async () => {}),
     updateZulipMessageFlags: vi.fn(async () => {}),
     sendMessageZulip: vi.fn(async () => ({ messageId: "outbound-1", channelId: "debbie" })),
-    client: { authHeader: "fake-auth" },
+    client: {
+      authHeader: "fake-auth",
+      baseUrl: "https://zulip.example.test",
+      fetchImpl: vi.fn(async (_url: string, _init?: RequestInit) => new Response("Unexpected offline request", { status: 400 })),
+      request: vi.fn(async (_path: string, _options?: { method?: string; body?: string }) => {
+        throw new Error("Unexpected offline API request");
+      }),
+    },
     botUser: {
       id: 999,
       email: "debbie-bot@zlp.pubnerd.app",
@@ -286,7 +294,8 @@ const fetchZulipStreamMock = vi.fn(async (_client: unknown, streamId: string) =>
   throw new Error(`unexpected stream metadata lookup: ${streamId}`);
 });
 
-vi.mock("./client.js", () => ({
+vi.mock("./client.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("./client.js")>(),
   createZulipClient: vi.fn(() => state.client),
   fetchZulipMe: vi.fn(async () => state.botUser),
   fetchZulipStream: fetchZulipStreamMock,
@@ -2071,6 +2080,7 @@ describe("monitorZulipProvider", () => {
   });
 
   it("passes the stripped Zulip bot mention to question-control interception and consumes it", async () => {
+    state.account.config.allowFrom = ["user8@zlp.pubnerd.app"];
     const { zulipQuestionZformStore } = await import("./question-zform.js");
     const intercept = vi
       .spyOn(zulipQuestionZformStore, "intercept")
@@ -2113,6 +2123,7 @@ describe("monitorZulipProvider", () => {
   });
 
   it("consumes an exact bare stale question control before ordinary inbound dispatch", async () => {
+    state.account.config.allowFrom = ["user8@zlp.pubnerd.app"];
     const { zulipQuestionZformStore } = await import("./question-zform.js");
     const { sendMessageZulip } = await import("./send.js");
     const sendMessageZulipMock = vi.mocked(sendMessageZulip);
@@ -2146,6 +2157,7 @@ describe("monitorZulipProvider", () => {
   });
 
   it("resolves a canonical ZulipFlutter ordered-list fallback before ordinary inbound dispatch", async () => {
+    state.account.config.allowFrom = ["user8@zlp.pubnerd.app"];
     const { zulipQuestionZformStore } = await import("./question-zform.js");
     const questionId = "ask_0123456789abcdef0123456789abcdef";
     const preparation = zulipQuestionZformStore.prepare({
@@ -2205,6 +2217,141 @@ describe("monitorZulipProvider", () => {
       expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
     } finally {
       zulipQuestionZformStore.clear();
+    }
+  });
+
+  describe.each(["native", "mobile"] as const)("real outbound to inbound %s question controls", (form) => {
+    it.each([
+      { policy: "allowed stream", dm: false, allowed: true },
+      { policy: "allowed DM", dm: true, allowed: true },
+      { policy: "revoked group allowlist", dm: false, allowed: false },
+      { policy: "revoked pairing", dm: true, allowed: false },
+      { policy: "disabled group", dm: false, allowed: false },
+      { policy: "disabled DM", dm: true, allowed: false },
+      { policy: "revoked command access", dm: false, allowed: false },
+    ])("enforces $policy after delivery", async ({ policy, dm, allowed }) => {
+      const { sendMessageZulip } = await vi.importActual<typeof import("./send.js")>("./send.js");
+      const { runWithZulipQuestionDeliveryContext, zulipQuestionZformStore } = await import("./question-zform.js");
+      const questionId = "ask_0123456789abcdef0123456789abcdef";
+      const sender = "user8@zlp.pubnerd.app";
+      zulipQuestionZformStore.clear();
+      questionRuntimeMocks.resolveOption.mockReset().mockResolvedValue({ status: "answered", questionId, optionValue: "Production" });
+      questionRuntimeMocks.registerChannelDelivery.mockClear();
+      state.account.config.allowFrom = [sender];
+      state.account.config.groupAllowFrom = [sender];
+      state.account.config.dmPolicy = "pairing";
+      state.account.config.groupPolicy = "allowlist";
+      state.pairingAllowFrom = [sender];
+      state.client.request.mockReset().mockImplementation(async (path, options) => {
+        if (path === "/users/me/subscriptions?include_all_public_streams=true") {
+          return { result: "success", subscriptions: state.streamSubscriptions } as never;
+        }
+        if (path === "/messages" && options?.method === "POST") {
+          return { result: "success", id: 9100 } as never;
+        }
+        throw new Error(`Unexpected offline API request: ${path}`);
+      });
+      state.client.fetchImpl.mockImplementation(async (url, init) => {
+        const parsed = new URL(url);
+        const response = await state.client.request(parsed.pathname.replace(/^\/api\/v1/u, "") + parsed.search, {
+          method: init?.method,
+          body: typeof init?.body === "string" ? init.body : undefined,
+        });
+        return Response.json(response);
+      });
+      const register = vi.spyOn(zulipQuestionZformStore, "register");
+      try {
+        await runWithZulipQuestionDeliveryContext({
+          authorizedSenderId: sender,
+          conversation: { kind: "stream", stream: "999", topic: "wrong-context" },
+        }, () => sendMessageZulip(dm ? `user:${sender}` : "stream:debbie:zulip-plugin-pr", "Choose one", {
+          cfg: state.core.config,
+          channelData: { askUser: { questionId, optionValues: ["Staging", "Production"] } },
+          presentation: { blocks: [{ type: "buttons", buttons: [
+            { label: "Staging", action: { type: "question", questionId, optionValue: "Staging" } },
+            { label: "Production", action: { type: "question", questionId, optionValue: "Production" } },
+          ] }] },
+        }));
+        expect(register).toHaveBeenCalledWith(expect.objectContaining({
+          conversation: dm ? { kind: "dm", recipient: sender } : { kind: "stream", stream: "4", topic: "zulip-plugin-pr" },
+          deliveryConversation: dm ? { kind: "dm", recipient: sender } : { kind: "stream", stream: "debbie", topic: "zulip-plugin-pr" },
+        }));
+        const posted = state.client.request.mock.calls.find(([path]) => path === "/messages")!;
+        const body = new URLSearchParams(posted[1]!.body);
+        const widget = JSON.parse(body.get("widget_content")!);
+        const content = form === "native" ? widget.extra_data.choices[1].reply : '<ol start="2"><li>Production</li></ol>';
+
+        if (policy === "revoked group allowlist") state.account.config.groupAllowFrom = ["other@example.test"];
+        if (policy === "revoked pairing") {
+          state.account.config.allowFrom = [];
+          state.pairingAllowFrom = [];
+        }
+        if (policy === "disabled group") state.account.config.groupPolicy = "disabled";
+        if (policy === "disabled DM") state.account.config.dmPolicy = "disabled";
+        if (policy === "revoked command access") {
+          state.account.config.groupPolicy = "open";
+          state.account.config.allowFrom = ["other@example.test"];
+          state.account.config.groupAllowFrom = ["other@example.test"];
+          state.pairingAllowFrom = [];
+        }
+        state.sendMessageZulip.mockClear();
+        state.client.request.mockClear();
+        state.pollResponses = [{ result: "success", events: [1, 2].map((id) => ({
+          id, type: "message", message: { ...(dm ? makePrivateMessage(++state.nextQuestionMessageId) : makeChannelMessage(++state.nextQuestionMessageId)), content },
+        })) }];
+        await runMonitorOnce();
+        expect(questionRuntimeMocks.resolveOption).toHaveBeenCalledTimes(allowed ? 1 : 0);
+        expect(state.core.channel.inbound.buildContext).not.toHaveBeenCalled();
+        expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+        expect(state.upsertPairingRequest).not.toHaveBeenCalled();
+        if (!allowed) {
+          expect(state.sendMessageZulip).not.toHaveBeenCalled();
+          expect(state.client.request).not.toHaveBeenCalled();
+        } else {
+          await questionRuntimeMocks.registerChannelDelivery.mock.calls[0]![0].finalize("Answered: Production");
+          const replacement = new URLSearchParams(state.client.request.mock.calls.find(([path]) => path === "/messages")![1]!.body);
+          expect(replacement.get("to")).toBe(dm ? JSON.stringify([sender]) : "debbie");
+          if (!dm) expect(replacement.get("topic")).toBe("zulip-plugin-pr");
+          expect(state.deleteZulipMessage).toHaveBeenCalledWith(state.client, { messageId: "9100" });
+        }
+      } finally {
+        register.mockRestore();
+        zulipQuestionZformStore.clear();
+      }
+    });
+  });
+
+  it.each([
+    { dm: true, policy: "pairing" },
+    { dm: true, policy: "allowlist" },
+    { dm: true, policy: "disabled" },
+    { dm: false, policy: "allowlist" },
+    { dm: false, policy: "disabled" },
+    { dm: false, policy: "open" },
+  ])("silently drops unauthorized unknown and malformed controls: $dm/$policy", async ({ dm, policy }) => {
+    const { zulipQuestionZformStore } = await import("./question-zform.js");
+    zulipQuestionZformStore.clear();
+    questionRuntimeMocks.resolveOption.mockClear();
+    state.account.config[dm ? "dmPolicy" : "groupPolicy"] = policy;
+    state.account.config.allowFrom = ["other@example.test"];
+    state.account.config.groupAllowFrom = ["other@example.test"];
+    state.upsertPairingRequest.mockResolvedValue({ code: "123456", created: true });
+    const intercept = vi.spyOn(zulipQuestionZformStore, "intercept");
+    try {
+      state.pollResponses = [{ result: "success", events: [
+        "ocq1:kDU1R53ZTUJxIiMrjEHqww:0", "ocq1:malformed", "@**Debbie** ocq1:bad:9",
+      ].map((content, index) => ({ id: index + 1, type: "message", message: {
+        ...(dm ? makePrivateMessage(++state.nextQuestionMessageId) : makeChannelMessage(++state.nextQuestionMessageId)), content,
+      } })) }];
+      await runMonitorOnce();
+      expect(intercept).not.toHaveBeenCalled();
+      expect(questionRuntimeMocks.resolveOption).not.toHaveBeenCalled();
+      expect(state.sendMessageZulip).not.toHaveBeenCalled();
+      expect(state.upsertPairingRequest).not.toHaveBeenCalled();
+      expect(state.core.channel.inbound.buildContext).not.toHaveBeenCalled();
+      expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+    } finally {
+      intercept.mockRestore();
     }
   });
 

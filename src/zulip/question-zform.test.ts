@@ -367,6 +367,7 @@ describe("ZulipQuestionZformStore resolution", () => {
     ["wrong account", { accountId: "other" }],
     ["wrong sender", { senderId: "mallory@example.test" }],
     ["wrong topic", { conversation: { kind: "stream" as const, stream: "debbie", topic: "other" } }],
+    ["wrong stream", { conversation: { kind: "stream" as const, stream: "other", topic: "deploys" } }],
   ])("leaves %s fallback outside the binding unrecognized", async (_name, override) => {
     const store = new ZulipQuestionZformStore();
     register(store);
@@ -436,6 +437,7 @@ describe("ZulipQuestionZformStore resolution", () => {
   it.each([
     ["cross-account", { accountId: "other" }],
     ["wrong sender", { senderId: "mallory@example.test" }],
+    ["cross-stream", { conversation: { kind: "stream" as const, stream: "other", topic: "deploys" } }],
     [
       "cross-topic",
       { conversation: { kind: "stream" as const, stream: "debbie", topic: "other-topic" } },

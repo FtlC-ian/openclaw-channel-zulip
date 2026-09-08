@@ -404,6 +404,7 @@ export class ZulipQuestionZformStore {
     preparation: ZulipQuestionZformPreparation;
     accountId: string;
     conversation: ZulipQuestionConversation;
+    deliveryConversation?: ZulipQuestionConversation;
     authorizedSenderId: string;
     sourceMessageId: string;
     sourceText: string;
@@ -453,7 +454,7 @@ export class ZulipQuestionZformStore {
           try {
             replacementMessageId = await sendTerminalReplacement({
               client: params.client,
-              conversation: binding.conversation,
+              conversation: params.deliveryConversation ?? binding.conversation,
               content: terminalText(binding.sourceText, statusLine),
             });
           } catch (error) {
@@ -490,6 +491,24 @@ export class ZulipQuestionZformStore {
       return false;
     }
     return true;
+  }
+
+  recognizes(message: ZulipQuestionControlMessage): boolean {
+    if (parseControlToken(message.text, message.expectedBotMention).recognized) {
+      return true;
+    }
+    const selection = parseFallbackSelection(message);
+    return Boolean(selection && this.identityBindings(message).some((binding) =>
+      resolveFallbackOption(binding, selection).kind !== "none",
+    ));
+  }
+
+  private identityBindings(message: ZulipQuestionControlMessage): ZulipQuestionBinding[] {
+    return [...this.bindings.values()].filter((binding) =>
+      binding.accountId === message.accountId.trim() &&
+      binding.authorizedSenderId === normalizeIdentity(message.senderId) &&
+      conversationsMatch(binding.conversation, message.conversation),
+    );
   }
 
   async intercept(params: {
@@ -573,14 +592,7 @@ export class ZulipQuestionZformStore {
       return { recognized: false };
     }
 
-    const accountId = params.message.accountId.trim();
-    const senderId = normalizeIdentity(params.message.senderId);
-    const identityBindings = [...this.bindings.values()].filter(
-      (binding) =>
-        binding.accountId === accountId &&
-        binding.authorizedSenderId === senderId &&
-        conversationsMatch(binding.conversation, params.message.conversation),
-    );
+    const identityBindings = this.identityBindings(params.message);
     const now = Date.now();
     const activeBindings = identityBindings.filter(
       (binding) => !binding.terminal && binding.expiresAt > now,

@@ -1,5 +1,6 @@
 import type { ChannelSetupInput, DmPolicy, GroupPolicy } from "./sdk.js";
 import type { SecretInput } from "openclaw/plugin-sdk/secret-input";
+import type { ChannelPreviewStreamingConfig } from "openclaw/plugin-sdk/channel-outbound";
 import type {
   StatusReactionEmojis,
   StatusReactionTiming,
@@ -119,6 +120,8 @@ export type ZulipAccountConfig = {
   chunkMode?: "length" | "newline";
   /** Disable block streaming for this account. */
   blockStreaming?: boolean;
+  /** Opt-in task-progress draft; explicit progress mode takes precedence over thinkingPlaceholder. */
+  streaming?: ChannelPreviewStreamingConfig;
   /** Merge streamed block replies before sending. */
   blockStreamingCoalesce?: BlockStreamingCoalesceConfig;
   /** Outbound response prefix override for this channel/account. */

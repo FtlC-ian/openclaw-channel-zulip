@@ -173,8 +173,9 @@ export function createZulipClient(params: {
       const detail = await readZulipError(res);
       const error = new Error(
         `Zulip API ${res.status} ${res.statusText}: ${detail || "unknown error"}`,
-      ) as Error & { status?: number };
+      ) as Error & { status?: number; retryAfterMs?: number };
       error.status = res.status;
+      error.retryAfterMs = resolveRetryAfterMs(res);
       throw error;
     }
     return (await res.json()) as T;

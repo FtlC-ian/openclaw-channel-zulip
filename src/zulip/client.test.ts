@@ -50,6 +50,28 @@ describe("registerZulipQueue", () => {
   });
 });
 
+describe("createZulipClient", () => {
+  it("preserves Retry-After metadata on direct request errors", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse(
+        { result: "error", msg: "rate limited" },
+        { status: 429, statusText: "Too Many Requests", headers: { "retry-after": "5" } },
+      ),
+    );
+    const client = createZulipClient({
+      baseUrl: "https://zulip.example.test",
+      email: "bot@example.test",
+      apiKey: "***",
+      fetchImpl,
+    });
+
+    await expect(client.request("/messages/1", { method: "PATCH" })).rejects.toMatchObject({
+      status: 429,
+      retryAfterMs: 5_000,
+    });
+  });
+});
+
 describe("zulipRequestWithRetry", () => {
   it("requests identity encoding so Zulip responses are not parsed while still gzipped", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({ result: "success", events: [] }));

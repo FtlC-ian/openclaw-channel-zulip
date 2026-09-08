@@ -7,6 +7,10 @@ import {
   sendMessageZulip,
   sendPollZulip,
 } from "./send.js";
+import {
+  runWithZulipQuestionDeliveryContext,
+  zulipQuestionZformStore,
+} from "./question-zform.js";
 
 describe("presentationToZulipWidgetContent", () => {
   it("maps shared button payloads to Zulip zform widgets", () => {
@@ -231,6 +235,178 @@ describe("sendMessageZulip media and presentation", () => {
       expect.objectContaining({ widgetContent: expect.objectContaining({ extra_data: expect.objectContaining({
         choices: [{ type: "multiple_choice", short_name: "Deny", long_name: "Deny", reply: "/approve req-1 deny" }],
       }) }) }));
+  });
+
+  it("binds an ask_user widget to the exact sent stream rather than its reply context", async () => {
+    const questionId = "ask_0123456789abcdef0123456789abcdef";
+    const register = vi.spyOn(zulipQuestionZformStore, "register").mockReturnValue(true);
+    const askPayload = {
+      text: "Where should this deploy?\n1. Staging\n2. Production",
+      channelData: { askUser: { questionId, optionValues: ["Staging", "Production"] } },
+      presentation: {
+        blocks: [
+          { type: "text" as const, text: "Where should this deploy?" },
+          {
+            type: "buttons" as const,
+            buttons: [
+              {
+                label: "Staging",
+                action: { type: "question" as const, questionId, optionValue: "Staging" },
+              },
+              {
+                label: "Production",
+                action: { type: "question" as const, questionId, optionValue: "Production" },
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    await runWithZulipQuestionDeliveryContext(
+      {
+        authorizedSenderId: "alice@example.test",
+        conversation: { kind: "stream", stream: "42", topic: "deploys" },
+      },
+      () => sendMessageZulip("stream:general:deploys", askPayload.text, {
+        cfg: {},
+        presentation: askPayload.presentation,
+        channelData: askPayload.channelData,
+      }),
+    );
+
+    const widget = sendState.sendZulipStreamMessage.mock.calls.at(-1)?.[1]?.widgetContent as {
+      extra_data?: { choices?: Array<{ reply?: string }> };
+    };
+    expect(widget.extra_data?.choices?.map((choice) => choice.reply)).toEqual([
+      expect.stringMatching(/^ocq1:[A-Za-z0-9_-]{22}:0$/u),
+      expect.stringMatching(/^ocq1:[A-Za-z0-9_-]{22}:1$/u),
+    ]);
+    expect(JSON.stringify(widget)).not.toContain(questionId);
+    expect(register).toHaveBeenCalledWith(
+      expect.objectContaining({
+        accountId: "default",
+        conversation: { kind: "stream", stream: "general", topic: "deploys" },
+        authorizedSenderId: "alice@example.test",
+        sourceMessageId: "9002",
+        sourceText: askPayload.text,
+      }),
+    );
+    register.mockRestore();
+  });
+
+  it("binds an ask_user widget to the exact sent DM rather than its DM reply context", async () => {
+    const questionId = "ask_0123456789abcdef0123456789abcdef";
+    const register = vi.spyOn(zulipQuestionZformStore, "register").mockReturnValue(true);
+    const askPayload = {
+      text: "Choose one\n1. One\n2. Two",
+      channelData: { askUser: { questionId, optionValues: ["One", "Two"] } },
+      presentation: {
+        blocks: [
+          { type: "text" as const, text: "Choose one" },
+          {
+            type: "buttons" as const,
+            buttons: [
+              { label: "One", action: { type: "question" as const, questionId, optionValue: "One" } },
+              { label: "Two", action: { type: "question" as const, questionId, optionValue: "Two" } },
+            ],
+          },
+        ],
+      },
+    };
+
+    await runWithZulipQuestionDeliveryContext(
+      {
+        authorizedSenderId: "alice@example.test",
+        conversation: { kind: "dm", recipient: "context@example.test" },
+      },
+      () =>
+        sendMessageZulip("user:actual@example.test", askPayload.text, {
+          cfg: {},
+          presentation: askPayload.presentation,
+          channelData: askPayload.channelData,
+        }),
+    );
+
+    expect(register).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversation: { kind: "dm", recipient: "actual@example.test" },
+        authorizedSenderId: "alice@example.test",
+        sourceMessageId: "9001",
+      }),
+    );
+    register.mockRestore();
+  });
+
+  it.each([
+    {
+      name: "stream context for a sent DM",
+      context: { kind: "stream" as const, stream: "context", topic: "wrong" },
+      target: "user:actual@example.test",
+      expected: { kind: "dm" as const, recipient: "actual@example.test" },
+      sourceMessageId: "9001",
+    },
+    {
+      name: "DM context for a sent stream",
+      context: { kind: "dm" as const, recipient: "context@example.test" },
+      target: "stream:actual:real-topic",
+      expected: { kind: "stream" as const, stream: "actual", topic: "real-topic" },
+      sourceMessageId: "9002",
+    },
+  ])("binds $name to the successful outbound destination", async ({ context, target, expected, sourceMessageId }) => {
+    const questionId = "ask_0123456789abcdef0123456789abcdef";
+    const register = vi.spyOn(zulipQuestionZformStore, "register").mockReturnValue(true);
+    const text = "Choose one\n1. One\n2. Two";
+
+    await runWithZulipQuestionDeliveryContext(
+      { authorizedSenderId: "alice@example.test", conversation: context },
+      () =>
+        sendMessageZulip(target, text, {
+          cfg: {},
+          channelData: { askUser: { questionId, optionValues: ["One", "Two"] } },
+          presentation: {
+            blocks: [
+              { type: "text", text: "Choose one" },
+              {
+                type: "buttons",
+                buttons: [
+                  { label: "One", action: { type: "question", questionId, optionValue: "One" } },
+                  { label: "Two", action: { type: "question", questionId, optionValue: "Two" } },
+                ],
+              },
+            ],
+          },
+        }),
+    );
+
+    expect(register).toHaveBeenCalledWith(
+      expect.objectContaining({ conversation: expected, sourceMessageId }),
+    );
+    register.mockRestore();
+  });
+
+  it("keeps eligible ask_user payloads text-first when no authorized reply context exists", async () => {
+    const questionId = "ask_0123456789abcdef0123456789abcdef";
+    await sendMessageZulip("user:alice@example.test", "Choose one", {
+      cfg: {},
+      channelData: { askUser: { questionId, optionValues: ["One", "Two"] } },
+      presentation: {
+        blocks: [
+          { type: "text", text: "Choose one" },
+          {
+            type: "buttons",
+            buttons: [
+              { label: "One", action: { type: "question", questionId, optionValue: "One" } },
+              { label: "Two", action: { type: "question", questionId, optionValue: "Two" } },
+            ],
+          },
+        ],
+      },
+    });
+    expect(sendState.sendZulipPrivateMessage).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({ content: "Choose one", widgetContent: undefined }),
+    );
   });
 });
 

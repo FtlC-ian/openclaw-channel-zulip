@@ -1,5 +1,12 @@
 # Changelog
 
+## Private combined candidate (unpublished)
+
+- **Raised minimum host from fallback 2026.7.1-2 to OpenClaw >=2026.8.2.** Older hosts are not supported by this candidate.
+- Compose native questions/mobile canonical fallback, terminal replacement and actual-destination binding through `0298af0` with opt-in task progress through `086fee7`.
+- Preserve public `thinkingPlaceholder` schema and legacy off-mode behavior. Explicit progress takes precedence without dual messages or implicit activation.
+- Preserve frozen public fixes/retry and release metadata. Exclude private pin removal and unrelated private-main changes. Independent review and live acceptance pending.
+
 ## 2026.9.8 — DRAFT (unpublished)
 
 Release candidate only; the version is not a publication date. Exact-commit CI,

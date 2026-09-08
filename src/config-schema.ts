@@ -24,6 +24,48 @@ const BlockStreamingCoalesceSchema = z
   })
   .strict();
 
+const ChannelStreamingSchema = z
+  .object({
+    mode: z.enum(["off", "partial", "block", "progress"]).optional(),
+    chunkMode: z.enum(["length", "newline"]).optional(),
+    preview: z
+      .object({
+        chunk: z
+          .object({
+            minChars: z.number().int().positive().optional(),
+            maxChars: z.number().int().positive().optional(),
+            breakPreference: z.enum(["paragraph", "newline", "sentence"]).optional(),
+          })
+          .strict()
+          .optional(),
+        toolProgress: z.boolean().optional(),
+        commandText: z.enum(["raw", "status"]).optional(),
+      })
+      .strict()
+      .optional(),
+    progress: z
+      .object({
+        label: z.union([z.string(), z.literal(false)]).optional(),
+        labels: z.array(z.string()).optional(),
+        maxLines: z.number().int().positive().optional(),
+        maxLineChars: z.number().int().positive().optional(),
+        toolProgress: z.boolean().optional(),
+        commandText: z.enum(["raw", "status"]).optional(),
+        commentary: z.boolean().optional(),
+        narration: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
+    block: z
+      .object({
+        enabled: z.boolean().optional(),
+        coalesce: BlockStreamingCoalesceSchema.optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
 const MarkdownTableModeSchema = z.enum(["native", "codeblock", "disabled"]);
 const AgentReactionGuidanceSchema = z.enum(["off", "minimal", "extensive"]);
 const ZulipReactionEmojiSchema = z.string().refine(isSupportedZulipReactionValue, {
@@ -179,6 +221,7 @@ const ZulipAccountSchemaBase = z
     agentReactionGuidance: AgentReactionGuidanceSchema.optional(),
     textChunkLimit: z.number().int().positive().optional(),
     chunkMode: z.enum(["length", "newline"]).optional(),
+    streaming: ChannelStreamingSchema.optional(),
     blockStreaming: z.boolean().optional(),
     blockStreamingCoalesce: BlockStreamingCoalesceSchema.optional(),
     responsePrefix: z.string().optional(),

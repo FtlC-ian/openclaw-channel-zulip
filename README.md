@@ -21,26 +21,58 @@
 
 ---
 
+## Opt-in progress and native questions (private combined candidate)
+
+Progress is disabled unless `channels.zulip.streaming.mode` (or the selected
+account's mode) is explicitly `"progress"`. Merely setting `streaming.progress`
+options does not enable it. The public `thinkingPlaceholder` schema remains supported.
+
+| Configuration | Behavior |
+|---|---|
+| Neither enabled / progress off | No progress draft or legacy placeholder |
+| Legacy only, including explicit progress off | Legacy text-only final replaces the placeholder; media/questions delete it first |
+| Explicit progress only | One evolving run-local draft, deleted before normal final/question delivery |
+| Both enabled | Progress takes precedence; no legacy placeholder or legacy error message |
+
+Opt in with `"streaming": { "mode": "progress", "progress": { "toolProgress": true,
+"narration": true, "commandText": "status" } }`. Progress uses a four-line default
+summary and coalesces updates with per-run mutation spacing. Cancellation and
+errors close queued/in-flight progress work and attempt bounded cleanup. Permanent
+edit failure permits one replacement only after successful deletion; persistent
+delete failure can leave residue. This is not account-wide rate limiting.
+Legacy errors retain configured `errorText`; silent/cancelled turns remove the
+legacy placeholder. These behaviors do not imply guaranteed provider cleanup.
+
+Native questions support canonical single-choice desktop controls and constrained
+mobile numeric/text/list fallback. Controls are bound to account, sender and actual
+sent conversation, and intercepted before ordinary dispatch. Terminal replacement
+is sent before deleting the widget; failed deletion rolls back the replacement
+where possible. Bindings are bounded and in memory: expiry/restart do not guarantee
+visual cleanup or persistent recovery. Independent exact-commit review and protected
+desktop/mobile/cleanup/live acceptance remain required; no combined live acceptance
+or soak is claimed.
+
 ## Installation
 
-The minimum supported OpenClaw host remains **2026.7.1-2**, with the development
-dependency pinned to that version. Compatibility checks against newer hosts are
+**Support change: this combined candidate requires OpenClaw >=2026.8.2, raised
+from the frozen fallback's 2026.7.1-2 floor.** The development dependency is
+pinned to 2026.8.2 for the public question and progress SDKs. The old floor is
+not supported by this candidate. Compatibility checks against newer hosts are
 separate from the minimum-host release gate; they are not a guarantee for every
 intervening version or a recommendation to upgrade a production Gateway.
 
-Durable inbound handling uses the shared ingress queue API available in both
-the minimum host and OpenClaw 2026.8.1. When upgrading an existing installation,
+Durable inbound handling uses the shared ingress queue API. When upgrading an existing installation,
 pending records and
 deduplication tombstones from the older keyed-store journal retain their original
 namespaces and retention. They are replayed or completed through the compatibility
 journal instead of being silently discarded.
 
-Outbound media loading uses the typed media-runtime SDK surface shared by both
-versions. Command access-group authorization remains enabled even if an older
+Outbound media loading uses the typed media-runtime SDK surface.
+Command access-group authorization remains enabled even if an older
 configuration still contains the removed `commands.useAccessGroups` toggle.
 
-Plugin compatibility does not require upgrading a running Gateway. Validate host
-upgrades separately in an isolated environment before changing production.
+Do not install this candidate on the old host floor. Validate any host upgrade
+separately in an isolated environment before changing production.
 
 ### Via plugin manager (recommended)
 

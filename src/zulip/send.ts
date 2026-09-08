@@ -17,6 +17,10 @@ import {
   sendZulipStreamMessage,
   uploadZulipFile,
 } from "./client.js";
+import {
+  getZulipQuestionDeliveryContext,
+  zulipQuestionZformStore,
+} from "./question-zform.js";
 
 type ZulipChannelData = {
   zulip?: {
@@ -438,8 +442,17 @@ export async function sendMessageZulip(
     };
   })();
 
-  const presentationWidget = presentationToZulipWidgetContent(opts.presentation);
-  const widgetContent = presentationWidget ?? resolveZulipWidgetContent({
+  const questionDeliveryContext = getZulipQuestionDeliveryContext();
+  const questionPreparation = questionDeliveryContext
+    ? zulipQuestionZformStore.prepare({
+        presentation: opts.presentation,
+        channelData: opts.channelData,
+      })
+    : undefined;
+  const presentationWidget = questionPreparation
+    ? undefined
+    : presentationToZulipWidgetContent(opts.presentation);
+  const widgetContent = questionPreparation?.widgetContent ?? presentationWidget ?? resolveZulipWidgetContent({
     presentation: undefined,
     channelData: opts.channelData,
   });
@@ -448,8 +461,10 @@ export async function sendMessageZulip(
     throw new Error("Zulip message is empty");
   }
 
-  const widgetContentSource = presentationWidget
-    ? "presentation"
+  const widgetContentSource = questionPreparation
+    ? "ask_user"
+    : presentationWidget
+      ? "presentation"
     : opts.channelData?.zulip?.widgetContent
       ? "channelData"
       : "none";
@@ -499,6 +514,32 @@ export async function sendMessageZulip(
     hadWidget: Boolean(widgetContent),
     widgetContentSource,
   });
+
+  if (questionPreparation) {
+    const conversation =
+      target.kind === "user"
+        ? { kind: "dm" as const, recipient: target.email }
+        : {
+            kind: "stream" as const,
+            stream: target.stream,
+            topic: target.topic || opts.topic || DEFAULT_TOPIC,
+          };
+    if (!zulipQuestionZformStore.register({
+      preparation: questionPreparation,
+      accountId: account.accountId,
+      conversation,
+      authorizedSenderId: questionDeliveryContext!.authorizedSenderId,
+      sourceMessageId: messageId,
+      sourceText: message,
+      client,
+      logDebug: (detail) => logger.debug?.(detail),
+    })) {
+      logger.debug?.("zulip ask_user widget sent without native resolution binding", {
+        accountId: account.accountId,
+        messageId,
+      });
+    }
+  }
 
   core.channel.activity.record({
     channel: "zulip",

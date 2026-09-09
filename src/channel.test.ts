@@ -156,6 +156,33 @@ describe("zulipPlugin", () => {
       });
     });
 
+    it("uses the explicit target topic for the session route when thread context disagrees", () => {
+      const resolveRoute = zulipPlugin.messaging?.resolveOutboundSessionRoute as
+        | ((params: {
+            cfg: OpenClawConfig;
+            agentId: string;
+            target: string;
+            threadId?: string;
+          }) => unknown)
+        | undefined;
+      if (!resolveRoute) {
+        throw new Error("resolveOutboundSessionRoute missing");
+      }
+
+      expect(
+        resolveRoute({
+          cfg: {} as OpenClawConfig,
+          agentId: "main",
+          target: "stream:synthetic-stream:Canonical Topic",
+          threadId: "Different Session Topic",
+        }),
+      ).toMatchObject({
+        peer: { kind: "channel", id: "synthetic-stream:topic:canonical-topic" },
+        to: "stream:synthetic-stream:Canonical Topic",
+        threadId: "Canonical Topic",
+      });
+    });
+
     it("preserves existing Zulip thread context when routing stream sends", () => {
       const resolveRoute = zulipPlugin.messaging?.resolveOutboundSessionRoute as
         | ((params: {

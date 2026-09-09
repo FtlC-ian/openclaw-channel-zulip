@@ -185,4 +185,60 @@ describe("zulip message adapter", () => {
       { platformMessageId: "msg-2", kind: "media", threadId: "topic-1" },
     ]);
   });
+
+  it.each([
+    {
+      name: "text",
+      send: () => zulipMessageAdapter.send!.text!({
+        cfg: { channels: { zulip: {} } } as OpenClawConfig,
+        to: "stream:synthetic-stream:Canonical Topic",
+        text: "text",
+        accountId: "default",
+        threadId: "Different Session Topic",
+      }),
+    },
+    {
+      name: "media",
+      send: () => zulipMessageAdapter.send!.media!({
+        cfg: { channels: { zulip: {} } } as OpenClawConfig,
+        to: "stream:synthetic-stream:Canonical Topic",
+        text: "media",
+        mediaUrl: "https://example.test/synthetic.png",
+        accountId: "default",
+        threadId: "Different Session Topic",
+      }),
+    },
+  ])("reports the actual explicit target topic for $name sends", async ({ send }) => {
+    const result = await send();
+
+    expect(result.receipt.threadId).toBe("Canonical Topic");
+  });
+
+  it("reports the actual explicit target topic for every multipart receipt part", async () => {
+    adapterState.sendMessageZulip
+      .mockResolvedValueOnce({ messageId: "part-1", channelId: "synthetic-stream" })
+      .mockResolvedValueOnce({ messageId: "part-2", channelId: "synthetic-stream" });
+
+    const result = await zulipMessageAdapter.send!.payload!({
+      cfg: { channels: { zulip: {} } } as OpenClawConfig,
+      to: "stream:synthetic-stream:Canonical Topic",
+      payload: {
+        text: "gallery",
+        mediaUrls: [
+          "https://example.test/synthetic-1.png",
+          "https://example.test/synthetic-2.png",
+        ],
+      },
+      accountId: "default",
+      threadId: "Different Session Topic",
+    });
+
+    expect({
+      threadId: result.receipt.threadId,
+      partThreadIds: result.receipt.parts.map((part) => part.threadId),
+    }).toEqual({
+      threadId: "Canonical Topic",
+      partThreadIds: ["Canonical Topic", "Canonical Topic"],
+    });
+  });
 });

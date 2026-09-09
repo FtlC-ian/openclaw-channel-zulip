@@ -209,6 +209,35 @@ vi.mock("./client.js", () => ({
 }));
 
 describe("sendMessageZulip media and presentation", () => {
+  it("uses the explicit target topic for both text and media when thread context disagrees", async () => {
+    await sendMessageZulip("stream:synthetic-stream:Canonical Topic", "text", {
+      cfg: {},
+      topic: "Different Session Topic",
+    });
+    expect(sendState.sendZulipStreamMessage).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        stream: "synthetic-stream",
+        topic: "Canonical Topic",
+        content: "text",
+      }),
+    );
+
+    await sendMessageZulip("stream:synthetic-stream:Canonical Topic", "media", {
+      cfg: {},
+      topic: "Different Session Topic",
+      mediaUrl: "https://zlp.pubnerd.app/user_uploads/synthetic.png",
+    });
+    expect(sendState.sendZulipStreamMessage).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        stream: "synthetic-stream",
+        topic: "Canonical Topic",
+        content: "media\nhttps://zlp.pubnerd.app/user_uploads/synthetic.png",
+      }),
+    );
+  });
+
   it("uploads remote media through the bounded runtime buffer reader", async () => {
     sendState.runtime.channel.media.readRemoteMediaBuffer.mockResolvedValueOnce({
       buffer: Buffer.from("report"), contentType: "application/pdf",

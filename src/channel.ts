@@ -30,6 +30,7 @@ import {
 import { zulipApprovalAuth } from "./approval-auth.js";
 import { normalizeZulipBaseUrl } from "./zulip/client.js";
 import { sendMessageZulip, sendPollZulip } from "./zulip/send.js";
+import { resolveZulipDestination } from "./zulip/destination.js";
 import {
   resolveZulipOutboundSessionRoute,
   resolveZulipSessionConversation,
@@ -49,6 +50,31 @@ const meta = {
   quickstartAllowFrom: true,
   preferSessionLookupForAnnounceTarget: true,
 } as const;
+
+function zulipSendReceipt(
+  to: string,
+  threadId: string | number | null | undefined,
+  results: Array<{ messageId: string; channelId: string }>,
+  kind: "text" | "media" | "poll",
+) {
+  const destination = resolveZulipDestination(to, threadId);
+  const topic = destination.kind === "stream" ? { threadId: destination.topic } : {};
+  const platformMessageIds = results.map((result) => result.messageId).filter(Boolean);
+  return {
+    primaryPlatformMessageId: platformMessageIds[0],
+    platformMessageIds,
+    parts: results.map((result, index) => ({
+      platformMessageId: result.messageId,
+      kind,
+      index,
+      ...topic,
+      raw: { channel: "zulip", ...result },
+    })),
+    ...topic,
+    sentAt: Date.now(),
+    raw: results.map((result) => ({ channel: "zulip", ...result })),
+  };
+}
 
 export const zulipOutboundAdapter: ChannelOutboundAdapter = {
   deliveryMode: "direct",
@@ -83,7 +109,7 @@ export const zulipOutboundAdapter: ChannelOutboundAdapter = {
       accountId: accountId ?? undefined,
       topic: threadId == null ? undefined : String(threadId),
     });
-    return { channel: "zulip", ...result };
+    return { channel: "zulip", ...result, receipt: zulipSendReceipt(to, threadId, [result], "text") };
   },
   sendMedia: async ({
     cfg,
@@ -105,7 +131,7 @@ export const zulipOutboundAdapter: ChannelOutboundAdapter = {
       mediaLocalRoots,
       mediaReadFile,
     });
-    return { channel: "zulip", ...result };
+    return { channel: "zulip", ...result, receipt: zulipSendReceipt(to, threadId, [result], "media") };
   },
   sendPayload: async (ctx) => {
     const logger = getZulipRuntime().logging.getChildLogger({ module: "zulip" });
@@ -143,29 +169,11 @@ export const zulipOutboundAdapter: ChannelOutboundAdapter = {
       if (!primary) {
         throw new Error("Zulip media payload produced no send results");
       }
-      const platformMessageIds = results.map((result) => result.messageId).filter(Boolean);
       return {
         channel: "zulip",
         messageId: primary.messageId,
         channelId: primary.channelId,
-        receipt: {
-          primaryPlatformMessageId: platformMessageIds[0],
-          platformMessageIds,
-          parts: results.map((result, index) => ({
-            platformMessageId: result.messageId,
-            kind: "media" as const,
-            index,
-            ...(ctx.threadId == null ? {} : { threadId: String(ctx.threadId) }),
-            raw: { channel: "zulip", messageId: result.messageId, channelId: result.channelId },
-          })),
-          ...(ctx.threadId == null ? {} : { threadId: String(ctx.threadId) }),
-          sentAt: Date.now(),
-          raw: results.map((result) => ({
-            channel: "zulip",
-            messageId: result.messageId,
-            channelId: result.channelId,
-          })),
-        },
+        receipt: zulipSendReceipt(ctx.to, ctx.threadId, results, "media"),
       };
     }
     const result = await sendMessageZulip(ctx.to, text, {
@@ -175,7 +183,7 @@ export const zulipOutboundAdapter: ChannelOutboundAdapter = {
       presentation: ctx.payload.presentation,
       channelData: ctx.payload.channelData as ReplyPayload["channelData"] | undefined,
     });
-    return { channel: "zulip", ...result };
+    return { channel: "zulip", ...result, receipt: zulipSendReceipt(ctx.to, ctx.threadId, [result], "text") };
   },
   sendPoll: async ({ cfg, to, poll, accountId, threadId }) => {
     const result = await sendPollZulip(to, poll, {
@@ -183,7 +191,7 @@ export const zulipOutboundAdapter: ChannelOutboundAdapter = {
       accountId: accountId ?? undefined,
       topic: threadId == null ? undefined : String(threadId),
     });
-    return { channel: "zulip", pollId: result.messageId, ...result };
+    return { channel: "zulip", pollId: result.messageId, ...result, receipt: zulipSendReceipt(to, threadId, [result], "poll") };
   },
 };
 

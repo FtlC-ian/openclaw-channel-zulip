@@ -7,7 +7,7 @@ import {
 } from "./sdk.js";
 import { resolveZulipAccount } from "./zulip/accounts.js";
 import { normalizeZulipBaseUrl } from "./zulip/client.js";
-import { parseZulipTarget, type ZulipTarget } from "./zulip/send.js";
+import { resolveZulipDestination } from "./zulip/destination.js";
 
 const TOPIC_MARKER = ":topic:";
 
@@ -119,36 +119,14 @@ type ZulipOutboundSessionRouteParams = {
   threadId?: string | number | null;
 };
 
-function resolveZulipTarget(raw: string): ZulipTarget | null {
-  try {
-    return parseZulipTarget(raw);
-  } catch {
-    return null;
-  }
-}
-
-function resolveOutboundZulipTopic(params: {
-  targetTopic?: string | null;
-  threadId?: string | number | null;
-  replyToId?: string | null;
-}): string | undefined {
-  const targetTopic = params.targetTopic?.trim();
-  if (targetTopic) {
-    return targetTopic;
-  }
-  const replyToId = params.replyToId?.trim();
-  if (replyToId) {
-    return replyToId;
-  }
-  const threadId = params.threadId == null ? "" : String(params.threadId).trim();
-  return threadId || undefined;
-}
-
 export function resolveZulipOutboundSessionRoute(
   params: ZulipOutboundSessionRouteParams,
 ) {
-  const target = resolveZulipTarget(params.target);
-  if (!target) {
+  let target;
+  try {
+    // Legacy inbound contexts carry the raw topic in replyToId, not a message ID.
+    target = resolveZulipDestination(params.target, params.replyToId?.trim() || params.threadId);
+  } catch {
     return null;
   }
 
@@ -189,11 +167,7 @@ export function resolveZulipOutboundSessionRoute(
     };
   }
 
-  const topic = resolveOutboundZulipTopic({
-    targetTopic: target.topic,
-    threadId: params.threadId,
-    replyToId: params.replyToId,
-  });
+  const topic = target.topic;
   const streamConversation = buildZulipStreamConversation({
     streamId: target.stream,
     topic,
@@ -207,7 +181,7 @@ export function resolveZulipOutboundSessionRoute(
     peer: { kind: "channel", id: peerId },
     chatType: "channel",
     from: `zulip:channel:${target.stream}`,
-    to: topic ? `stream:${target.stream}:${topic}` : `stream:${target.stream}`,
-    ...(topic ? { threadId: topic } : {}),
+    to: `stream:${target.stream}:${topic}`,
+    threadId: topic,
   });
 }

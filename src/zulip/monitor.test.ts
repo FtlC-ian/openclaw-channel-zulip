@@ -197,6 +197,7 @@ const state = vi.hoisted(() => {
       },
       reply: {
         resolveHumanDelayConfig: vi.fn(() => undefined),
+        dispatchReplyFromConfig: vi.fn(),
         dispatchReplyWithBufferedBlockDispatcher: vi.fn(async () => {}),
       },
       session: {
@@ -571,6 +572,23 @@ describe("monitorZulipProvider", () => {
     state.addZulipReaction.mockReset().mockResolvedValue(undefined);
     state.removeZulipReaction.mockReset().mockResolvedValue(undefined);
     typingCallbacksMock.mockClear();
+  });
+
+  it("passes the exact runtime dispatcher for an accepted inbound message", async () => {
+    state.pollResponses = [
+      {
+        result: "success",
+        events: [{ id: 1, type: "message", message: makeChannelMessage(9100001) }],
+      },
+    ];
+
+    await runMonitorOnce();
+
+    const dispatch = state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher;
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(dispatch.mock.calls[0]?.[0]?.dispatchReplyFromConfig).toBe(
+      state.core.channel.reply.dispatchReplyFromConfig,
+    );
   });
 
   it("coalesces commentary and narration chunks in the task-progress draft before the final reply", async () => {

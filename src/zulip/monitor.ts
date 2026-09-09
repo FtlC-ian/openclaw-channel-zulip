@@ -1806,6 +1806,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         core.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
           ctx: ctxPayload,
           cfg,
+          dispatchReplyFromConfig: core.channel.reply.dispatchReplyFromConfig,
           dispatcherOptions,
           replyOptions: {
             disableBlockStreaming:

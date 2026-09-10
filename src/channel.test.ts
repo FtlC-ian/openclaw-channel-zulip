@@ -16,6 +16,8 @@ describe("zulipPlugin", () => {
       const normalize = zulipPlugin.messaging!.normalizeTarget!;
       const id = `42:topic:v2:${"a".repeat(64)}`;
       expect(normalize(id)).toBeUndefined();
+      expect(normalize(`channel:${id}`)).toBeUndefined();
+      expect(normalize(`group:${id}`)).toBeUndefined();
       expect(normalize(`agent:main:zulip:channel:${id}`)).toBeUndefined();
       expect(normalize("42:topic:Release A")).toBe("stream:42:Release A");
       expect(normalize("stream:42:")).toBe("stream:42:");

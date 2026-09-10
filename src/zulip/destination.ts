@@ -6,7 +6,7 @@ const DEFAULT_TOPIC = "general";
 
 function normalizeLegacyZulipTarget(raw: string): { normalized: string; convertedFromLegacy: boolean } {
   const trimmed = raw.trim();
-  if (/^(?:agent:[^:]+:zulip:|\d+:topic:v\d+:)/i.test(trimmed)) {
+  if (/^(?:agent:[^:]+:zulip:|(?:(?:channel|group):)?\d+:topic:v\d+:)/i.test(trimmed)) {
     throw new Error("Zulip session identities are not message destinations; use the saved stream/topic route");
   }
   const legacyMatch = trimmed.match(/^(\d+):topic:(.*)$/);

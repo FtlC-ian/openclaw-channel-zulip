@@ -102,6 +102,8 @@ describe("isolated Zulip topic sessions", () => {
   it("never treats a session digest or reply message ID as a destination topic", async () => {
     const id = conversation("Release A").conversationId;
     expect(() => resolveZulipDestination(id)).toThrow("not message destinations");
+    expect(() => resolveZulipDestination(`channel:${id}`)).toThrow("not message destinations");
+    expect(() => resolveZulipDestination(`group:${id}`)).toThrow("not message destinations");
     expect(() => resolveZulipDestination(`agent:main:zulip:channel:${id}`)).toThrow("not message destinations");
     expect(resolveZulipDestination(`stream:42:${id}`)).toMatchObject({ topic: id });
     const route = await resolveZulipOutboundSessionRoute({ cfg, agentId: "main", target: "stream:42", replyToId: "123456" });

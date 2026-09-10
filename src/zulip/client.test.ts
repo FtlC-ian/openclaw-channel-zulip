@@ -3,8 +3,10 @@ import {
   addZulipReaction,
   createZulipClient,
   createZulipReadBatcher,
+  fetchZulipMessages,
   registerZulipQueue,
   removeZulipReaction,
+  searchZulipMessages,
   updateZulipMessageFlag,
   updateZulipMessageFlags,
   zulipRequestWithRetry,
@@ -46,7 +48,20 @@ describe("registerZulipQueue", () => {
     expect(url).toBe("https://zulip.example.test/api/v1/register");
     expect(body.get("event_types")).toBe('["message"]');
     expect(body.get("all_public_streams")).toBe("true");
+    expect(JSON.parse(body.get("client_capabilities")!)).toEqual({ empty_topic_name: true });
     expect(body.has("narrow")).toBe(false);
+  });
+});
+
+describe("empty-topic history", () => {
+  it.each(["read", "search"])("keeps the empty-topic narrow on %s", async (action) => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({ result: "success", messages: [] }));
+    const client = createZulipClient({ baseUrl: "https://zulip.example.test", email: "bot@example.test", apiKey: "synthetic", fetchImpl });
+    if (action === "read") await fetchZulipMessages(client, { stream: "42", topic: "" });
+    else await searchZulipMessages(client, { query: "release", stream: "42", topic: "" });
+    const url = new URL(String(fetchImpl.mock.calls[0]?.[0]));
+    expect(JSON.parse(url.searchParams.get("narrow")!)).toContainEqual({ operator: "topic", operand: "" });
+    expect(url.searchParams.get("allow_empty_topic_name")).toBe("true");
   });
 });
 

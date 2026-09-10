@@ -54,13 +54,14 @@ export {
   DEFAULT_ACCOUNT_ID,
   normalizeAccountId,
   applyAccountNameToChannelSection,
-  buildAgentSessionKey,
   buildChannelOutboundSessionRoute,
   deleteAccountFromConfigSection,
   formatPairingApproveHint,
   migrateBaseNameToDefaultAccount,
   setAccountEnabledInConfigSection,
 } from "openclaw/plugin-sdk/core";
+
+export { buildAgentSessionKey } from "openclaw/plugin-sdk/routing";
 
 export { jsonResult } from "openclaw/plugin-sdk/core";
 export { readNumberParam, readStringParam } from "openclaw/plugin-sdk/param-readers";

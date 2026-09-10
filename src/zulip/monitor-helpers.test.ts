@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   createDedupeCache,
   formatInboundFromLabel,
-  resolveThreadSessionKeys,
 } from "./monitor-helpers.js";
 
 // ---------------------------------------------------------------------------
@@ -60,70 +59,6 @@ describe("createDedupeCache", () => {
     cache2.check("msg:2", now + 1);
     cache2.check("msg:3", now + 2);
     expect(cache2.check("msg:1", now + 3)).toBe(false);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// resolveThreadSessionKeys
-// ---------------------------------------------------------------------------
-describe("resolveThreadSessionKeys", () => {
-  it("returns baseSessionKey unchanged when no threadId", () => {
-    const result = resolveThreadSessionKeys({ baseSessionKey: "zulip:default:123" });
-    expect(result.sessionKey).toBe("zulip:default:123");
-    expect(result.parentSessionKey).toBeUndefined();
-    expect(result.sanitizedThreadId).toBeUndefined();
-  });
-
-  it("returns baseSessionKey unchanged for empty-string threadId", () => {
-    const result = resolveThreadSessionKeys({ baseSessionKey: "zulip:default:123", threadId: "" });
-    expect(result.sessionKey).toBe("zulip:default:123");
-    expect(result.sanitizedThreadId).toBeUndefined();
-  });
-
-  it("appends sanitized thread suffix for normal topic", () => {
-    const result = resolveThreadSessionKeys({
-      baseSessionKey: "zulip:default:456",
-      threadId: "General Chat",
-    });
-    expect(result.sessionKey).toBe("zulip:default:456:thread:general-chat");
-    expect(result.sanitizedThreadId).toBe("general-chat");
-  });
-
-  it("sanitizes path-unsafe characters in topic", () => {
-    const result = resolveThreadSessionKeys({
-      baseSessionKey: "zulip:acct:789",
-      threadId: "bugs/feature: Q&A?",
-    });
-    // / and : and ? should become hyphens, then collapsed
-    expect(result.sessionKey).toMatch(/^zulip:acct:789:thread:/);
-    expect(result.sanitizedThreadId).not.toMatch(/[/:?]/);
-  });
-
-  it("collapses multiple spaces and hyphens in topic", () => {
-    const result = resolveThreadSessionKeys({
-      baseSessionKey: "base",
-      threadId: "  hello   world  ",
-    });
-    expect(result.sanitizedThreadId).toBe("hello-world");
-  });
-
-  it("handles parentSessionKey passthrough", () => {
-    const result = resolveThreadSessionKeys({
-      baseSessionKey: "zulip:default:789",
-      threadId: "topic",
-      parentSessionKey: "zulip:default:789",
-    });
-    expect(result.parentSessionKey).toBe("zulip:default:789");
-  });
-
-  it("uses SHA hash prefix for very long topics (>200 chars)", () => {
-    const longTopic = "a".repeat(201);
-    const result = resolveThreadSessionKeys({
-      baseSessionKey: "base",
-      threadId: longTopic,
-    });
-    // sanitizedThreadId should be a 16-char hex hash, not the raw string
-    expect(result.sanitizedThreadId).toMatch(/^[0-9a-f]{16}$/);
   });
 });
 

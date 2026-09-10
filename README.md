@@ -54,12 +54,9 @@ or soak is claimed.
 
 ## Installation
 
-**Support change: this combined candidate requires OpenClaw >=2026.8.2, raised
-from the frozen fallback's 2026.7.1-2 floor.** The development dependency is
-pinned to 2026.8.2 for the public question and progress SDKs. The old floor is
-not supported by this candidate. Compatibility checks against newer hosts are
-separate from the minimum-host release gate; they are not a guarantee for every
-intervening version or a recommendation to upgrade a production Gateway.
+**This private candidate requires OpenClaw >=2026.9.3.** The development SDK is
+pinned to 2026.9.3, including its asynchronous outbound session-routing hook.
+Live acceptance is pending; this archive has not been published or installed.
 
 Durable inbound handling uses the shared ingress queue API. When upgrading an existing installation,
 pending records and
@@ -344,13 +341,34 @@ Topic-scoped conversations now resolve through the SDK session-conversation hook
 
 Basic approval authorization is now wired through `approvalCapability`, using normalized Zulip identities from `allowFrom` as the first pass.
 
+### Topic isolation and migration
+
+Each topic uses a versioned, opaque session identity scoped to the agent,
+configured account, normalized Zulip URL, bot email, and numeric stream ID.
+Unicode 16 lowercase matching preserves case aliases while keeping punctuation,
+spacing, and distinct Unicode sequences separate. `Release A` and `Release-A`
+no longer share history. Topic isolation applies even with `session.groupScope: "main"`.
+Stream bindings still select the agent; parent sessions never seed topic history.
+
+Wire topics remain readable and are stored separately from the session identity.
+Destinations and receipts use explicit target topic, inherited `threadId`, account
+`defaultTopic`, then `general`, in that order. Explicit empty topics stay empty;
+inbound messages without a subject are rejected. `replyToId` is a message ID.
+Empty topics require a Zulip server that supports them.
+
+The first message after upgrade starts a fresh v2 context. A rename or move uses
+the destination's context, and changing account, endpoint, or bot identity also
+starts fresh. No legacy history is imported automatically. Use the included
+[migration tool](docs/TOPIC_MIGRATION.md) to preview and archive old topic sessions
+through the gateway API while all Zulip accounts remain stopped. Archives follow
+ordinary OpenClaw history and retention policy.
+
 ### Direct-message isolation and rotation
 
 Zulip DMs always use an isolated OpenClaw session keyed by agent, channel,
 normalized account id, Zulip realm, bot identity, and sender identity. This
 remains enforced when the global `session.dmScope` is `main`; explicit identity
-links do not merge Zulip DM sessions. Stream and topic sessions retain their
-existing keys.
+links do not merge Zulip DM sessions.
 
 The isolated key format replaces older Zulip DM keys. After upgrading, each DM
 starts a fresh session on its first message. Existing transcripts remain on disk

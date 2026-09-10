@@ -256,7 +256,7 @@ export async function sendMessageZulip(
       normalizedTo: normalizedTarget.normalized,
     });
   }
-  const target = resolveZulipDestination(normalizedTarget.normalized, opts.topic);
+  const target = resolveZulipDestination(normalizedTarget.normalized, opts.topic, account.config.defaultTopic);
   let message = text?.trim() ?? "";
   const rawMediaUrl = opts.mediaUrl?.trim();
   let mediaUrl = rawMediaUrl;

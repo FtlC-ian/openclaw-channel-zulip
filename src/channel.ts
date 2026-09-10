@@ -52,12 +52,12 @@ const meta = {
 } as const;
 
 function zulipSendReceipt(
-  to: string,
-  threadId: string | number | null | undefined,
+  ctx: { cfg: OpenClawConfig; to: string; threadId?: string | number | null; accountId?: string | null },
   results: Array<{ messageId: string; channelId: string }>,
   kind: "text" | "media" | "poll",
 ) {
-  const destination = resolveZulipDestination(to, threadId);
+  const account = resolveZulipAccount({ cfg: ctx.cfg, accountId: ctx.accountId });
+  const destination = resolveZulipDestination(ctx.to, ctx.threadId, account.config.defaultTopic);
   const topic = destination.kind === "stream" ? { threadId: destination.topic } : {};
   const platformMessageIds = results.map((result) => result.messageId).filter(Boolean);
   return {
@@ -109,7 +109,7 @@ export const zulipOutboundAdapter: ChannelOutboundAdapter = {
       accountId: accountId ?? undefined,
       topic: threadId == null ? undefined : String(threadId),
     });
-    return { channel: "zulip", ...result, receipt: zulipSendReceipt(to, threadId, [result], "text") };
+    return { channel: "zulip", ...result, receipt: zulipSendReceipt({ cfg, to, threadId, accountId }, [result], "text") };
   },
   sendMedia: async ({
     cfg,
@@ -131,7 +131,7 @@ export const zulipOutboundAdapter: ChannelOutboundAdapter = {
       mediaLocalRoots,
       mediaReadFile,
     });
-    return { channel: "zulip", ...result, receipt: zulipSendReceipt(to, threadId, [result], "media") };
+    return { channel: "zulip", ...result, receipt: zulipSendReceipt({ cfg, to, threadId, accountId }, [result], "media") };
   },
   sendPayload: async (ctx) => {
     const logger = getZulipRuntime().logging.getChildLogger({ module: "zulip" });
@@ -173,7 +173,7 @@ export const zulipOutboundAdapter: ChannelOutboundAdapter = {
         channel: "zulip",
         messageId: primary.messageId,
         channelId: primary.channelId,
-        receipt: zulipSendReceipt(ctx.to, ctx.threadId, results, "media"),
+        receipt: zulipSendReceipt(ctx, results, "media"),
       };
     }
     const result = await sendMessageZulip(ctx.to, text, {
@@ -183,7 +183,7 @@ export const zulipOutboundAdapter: ChannelOutboundAdapter = {
       presentation: ctx.payload.presentation,
       channelData: ctx.payload.channelData as ReplyPayload["channelData"] | undefined,
     });
-    return { channel: "zulip", ...result, receipt: zulipSendReceipt(ctx.to, ctx.threadId, [result], "text") };
+    return { channel: "zulip", ...result, receipt: zulipSendReceipt(ctx, [result], "text") };
   },
   sendPoll: async ({ cfg, to, poll, accountId, threadId }) => {
     const result = await sendPollZulip(to, poll, {
@@ -191,7 +191,7 @@ export const zulipOutboundAdapter: ChannelOutboundAdapter = {
       accountId: accountId ?? undefined,
       topic: threadId == null ? undefined : String(threadId),
     });
-    return { channel: "zulip", pollId: result.messageId, ...result, receipt: zulipSendReceipt(to, threadId, [result], "poll") };
+    return { channel: "zulip", pollId: result.messageId, ...result, receipt: zulipSendReceipt({ cfg, to, threadId, accountId }, [result], "poll") };
   },
 };
 
@@ -346,34 +346,15 @@ export const zulipPlugin = {
   actions: zulipMessageActions,
   messaging: {
     normalizeTarget: normalizeZulipMessagingTarget,
-    ...({
-      resolveSessionConversation: ({
-        kind,
-        rawId,
-      }: {
-        kind: "group" | "channel";
-        rawId: string;
-      }) => resolveZulipSessionConversation({ kind, rawId }),
-      resolveSessionTarget: ({
-        kind,
-        id,
-        threadId,
-      }: {
-        kind: "group" | "channel";
-        id: string;
-        threadId?: string | null;
-      }) => {
-        const trimmedId = id.trim();
-        if (!trimmedId) {
-          return undefined;
-        }
-        if (kind === "group") {
-          return `user:${trimmedId}`;
-        }
-        return undefined;
-      },
-      resolveOutboundSessionRoute: resolveZulipOutboundSessionRoute,
-    } as Record<string, unknown>),
+    resolveSessionConversation: resolveZulipSessionConversation,
+    resolveSessionTarget: ({ kind, id }) => {
+      const trimmedId = id.trim();
+      if (kind === "group" && /^[^\s@:]+@[^\s@:]+$/.test(trimmedId)) {
+        return `user:${trimmedId}`;
+      }
+      return undefined;
+    },
+    resolveOutboundSessionRoute: resolveZulipOutboundSessionRoute,
     targetResolver: {
       looksLikeId: looksLikeZulipTargetId,
       hint: "<stream:NAME[:topic]|user:email|#stream[:topic]|@email>",

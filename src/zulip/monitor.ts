@@ -62,6 +62,7 @@ import {
 import {
   buildZulipDirectSessionKey,
   buildZulipStreamConversation,
+  buildZulipStreamSessionKey,
 } from "../session-conversation.js";
 import { sendMessageZulip } from "./send.js";
 import {
@@ -102,8 +103,6 @@ const RECENT_MESSAGE_MAX = 2000;
 const DEFAULT_ONCHAR_PREFIXES = [">", "!"];
 const PLACEHOLDER_DELETE_MAX_ATTEMPTS = 3;
 const PLACEHOLDER_DELETE_RETRY_MS = 50;
-/** Empty string = Zulip's "general chat" (no topic). */
-const FALLBACK_TOPIC = "";
 const PROGRESS_MUTATION_MIN_INTERVAL_MS = 1_000;
 const DEFAULT_ZULIP_PROGRESS_DRAFT_MAX_LINES = 4;
 const PROGRESS_DELETE_MAX_ATTEMPTS = 3;
@@ -571,7 +570,6 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     log: logVerboseMessage,
   });
 
-  const defaultTopic = account.config.defaultTopic?.trim() ?? FALLBACK_TOPIC;
   const oncharPrefixes = resolveOncharPrefixes(account.oncharPrefixes);
   const oncharEnabled = account.chatmode === "onchar";
 
@@ -626,12 +624,12 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       return undefined;
     }
     const streamId = String(message.stream_id ?? "").trim();
-    if (!streamId) {
+    if (!streamId || typeof message.subject !== "string") {
       return {
         accepted: false,
         streamId,
         streamName: "",
-        topic: message.subject?.trim() || defaultTopic,
+        topic: "",
         policy: { enabled: false },
       };
     }
@@ -671,7 +669,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       }
     }
 
-    const topic = message.subject?.trim() || defaultTopic;
+    const topic = message.subject;
     const policy = resolveZulipInboundStreamPolicy({
       config: account.config,
       streamName,
@@ -739,7 +737,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
 
     let streamName = "";
     let streamId = "";
-    let topic = defaultTopic;
+    let topic = "";
     let channelId = "";
     let inboundStreamPolicy: ResolvedZulipInboundStreamPolicy | undefined;
 
@@ -764,6 +762,14 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       topic = streamDecision.topic;
       inboundStreamPolicy = streamDecision.policy;
     }
+
+    const streamConversation = isDM ? null : buildZulipStreamConversation({
+      accountId: account.accountId,
+      baseUrl,
+      botIdentity: email,
+      streamId,
+      topic,
+    });
 
     const rawText = stripHtmlToText(message.content ?? "");
 
@@ -919,7 +925,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       if (questionControl.status !== "answered") {
         try {
           await sendMessageZulip(
-            isDM ? `user:${dmTargetIdentity}` : `stream:${streamName || streamId}:${topic}`,
+            isDM ? `user:${dmTargetIdentity}` : `stream:${streamId}:${topic}`,
             questionControl.feedback,
             { cfg, accountId: account.accountId, topic },
           );
@@ -1024,13 +1030,6 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       directId: senderIdentity,
     });
 
-    const streamConversation =
-      kind === "dm"
-        ? null
-        : buildZulipStreamConversation({
-            streamId: channelId,
-            topic,
-          });
     const streamMetadata =
       kind === "dm"
         ? undefined
@@ -1052,27 +1051,13 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         id: isDM ? dmTargetIdentity : (streamConversation?.conversationId ?? channelId),
       },
       parentPeer:
-        !isDM && streamConversation?.threadId
+        !isDM
           ? {
               kind: chatType,
               id: channelId,
             }
           : undefined,
     });
-
-    const parentSessionKey =
-      !isDM && streamConversation?.threadId
-        ? core.channel.routing.resolveAgentRoute({
-            cfg,
-            channel: "zulip",
-            accountId: account.accountId,
-            teamId: undefined,
-            peer: {
-              kind: chatType,
-              id: channelId,
-            },
-          }).sessionKey
-        : undefined;
 
     const sessionKey = isDM
       ? buildZulipDirectSessionKey({
@@ -1082,7 +1067,10 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
           botIdentity: email,
           senderIdentity: dmTargetIdentity,
         })
-      : route.sessionKey ?? `zulip:${account.accountId}:${channelId}`;
+      : buildZulipStreamSessionKey({
+          agentId: route.agentId,
+          conversationId: streamConversation!.conversationId,
+        });
 
     const timestamp = message.timestamp ? message.timestamp * 1000 : undefined;
     const textWithId = `${bodyText}\n[zulip message id: ${messageId}]`;
@@ -1096,7 +1084,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     });
 
     const to =
-      kind === "dm" ? `user:${dmTargetIdentity}` : `stream:${streamName || streamId}:${topic}`;
+      kind === "dm" ? `user:${dmTargetIdentity}` : `stream:${streamId}:${topic}`;
     const ctxPayload = core.channel.inbound.buildContext({
       channel: "zulip",
       accountId: route.accountId,
@@ -1108,18 +1096,17 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         kind: chatType,
         id: isDM ? dmTargetIdentity : (streamConversation?.conversationId ?? channelId),
         label: fromLabel,
-        threadId: streamConversation?.threadId,
+        threadId: isDM ? undefined : topic,
       },
       route: {
         agentId: route.agentId,
         accountId: route.accountId,
         routeSessionKey: sessionKey,
-        parentSessionKey,
       },
       reply: {
         to,
-        replyToId: topic || undefined,
-        messageThreadId: streamConversation?.threadId,
+        replyToId: messageId,
+        messageThreadId: isDM ? undefined : topic,
       },
       message: { body, rawBody: bodyText, commandBody: bodyText },
       access: {
@@ -1148,7 +1135,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     });
 
     const sessionCfg = cfg.session;
-      const storePath = core.agent.session.resolveStorePath(sessionCfg?.store, {
+    const storePath = core.agent.session.resolveStorePath(sessionCfg?.store, {
       agentId: route.agentId,
     });
     await core.channel.session.updateLastRoute({
@@ -1158,6 +1145,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         channel: "zulip",
         to,
         accountId: route.accountId,
+        ...(isDM ? {} : { threadId: topic }),
       },
     });
 

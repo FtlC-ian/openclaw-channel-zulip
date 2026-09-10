@@ -389,6 +389,7 @@ export async function registerZulipQueue(
   const body = new URLSearchParams();
   const eventTypes = params.eventTypes ?? ["message"];
   body.set("event_types", JSON.stringify(eventTypes));
+  body.set("client_capabilities", JSON.stringify({ empty_topic_name: true }));
   body.set("event_queue_longpoll_timeout_seconds", "90");
   // A stream narrow excludes direct messages. Receive DMs plus subscribed/private and
   // public stream messages, then enforce configured stream and topic policy client-side.
@@ -978,7 +979,7 @@ export async function fetchZulipMessages(
 ): Promise<ZulipMessage[]> {
   const limit = Math.min(Math.max(1, params.limit ?? 50), 1000);
   const narrow = [{ operator: "stream", operand: params.stream } as Record<string, unknown>];
-  if (params.topic) {
+  if (params.topic !== undefined) {
     narrow.push({ operator: "topic", operand: params.topic });
   }
   const qs = new URLSearchParams({
@@ -986,6 +987,7 @@ export async function fetchZulipMessages(
     num_before: String(limit),
     num_after: "0",
     narrow: JSON.stringify(narrow),
+    allow_empty_topic_name: "true",
   });
   const payload = await client.request<ZulipApiResponse & { messages?: ZulipMessage[] }>(
     `/messages?${qs.toString()}`,
@@ -1008,7 +1010,7 @@ export async function searchZulipMessages(
   if (params.stream) {
     narrow.push({ operator: "stream", operand: params.stream });
   }
-  if (params.topic) {
+  if (params.topic !== undefined) {
     narrow.push({ operator: "topic", operand: params.topic });
   }
   const qs = new URLSearchParams({
@@ -1016,6 +1018,7 @@ export async function searchZulipMessages(
     num_before: String(limit),
     num_after: "0",
     narrow: JSON.stringify(narrow),
+    allow_empty_topic_name: "true",
   });
   const payload = await client.request<ZulipApiResponse & { messages?: ZulipMessage[] }>(
     `/messages?${qs.toString()}`,

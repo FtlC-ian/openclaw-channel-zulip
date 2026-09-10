@@ -10,7 +10,7 @@ const state = vi.hoisted(() => ({
     apiKey: "synthetic-test-key",
     email: "bot@example.test",
     baseUrl: "https://zulip.example.test",
-    config: {},
+    config: {} as { defaultTopic?: string },
   },
 }));
 
@@ -39,8 +39,8 @@ const mediaUrl = "https://zulip.example.test/user_uploads/synthetic.png";
 const modes = ["text", "media", "payload", "multipart", "poll"] as const;
 type Mode = typeof modes[number];
 
-function send(mode: Mode, to: string, threadId?: string | number | null, replyToId?: string) {
-  const ctx = { cfg, to, threadId, replyToId, accountId: "default", text: "synthetic" };
+function send(mode: Mode, to: string, threadId?: string | number | null, replyToId?: string, sendCfg = cfg) {
+  const ctx = { cfg: sendCfg, to, threadId, replyToId, accountId: "default", text: "synthetic" };
   switch (mode) {
     case "text": return zulipMessageAdapter.send!.text!(ctx);
     case "media": return zulipMessageAdapter.send!.media!({ ...ctx, mediaUrl });
@@ -60,6 +60,7 @@ describe("raw destination, wire request, and explicit receipt agreement", () => 
   const fetchMock = vi.fn<typeof fetch>();
 
   beforeEach(() => {
+    state.account.config = {};
     bodies.length = 0;
     state.debug.mockClear();
     fetchMock.mockReset().mockImplementation(async (url, init) => {
@@ -75,27 +76,42 @@ describe("raw destination, wire request, and explicit receipt agreement", () => 
 
   describe.each(modes)("%s", (mode) => {
     it.each([
-      { to: "stream:synthetic:Canonical Topic", threadId: "Different Session Topic", topic: "Canonical Topic" },
-      { to: "stream:synthetic", threadId: "Inherited Topic", topic: "Inherited Topic" },
-      { to: "stream:synthetic", threadId: undefined, topic: "general" },
-      { to: "stream:synthetic:", threadId: "", topic: "general" },
-      { to: "stream:synthetic", threadId: "   ", topic: "general" },
-      { to: "stream:synthetic", threadId: " Inherited Topic ", topic: "Inherited Topic" },
-      { to: "stream:synthetic", threadId: 123, topic: "123" },
-      { to: "#synthetic/Canonical Topic", threadId: "other", topic: "Canonical Topic" },
-      { to: "stream:synthetic#Canonical Topic", threadId: "other", topic: "Canonical Topic" },
+      { to: "stream:42", threadId: undefined, expected: "Bot replies" },
+      { to: "stream:42", threadId: "", expected: "" },
+      { to: "stream:42:", threadId: "inherited", expected: "" },
+    ])("agrees on configured defaults and empty-topic overrides: $to / $threadId", async ({ to, threadId, expected }) => {
+      state.account.config = { defaultTopic: "Bot replies" };
+      const sendCfg = { channels: { zulip: { ...cfg.channels!.zulip, defaultTopic: "Bot replies" } } } as OpenClawConfig;
+      const route = await resolveZulipOutboundSessionRoute({ cfg: sendCfg, agentId: "main", target: to, threadId });
+      const result = await send(mode, to, threadId, undefined, sendCfg);
+      expect(route).toMatchObject({ threadId: expected, to: `stream:42:${expected}` });
+      expect(result.receipt.threadId).toBe(expected);
+      for (const part of result.receipt.parts) expect(part.threadId).toBe(expected);
+      for (const body of bodies) expect(body.get("topic")).toBe(expected);
+    });
+
+    it.each([
+      { to: "stream:42:Canonical Topic", threadId: "Different Session Topic", topic: "Canonical Topic" },
+      { to: "stream:42", threadId: "Inherited Topic", topic: "Inherited Topic" },
+      { to: "stream:42", threadId: undefined, topic: "general" },
+      { to: "stream:42:", threadId: "", topic: "" },
+      { to: "stream:42", threadId: "   ", topic: "" },
+      { to: "stream:42", threadId: " Inherited Topic ", topic: "Inherited Topic" },
+      { to: "stream:42", threadId: 123, topic: "123" },
+      { to: "#42/Canonical Topic", threadId: "other", topic: "Canonical Topic" },
+      { to: "stream:42#Canonical Topic", threadId: "other", topic: "Canonical Topic" },
       { to: "42:topic:Canonical Topic", threadId: "other", topic: "Canonical Topic", stream: "42" },
     ])("matches route, API topic, logs and every receipt part: $to / $threadId", async ({ to, threadId, topic, stream }) => {
-      const route = resolveZulipOutboundSessionRoute({ cfg, agentId: "main", target: to, threadId });
+      const route = await resolveZulipOutboundSessionRoute({ cfg, agentId: "main", target: to, threadId });
       const result = await send(mode, to, threadId);
-      expect(route).toMatchObject({ to: `stream:${stream ?? "synthetic"}:${topic}`, threadId: topic });
+      expect(route).toMatchObject({ to: `stream:${stream ?? "42"}:${topic}`, threadId: topic });
       expect(bodies).toHaveLength(mode === "multipart" ? 2 : 1);
       expect(result.receipt.threadId).toBe(topic);
       expect(result.receipt.platformMessageIds).toEqual(bodies.map((_, i) => String(101 + i)));
       expect(result.receipt.parts).toHaveLength(bodies.length);
       bodies.forEach((body, index) => {
         expect(body.get("type")).toBe("stream");
-        expect(body.get("to")).toBe(stream ?? "synthetic");
+        expect(body.get("to")).toBe(stream ?? "42");
         expect(body.get("topic")).toBe(topic);
         expect(result.receipt.parts[index]?.threadId).toBe(body.get("topic"));
         expect(result.receipt.parts[index]?.platformMessageId).toBe(String(101 + index));
@@ -106,7 +122,7 @@ describe("raw destination, wire request, and explicit receipt agreement", () => 
     });
 
     it.each(["user:alice@example.test", "dm:alice@example.test", "@alice@example.test", "zulip:alice@example.test", "alice@example.test"])("preserves DM sends without fabricating topic receipts: %s", async (to) => {
-      const route = resolveZulipOutboundSessionRoute({ cfg, agentId: "main", target: to, threadId: "unrelated" });
+      const route = await resolveZulipOutboundSessionRoute({ cfg, agentId: "main", target: to, threadId: "unrelated" });
       const result = await send(mode, to, "unrelated");
       expect(route).toMatchObject({ chatType: "direct", to: "user:alice@example.test" });
       expect(result.receipt.threadId).toBeUndefined();
@@ -119,7 +135,7 @@ describe("raw destination, wire request, and explicit receipt agreement", () => 
     });
 
     it("does not let a reply message ID override an explicit destination or invent a reply receipt", async () => {
-      const result = await send(mode, "stream:synthetic:Canonical Topic", "other", "9876");
+      const result = await send(mode, "stream:42:Canonical Topic", "other", "9876");
       expect(result.receipt.threadId).toBe("Canonical Topic");
       expect(result.receipt.replyToId).toBeUndefined();
       for (const part of result.receipt.parts) expect(part.replyToId).toBeUndefined();
@@ -128,22 +144,22 @@ describe("raw destination, wire request, and explicit receipt agreement", () => 
 
     it("propagates API failure rather than returning a success receipt", async () => {
       fetchMock.mockResolvedValue(Response.json({ result: "error", msg: "synthetic rejection" }, { status: 400 }));
-      await expect(send(mode, "stream:synthetic:Canonical Topic")).rejects.toThrow("synthetic rejection");
+      await expect(send(mode, "stream:42:Canonical Topic")).rejects.toThrow("synthetic rejection");
     });
   });
 
-  it("keeps the legacy route-only replyToId topic boundary explicit", async () => {
-    const route = resolveZulipOutboundSessionRoute({
-      cfg, agentId: "main", target: "stream:synthetic", replyToId: "Raw Topic", threadId: "raw-topic",
+  it("never interprets a reply message ID as a topic", async () => {
+    const route = await resolveZulipOutboundSessionRoute({
+      cfg, agentId: "main", target: "stream:42", replyToId: "9876", threadId: "Raw Topic",
     });
-    expect(route).toMatchObject({ to: "stream:synthetic:Raw Topic", threadId: "Raw Topic" });
-    const result = await send("text", route!.to, "raw-topic", "Raw Topic");
+    expect(route).toMatchObject({ to: "stream:42:Raw Topic", threadId: "Raw Topic" });
+    const result = await send("text", route!.to, "Raw Topic", "9876");
     expect(result.receipt.threadId).toBe("Raw Topic");
     expect(bodies[0]?.get("topic")).toBe("Raw Topic");
   });
 
   it("rejects missing targets without falling back to lastTo", async () => {
-    expect(resolveZulipOutboundSessionRoute({ cfg, agentId: "main", target: "" })).toBeNull();
+    expect(await resolveZulipOutboundSessionRoute({ cfg, agentId: "main", target: "" })).toBeNull();
     await expect(send("text", "")).rejects.toThrow("Recipient is required");
     expect(fetchMock).not.toHaveBeenCalled();
   });

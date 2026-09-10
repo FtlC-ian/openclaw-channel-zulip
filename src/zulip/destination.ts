@@ -6,7 +6,10 @@ const DEFAULT_TOPIC = "general";
 
 function normalizeLegacyZulipTarget(raw: string): { normalized: string; convertedFromLegacy: boolean } {
   const trimmed = raw.trim();
-  const legacyMatch = trimmed.match(/^(\d+):topic:(.+)$/);
+  if (/^(?:agent:[^:]+:zulip:|\d+:topic:v\d+:)/i.test(trimmed)) {
+    throw new Error("Zulip session identities are not message destinations; use the saved stream/topic route");
+  }
+  const legacyMatch = trimmed.match(/^(\d+):topic:(.*)$/);
   if (!legacyMatch) {
     return { normalized: trimmed, convertedFromLegacy: false };
   }
@@ -41,6 +44,7 @@ export function parseZulipTarget(raw: string): ZulipTarget {
     const sepIdx = [colonIdx, slashIdx, hashIdx].filter(i => i >= 0).reduce((a, b) => Math.min(a, b), Infinity);
     const stream = sepIdx === Infinity ? rest : rest.slice(0, sepIdx);
     const topic = sepIdx === Infinity ? undefined : rest.slice(sepIdx + 1);
+    if (!stream.trim()) throw new Error("Stream name is required for Zulip sends");
     return { kind: "stream", stream: stream.trim(), topic: topic?.trim() };
   }
   if (lower.startsWith("user:") || lower.startsWith("dm:")) {
@@ -89,9 +93,9 @@ export function parseZulipTarget(raw: string): ZulipTarget {
   return { kind: "stream", stream: trimmed };
 }
 
-export function resolveZulipDestination(raw: string, topic?: string | number | null) {
+export function resolveZulipDestination(raw: string, topic?: string | number | null, defaultTopic?: string) {
   const target = parseZulipTarget(raw);
   return target.kind === "user"
     ? target
-    : { ...target, topic: target.topic || (topic == null ? "" : String(topic).trim()) || DEFAULT_TOPIC };
+    : { ...target, topic: target.topic ?? (topic == null ? defaultTopic?.trim() ?? DEFAULT_TOPIC : String(topic).trim()) };
 }

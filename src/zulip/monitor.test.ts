@@ -591,6 +591,66 @@ describe("monitorZulipProvider", () => {
     );
   });
 
+  it("keeps the raw topic and reply message ID in their SDK fields", async () => {
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 1, type: "message", message: {
+        ...makeChannelMessage(9100002), subject: "Release A / B",
+      } }],
+    }];
+
+    await runMonitorOnce();
+
+    expect(state.core.channel.inbound.buildContext).toHaveBeenCalledWith(expect.objectContaining({
+      conversation: expect.objectContaining({ threadId: "Release A / B" }),
+      reply: expect.objectContaining({ replyToId: "9100002", messageThreadId: "Release A / B" }),
+    }));
+    const ctx = state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mock.calls[0]?.[0]?.ctx;
+    expect(ctx).toMatchObject({ ReplyToId: "9100002", MessageThreadId: "Release A / B" });
+  });
+
+  it("dispatches colliding legacy slugs and the empty topic into separate fresh sessions", async () => {
+    state.account.config.defaultTopic = "general";
+    const topics = ["Release A", "Release-A", "", "general"];
+    state.autoAbort = false;
+    let turns = 0;
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async () => {
+      if (++turns === topics.length) state.abortController?.abort();
+      return { counts: { final: 0 } };
+    });
+    state.pollResponses = [{
+      result: "success",
+      events: topics.map((subject, index) => ({
+        id: index + 1, type: "message", message: { ...makeChannelMessage(95000 + index), subject },
+      })),
+    }];
+    await runMonitorOnce();
+
+    const contexts = state.core.channel.inbound.buildContext.mock.calls.map(([ctx]) => ctx);
+    expect(contexts).toHaveLength(4);
+    expect(new Set(contexts.map((ctx) => ctx.route.routeSessionKey)).size).toBe(4);
+    contexts.forEach((ctx, index) => {
+      expect(ctx.route.parentSessionKey).toBeUndefined();
+      expect(ctx.reply).toMatchObject({ to: `stream:4:${topics[index]}`, messageThreadId: topics[index] });
+      expect(ctx.route.routeSessionKey).toMatch(/^agent:debbie:zulip:channel:4:topic:v2:[0-9a-f]{64}$/);
+    });
+    const dispatched = state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mock.calls.map(([params]) => params.ctx);
+    expect(dispatched.map((ctx) => ctx.SessionKey)).toEqual(contexts.map((ctx) => ctx.route.routeSessionKey));
+    expect(dispatched.every((ctx) => ctx.ParentSessionKey === undefined)).toBe(true);
+  });
+
+  it.each([null, undefined])("rejects a missing observed topic (%j) before accepting or downloading", async (subject) => {
+    enableDurableInboundJournal();
+    state.extractedUploadUrls = ["https://zulip.example.test/user_uploads/file.txt"];
+    state.pollResponses = [{ result: "success", events: [{
+      id: 1, type: "message", message: { ...makeChannelMessage(95010), subject },
+    }] }];
+    await runMonitorOnce();
+    expect(downloadZulipUploadMock).not.toHaveBeenCalled();
+    expect(state.core.channel.inbound.buildContext).not.toHaveBeenCalled();
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+  });
+
   it("coalesces commentary and narration chunks in the task-progress draft before the final reply", async () => {
     vi.useFakeTimers();
     state.autoAbort = false;
@@ -675,7 +735,7 @@ describe("monitorZulipProvider", () => {
     );
     expect(state.deleteZulipMessage).toHaveBeenCalledWith(state.client, { messageId: "outbound-1" });
     expect(state.sendMessageZulip).toHaveBeenLastCalledWith(
-      "stream:debbie:zulip-plugin-pr",
+      "stream:4:zulip-plugin-pr",
       "Final answer",
       expect.objectContaining({ topic: "zulip-plugin-pr" }),
     );
@@ -734,7 +794,7 @@ describe("monitorZulipProvider", () => {
     expect(state.deleteZulipMessage).toHaveBeenCalledWith(state.client, { messageId: "progress-1" });
     expect(state.deleteZulipMessage).toHaveBeenCalledWith(state.client, { messageId: "progress-2" });
     expect(state.sendMessageZulip).toHaveBeenLastCalledWith(
-      "stream:debbie:zulip-plugin-pr",
+      "stream:4:zulip-plugin-pr",
       "Final answer",
       expect.objectContaining({ topic: "zulip-plugin-pr" }),
     );
@@ -1729,9 +1789,9 @@ describe("monitorZulipProvider", () => {
 
     await runMonitorOnce();
 
-    expect(state.sendMessageZulip).toHaveBeenNthCalledWith(1, "stream:debbie:zulip-plugin-pr", "Thinking…", expect.objectContaining({ topic: "zulip-plugin-pr" }));
+    expect(state.sendMessageZulip).toHaveBeenNthCalledWith(1, "stream:4:zulip-plugin-pr", "Thinking…", expect.objectContaining({ topic: "zulip-plugin-pr" }));
     expect(state.editZulipMessage).toHaveBeenCalledWith(state.client, { messageId: "outbound-1", content: "first chunk" });
-    expect(state.sendMessageZulip).toHaveBeenNthCalledWith(2, "stream:debbie:zulip-plugin-pr", "second chunk", expect.any(Object));
+    expect(state.sendMessageZulip).toHaveBeenNthCalledWith(2, "stream:4:zulip-plugin-pr", "second chunk", expect.any(Object));
     expect(state.deleteZulipMessage).not.toHaveBeenCalled();
   });
 
@@ -1777,7 +1837,7 @@ describe("monitorZulipProvider", () => {
     await runMonitorOnce();
 
     expect(state.deleteZulipMessage).toHaveBeenCalledWith(state.client, { messageId: "outbound-1" });
-    expect(state.sendMessageZulip).toHaveBeenNthCalledWith(2, "stream:debbie:zulip-plugin-pr", "", expect.objectContaining({ presentation: expect.any(Object) }));
+    expect(state.sendMessageZulip).toHaveBeenNthCalledWith(2, "stream:4:zulip-plugin-pr", "", expect.objectContaining({ presentation: expect.any(Object) }));
   });
 
   it("removes the placeholder before a media-only reply", async () => {
@@ -1862,7 +1922,7 @@ describe("monitorZulipProvider", () => {
     expect(state.sendMessageZulip).toHaveBeenCalledTimes(3);
     expect(state.sendMessageZulip).toHaveBeenNthCalledWith(
       3,
-      "stream:debbie:zulip-plugin-pr",
+      "stream:4:zulip-plugin-pr",
       "Turn failed.",
       expect.objectContaining({ topic: "zulip-plugin-pr" }),
     );
@@ -1930,13 +1990,13 @@ describe("monitorZulipProvider", () => {
     });
     expect(state.sendMessageZulip).toHaveBeenNthCalledWith(
       2,
-      "stream:debbie:zulip-plugin-pr",
+      "stream:4:zulip-plugin-pr",
       expectedFirstReply,
       expect.objectContaining(expectedFirstReplyOptions),
     );
     expect(state.sendMessageZulip).toHaveBeenCalledTimes(3);
     expect(state.sendMessageZulip).not.toHaveBeenCalledWith(
-      "stream:debbie:zulip-plugin-pr",
+      "stream:4:zulip-plugin-pr",
       "Turn failed.",
       expect.any(Object),
     );
@@ -1968,7 +2028,7 @@ describe("monitorZulipProvider", () => {
     await runMonitorOnce();
 
     expect(state.sendMessageZulip).toHaveBeenCalledTimes(2);
-    expect(state.sendMessageZulip).toHaveBeenNthCalledWith(2, "stream:debbie:zulip-plugin-pr", "actual reply", expect.any(Object));
+    expect(state.sendMessageZulip).toHaveBeenNthCalledWith(2, "stream:4:zulip-plugin-pr", "actual reply", expect.any(Object));
     expect(state.editZulipMessage).not.toHaveBeenCalled();
     expect(state.deleteZulipMessage).not.toHaveBeenCalled();
   });
@@ -1984,7 +2044,7 @@ describe("monitorZulipProvider", () => {
     await runMonitorOnce();
 
     expect(state.deleteZulipMessage).toHaveBeenCalledWith(state.client, { messageId: "outbound-1" });
-    expect(state.sendMessageZulip).toHaveBeenNthCalledWith(2, "stream:debbie:zulip-plugin-pr", "actual reply", expect.any(Object));
+    expect(state.sendMessageZulip).toHaveBeenNthCalledWith(2, "stream:4:zulip-plugin-pr", "actual reply", expect.any(Object));
   });
 
   it("forwards presentation and channel data only with the first text chunk", async () => {
@@ -2004,11 +2064,11 @@ describe("monitorZulipProvider", () => {
     await runMonitorOnce();
 
     expect(sendMessageZulipMock).toHaveBeenCalledTimes(2);
-    expect(sendMessageZulipMock).toHaveBeenNthCalledWith(1, "stream:debbie:zulip-plugin-pr", "first chunk", expect.objectContaining({
+    expect(sendMessageZulipMock).toHaveBeenNthCalledWith(1, "stream:4:zulip-plugin-pr", "first chunk", expect.objectContaining({
       presentation: expect.any(Object),
       channelData: { zulip: { widgetContent: { widget_type: "zform" } } },
     }));
-    expect(sendMessageZulipMock).toHaveBeenNthCalledWith(2, "stream:debbie:zulip-plugin-pr", "second chunk", expect.objectContaining({
+    expect(sendMessageZulipMock).toHaveBeenNthCalledWith(2, "stream:4:zulip-plugin-pr", "second chunk", expect.objectContaining({
       presentation: undefined,
       channelData: undefined,
     }));
@@ -2031,12 +2091,12 @@ describe("monitorZulipProvider", () => {
     await runMonitorOnce();
 
     expect(sendMessageZulipMock).toHaveBeenCalledTimes(2);
-    expect(sendMessageZulipMock).toHaveBeenNthCalledWith(1, "stream:debbie:zulip-plugin-pr", "caption", expect.objectContaining({
+    expect(sendMessageZulipMock).toHaveBeenNthCalledWith(1, "stream:4:zulip-plugin-pr", "caption", expect.objectContaining({
       mediaUrl: "https://example.com/one.png",
       presentation: expect.any(Object),
       channelData: { zulip: { widgetContent: { widget_type: "zform" } } },
     }));
-    expect(sendMessageZulipMock).toHaveBeenNthCalledWith(2, "stream:debbie:zulip-plugin-pr", "", expect.objectContaining({
+    expect(sendMessageZulipMock).toHaveBeenNthCalledWith(2, "stream:4:zulip-plugin-pr", "", expect.objectContaining({
       mediaUrl: "https://example.com/two.png",
       presentation: undefined,
       channelData: undefined,
@@ -2057,7 +2117,7 @@ describe("monitorZulipProvider", () => {
     await runMonitorOnce();
 
     expect(sendMessageZulipMock).toHaveBeenCalledTimes(1);
-    expect(sendMessageZulipMock).toHaveBeenCalledWith("stream:debbie:zulip-plugin-pr", "", expect.objectContaining({
+    expect(sendMessageZulipMock).toHaveBeenCalledWith("stream:4:zulip-plugin-pr", "", expect.objectContaining({
       presentation: expect.any(Object),
     }));
   });
@@ -2077,7 +2137,7 @@ describe("monitorZulipProvider", () => {
     await runMonitorOnce();
 
     expect(sendMessageZulipMock).toHaveBeenCalledTimes(1);
-    expect(sendMessageZulipMock).toHaveBeenCalledWith("stream:debbie:zulip-plugin-pr", "", expect.objectContaining({
+    expect(sendMessageZulipMock).toHaveBeenCalledWith("stream:4:zulip-plugin-pr", "", expect.objectContaining({
       channelData: { execApproval: { approvalId: "approval-1" } },
     }));
   });
@@ -2166,7 +2226,7 @@ describe("monitorZulipProvider", () => {
     await runMonitorOnce();
 
     expect(sendMessageZulipMock).toHaveBeenCalledWith(
-      "stream:debbie:zulip-plugin-pr",
+      "stream:4:zulip-plugin-pr",
       "That question is no longer active.",
       expect.objectContaining({ accountId: "default", topic: "zulip-plugin-pr" }),
     );
@@ -2624,11 +2684,12 @@ describe("monitorZulipProvider", () => {
     );
     expect(state.core.channel.session.updateLastRoute).toHaveBeenCalledWith({
       storePath: "/resolved/debbie/session-store",
-      sessionKey: "agent:debbie:zulip:channel:4",
+      sessionKey: expect.stringMatching(/^agent:debbie:zulip:channel:4:topic:v2:[0-9a-f]{64}$/),
       deliveryContext: {
         channel: "zulip",
-        to: "stream:debbie:zulip-plugin-pr",
+        to: "stream:4:zulip-plugin-pr",
         accountId: "default",
+        threadId: "zulip-plugin-pr",
       },
     });
   });
@@ -4113,7 +4174,7 @@ describe("monitorZulipProvider", () => {
     await expect(completedStore?.entries()).resolves.toEqual([]);
     expect(state.sendMessageZulip).toHaveBeenNthCalledWith(
       3,
-      "stream:debbie:zulip-plugin-pr",
+      "stream:4:zulip-plugin-pr",
       "Turn failed.",
       expect.objectContaining({ topic: "zulip-plugin-pr" }),
     );

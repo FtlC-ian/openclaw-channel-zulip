@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026.9.10-rc.1 — Private test candidate
+
+- Isolate topic sessions using scoped, versioned hashes and pinned Unicode 16 lowercase matching; resolve stream names through the 2026.9.3 SDK's async routing hook.
+- Keep raw topic destinations separate from session identity; unify sends, routes, actions, and receipts, including configured defaults and empty topics. Use message IDs for replies and preserve raw thread delivery context.
+- Start fresh topic contexts without parent-history inheritance; include a preview/apply gateway migration tool for archiving legacy sessions.
+- Require OpenClaw >=2026.9.3. This plugin does not contain the separate core completion-batch fix for issue #13.
+
 ## Private combined candidate (unpublished)
 
 - **Raised minimum host from fallback 2026.7.1-2 to OpenClaw >=2026.8.2.** Older hosts are not supported by this candidate.

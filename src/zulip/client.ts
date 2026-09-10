@@ -36,6 +36,9 @@ export type ZulipUser = {
   email?: string | null;
   full_name?: string | null;
   is_admin?: boolean | null;
+  is_bot?: boolean;
+  is_active?: boolean;
+  bot_owner_id?: number | null;
 };
 
 export type ZulipStream = {
@@ -325,7 +328,7 @@ export async function fetchZulipMe(client: ZulipClient): Promise<ZulipUser> {
 
 export async function fetchZulipUser(client: ZulipClient, userId: string): Promise<ZulipUser> {
   const payload = await client.request<
-    ZulipApiResponse & { user?: { user_id: number; email?: string; full_name?: string } }
+    ZulipApiResponse & { user?: { user_id: number; email?: string; full_name?: string; is_bot?: boolean; is_active?: boolean; bot_owner_id?: number | null } }
   >(`/users/${userId}`);
   assertSuccess(payload, "Zulip /users/{id} failed");
   const user = payload.user;
@@ -333,6 +336,9 @@ export async function fetchZulipUser(client: ZulipClient, userId: string): Promi
     id: String(user?.user_id ?? userId),
     email: user?.email ?? null,
     full_name: user?.full_name ?? null,
+    ...(user?.is_bot === undefined ? {} : { is_bot: user.is_bot }),
+    ...(user?.is_active === undefined ? {} : { is_active: user.is_active }),
+    ...(user?.bot_owner_id === undefined ? {} : { bot_owner_id: user.bot_owner_id }),
   };
 }
 

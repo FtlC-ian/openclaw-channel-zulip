@@ -56,6 +56,8 @@ export type ZulipAccountConfig = {
   apiKey?: SecretInput;
   /** Default topic for messages without a topic. Empty string = Zulip's "general chat". */
   defaultTopic?: string;
+  /** Explicit stream/topic used if an unroutable message's bot owner cannot be resolved. */
+  routingDiagnosticsTarget?: string;
   /** Restrict monitored streams ("*" = all streams). */
   streams?: string[];
   /** Restrict monitored stream topics globally ("*" or empty = all topics). Case-insensitive after trimming. */

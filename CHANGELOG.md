@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026.9.10-rc.2 — Private test candidate
+
+- When a session-only target has lost its delivery context, forward the message to the selected Zulip bot's active owner with an explicit routing-failure note and investigation details.
+- Permit an explicit `routingDiagnosticsTarget` as backup when the owner cannot be resolved. Do not infer a stream from an opaque key or redirect ordinary API send failures.
+- Derive receipts from the actual sent destination, including fallback metadata and each multipart result, without creating or rebinding session history for the recovery delivery.
+
 ## 2026.9.10-rc.1 — Private test candidate
 
 - Isolate topic sessions using scoped, versioned hashes and pinned Unicode 16 lowercase matching; resolve stream names through the 2026.9.3 SDK's async routing hook.

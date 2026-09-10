@@ -363,6 +363,40 @@ starts fresh. No legacy history is imported automatically. Use the included
 through the gateway API while all Zulip accounts remain stopped. Archives follow
 ordinary OpenClaw history and retention policy.
 
+### Delivery fallback
+
+If OpenClaw loses a saved delivery route and supplies only an opaque Zulip session
+identity, the plugin forwards the message to the **selected bot's active owner**.
+It discovers the owner through the Zulip API; an email does not need to be hard-coded.
+The message includes a routing-failure note, the unresolved session target, and the
+selected account. Attachments remain attached, and receipts identify where each part
+actually went. The recovery delivery does not create or rebind a conversation session.
+
+If the owner cannot be resolved, an explicitly configured diagnostics topic can receive
+the message instead:
+
+```json
+{
+  "channels": {
+    "zulip": {
+      "routingDiagnosticsTarget": "stream:private-ops:openclaw-diagnostics"
+    }
+  }
+}
+```
+
+Choose a private stream/topic authorized to receive the original content. The setting
+also works under `accounts.<id>`. If neither owner nor diagnostics target is available,
+delivery fails with a configuration error; it never guesses a stream. If a recovered
+send itself fails, normal failure/retry behavior applies without redirecting it again.
+Ordinary destination errors and API send failures do not trigger this fallback.
+
+Some core session-key fallbacks omit the original account. In that case, OpenClaw's
+selected/default account supplies the bot whose owner is notified. The note makes
+clear that the original account and topic could not be recovered. This fallback is
+also useful for the core `sessions_send` lookup limit of 200 sessions; it does not
+remove that core limit.
+
 ### Direct-message isolation and rotation
 
 Zulip DMs always use an isolated OpenClaw session keyed by agent, channel,

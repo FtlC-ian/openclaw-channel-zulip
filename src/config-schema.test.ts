@@ -27,6 +27,18 @@ const loadPackagedChannelSchema = (): JsonSchema => {
 };
 
 describe("Zulip lifecycle reaction config", () => {
+  it("accepts explicit routing diagnostics topics consistently across account and packaged schemas", () => {
+    const config = { routingDiagnosticsTarget: "stream:private-ops:openclaw-diagnostics" };
+    expect(zulipChannelConfigSchema.runtime.safeParse({ ...config, accounts: { work: config } }).success).toBe(true);
+    for (const target of ["", "stream:private-ops", "user:owner@example.test", "channel:42:topic:v2:abc"]) {
+      expect(zulipChannelConfigSchema.runtime.safeParse({ routingDiagnosticsTarget: target }).success).toBe(false);
+    }
+    const runtime = (zulipChannelConfigSchema.schema as JsonSchema).properties?.routingDiagnosticsTarget;
+    const manifest = loadPackagedChannelSchema();
+    expect(manifest.properties?.routingDiagnosticsTarget).toEqual(runtime);
+    expect(manifest.$defs?.zulipAccount?.properties?.routingDiagnosticsTarget).toEqual(runtime);
+  });
+
   it("preserves packaged and runtime legacy placeholder configuration alongside progress", () => {
     const manifest = loadPackagedChannelSchema();
     const runtime = zulipChannelConfigSchema.schema as JsonSchema;

@@ -112,6 +112,7 @@
                 "additionalProperties": { "$ref": "#/$defs/zulipStreamRule" }
               },
               "defaultTopic": { "type": "string" },
+              "routingDiagnosticsTarget": { "type": "string", "pattern": "^stream:[^:\\/#]+[:\\/#].*$" },
               "chatmode": { "type": "string", "enum": ["oncall", "onmessage", "onchar"] },
               "oncharPrefixes": { "type": "array", "items": { "type": "string" } },
               "requireMention": { "type": "boolean" },
@@ -341,6 +342,7 @@
             "additionalProperties": { "$ref": "#/$defs/zulipStreamRule" }
           },
           "defaultTopic": { "type": "string" },
+          "routingDiagnosticsTarget": { "type": "string", "pattern": "^stream:[^:\\/#]+[:\\/#].*$" },
           "chatmode": { "type": "string", "enum": ["oncall", "onmessage", "onchar"] },
           "oncharPrefixes": { "type": "array", "items": { "type": "string" } },
           "requireMention": { "type": "boolean" },
@@ -577,6 +579,11 @@
           "label": "Default Topic",
           "placeholder": "general chat"
         },
+        "routingDiagnosticsTarget": {
+          "label": "Routing Diagnostics Topic",
+          "description": "Receives an unroutable message if its bot owner cannot be resolved. Choose a private stream/topic authorized to receive the original content.",
+          "placeholder": "stream:private-ops:openclaw-diagnostics"
+        },
         "dmPolicy": {
           "label": "DM Policy"
         },
@@ -636,6 +643,10 @@
     "defaultTopic": {
       "label": "Default Topic",
       "placeholder": "general chat"
+    },
+    "routingDiagnosticsTarget": {
+      "label": "Routing Diagnostics Topic",
+      "placeholder": "stream:private-ops:openclaw-diagnostics"
     },
     "dmPolicy": {
       "label": "DM Policy"

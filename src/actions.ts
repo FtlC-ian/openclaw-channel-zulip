@@ -31,7 +31,8 @@ import {
   updateZulipStream,
 } from "./zulip/client.js";
 import { presentationToZulipWidgetContent } from "./zulip/send.js";
-import { resolveZulipDestination } from "./zulip/destination.js";
+import { isZulipSessionTarget } from "./zulip/destination.js";
+import { prependZulipRoutingNotice, resolveZulipSendDestination } from "./zulip/routing-fallback.js";
 
 const providerId = "zulip";
 const MAX_STRING_LENGTH = 10000;
@@ -506,9 +507,15 @@ export const zulipMessageActions: ChannelMessageActionAdapter = {
 
     if (action === "send") {
       const to = readStringParam(params, "to", { required: true });
-      const content = readSendMessageContent(params);
+      let content = readSendMessageContent(params);
       const threadId = typeof params.threadId === "string" ? params.threadId : undefined;
-      const target = resolveZulipDestination(to, threadId, account.config.defaultTopic);
+      if (dryRun && isZulipSessionTarget(to)) {
+        return jsonResult({ ok: true, dryRun: true, action, routingFallback: "bot-owner-lookup", requestedTarget: to });
+      }
+      const { target, fallback } = await resolveZulipSendDestination({
+        client, to, topic: threadId, accountId: account.accountId, config: account.config,
+      });
+      content = prependZulipRoutingNotice(content, fallback);
       if (target.kind === "stream") {
         assertStringLength(target.stream, "stream", MAX_STRING_LENGTH);
         assertStringLength(target.topic, "topic", MAX_STRING_LENGTH);
@@ -536,7 +543,7 @@ export const zulipMessageActions: ChannelMessageActionAdapter = {
           content,
           widgetContent,
         });
-        return jsonResult({ success: true, messageId: result.id });
+        return jsonResult({ success: true, messageId: result.id, ...(fallback ? { to: fallback.destination, routingFallback: fallback } : {}) });
       }
 
       const result = await sendZulipPrivateMessage(client, {
@@ -544,7 +551,7 @@ export const zulipMessageActions: ChannelMessageActionAdapter = {
         content,
         widgetContent,
       });
-      return jsonResult({ success: true, messageId: result.id });
+      return jsonResult({ success: true, messageId: result.id, ...(fallback ? { to: fallback.destination, routingFallback: fallback } : {}) });
     }
 
     if (action === "channel-list") {

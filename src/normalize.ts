@@ -1,6 +1,7 @@
-import { normalizeLegacyZulipTarget } from "./zulip/destination.js";
+import { isZulipSessionTarget, normalizeLegacyZulipTarget } from "./zulip/destination.js";
 
 export function normalizeZulipMessagingTarget(raw: string): string | undefined {
+  if (isZulipSessionTarget(raw)) return raw.trim();
   let trimmed: string;
   try {
     trimmed = normalizeLegacyZulipTarget(raw).normalized;

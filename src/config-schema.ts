@@ -195,6 +195,7 @@ const ZulipAccountSchemaBase = z
     streamTopics: z.record(z.string(), z.array(z.string())).optional(),
     streamOverrides: ZulipStreamOverridesSchema.optional(),
     defaultTopic: z.string().optional(),
+    routingDiagnosticsTarget: z.string().trim().regex(/^stream:[^:\/#]+[:\/#].*$/).optional(),
     chatmode: z.enum(["oncall", "onmessage", "onchar"]).optional(),
     oncharPrefixes: z.array(z.string()).optional(),
     requireMention: z.boolean().optional(),

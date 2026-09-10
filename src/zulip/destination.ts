@@ -4,9 +4,15 @@ export type ZulipTarget =
 
 const DEFAULT_TOPIC = "general";
 
+export function isZulipSessionTarget(raw: string): boolean {
+  const trimmed = raw.trim();
+  return /^(?:agent:[^:]+:zulip:|(?:(?:channel|group):)?\d+:topic:v\d+:)/i.test(trimmed)
+    || /^(?:user:)?account-[a-f0-9]{64}:[^\s@:]+@[^\s@:]+$/i.test(trimmed);
+}
+
 function normalizeLegacyZulipTarget(raw: string): { normalized: string; convertedFromLegacy: boolean } {
   const trimmed = raw.trim();
-  if (/^(?:agent:[^:]+:zulip:|(?:(?:channel|group):)?\d+:topic:v\d+:)/i.test(trimmed)) {
+  if (isZulipSessionTarget(trimmed)) {
     throw new Error("Zulip session identities are not message destinations; use the saved stream/topic route");
   }
   const legacyMatch = trimmed.match(/^(\d+):topic:(.*)$/);

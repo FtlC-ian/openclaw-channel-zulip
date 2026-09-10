@@ -10,7 +10,8 @@ import {
 import type { MessagePresentation, OpenClawConfig } from "../sdk.js";
 import { getZulipRuntime } from "../runtime.js";
 import { resolveZulipRuntimeAccount } from "./accounts.js";
-import { normalizeLegacyZulipTarget, resolveZulipDestination } from "./destination.js";
+import { isZulipSessionTarget, normalizeLegacyZulipTarget } from "./destination.js";
+import { prependZulipRoutingNotice, resolveZulipSendDestination, type ZulipRoutingFallback } from "./routing-fallback.js";
 import {
   createZulipClient,
   normalizeZulipBaseUrl,
@@ -84,6 +85,9 @@ export type ZulipSendOpts = {
 export type ZulipSendResult = {
   messageId: string;
   channelId: string;
+  target: { kind: "chat" | "channel"; id: string };
+  threadId?: string;
+  meta?: { routingFallback: ZulipRoutingFallback };
 };
 
 export { normalizeLegacyZulipTarget, parseZulipTarget, type ZulipTarget } from "./destination.js";
@@ -249,14 +253,19 @@ export async function sendMessageZulip(
       failure: (event) => logger.error?.("zulip api request failed", event),
     },
   });
-  const normalizedTarget = normalizeLegacyZulipTarget(to);
+  const normalizedTarget = isZulipSessionTarget(to)
+    ? { normalized: to.trim(), convertedFromLegacy: false }
+    : normalizeLegacyZulipTarget(to);
   if (normalizedTarget.convertedFromLegacy) {
     logger.warn?.("zulip send received legacy session-key target, auto-converting", {
       originalTo: to,
       normalizedTo: normalizedTarget.normalized,
     });
   }
-  const target = resolveZulipDestination(normalizedTarget.normalized, opts.topic, account.config.defaultTopic);
+  const { target, fallback } = await resolveZulipSendDestination({
+    client, to: normalizedTarget.normalized, topic: opts.topic, accountId: account.accountId, config: account.config,
+  });
+  if (fallback) logger.warn?.("zulip routing fallback", fallback);
   let message = text?.trim() ?? "";
   const rawMediaUrl = opts.mediaUrl?.trim();
   let mediaUrl = rawMediaUrl;
@@ -343,6 +352,8 @@ export async function sendMessageZulip(
     });
     message = core.channel.text.convertMarkdownTables(message, tableMode);
   }
+
+  message = prependZulipRoutingNotice(message, fallback);
 
   const preflightTargetSummary = (() => {
     if (target.kind === "user") {
@@ -465,6 +476,9 @@ export async function sendMessageZulip(
   return {
     messageId,
     channelId: target.kind === "stream" ? target.stream : target.email,
+    target: { kind: target.kind === "stream" ? "channel" : "chat", id: target.kind === "stream" ? target.stream : target.email },
+    ...(target.kind === "stream" ? { threadId: target.topic } : {}),
+    ...(fallback ? { meta: { routingFallback: fallback } } : {}),
   };
 }
 

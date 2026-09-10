@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026.9.10-rc.3 — Private test candidate
+
+- Include Zulip's required `notification_settings_null` boolean when registering event queues, preserving the server's default notification format and empty-topic support.
+
 ## 2026.9.10-rc.2 — Private test candidate
 
 - When a session-only target has lost its delivery context, forward the message to the selected Zulip bot's active owner with an explicit routing-failure note and investigation details.

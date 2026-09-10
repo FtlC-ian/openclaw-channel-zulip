@@ -48,8 +48,44 @@ describe("registerZulipQueue", () => {
     expect(url).toBe("https://zulip.example.test/api/v1/register");
     expect(body.get("event_types")).toBe('["message"]');
     expect(body.get("all_public_streams")).toBe("true");
-    expect(JSON.parse(body.get("client_capabilities")!)).toEqual({ empty_topic_name: true });
+    expect(JSON.parse(body.get("client_capabilities")!)).toEqual({
+      notification_settings_null: false,
+      empty_topic_name: true,
+    });
     expect(body.has("narrow")).toBe(false);
+  });
+
+  it("satisfies Zulip 12.2's required client capability while opting into empty topics", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (_url, init) => {
+      const body = new URLSearchParams(String(init?.body));
+      const capabilities = JSON.parse(body.get("client_capabilities") ?? "{}");
+      // Zulip 12.2's ClientCapabilities schema requires this boolean even when false.
+      if (typeof capabilities.notification_settings_null !== "boolean") {
+        return jsonResponse(
+          { result: "error", msg: "client_capabilities[notification_settings_null] is missing" },
+          { status: 400 },
+        );
+      }
+      return jsonResponse({ result: "success", queue_id: "queue-12.2", last_event_id: -1 });
+    });
+    const client = createZulipClient({
+      baseUrl: "https://zulip.example.test",
+      email: "bot@example.test",
+      apiKey: "synthetic",
+      fetchImpl,
+    });
+
+    await expect(registerZulipQueue(client, {})).resolves.toEqual({
+      queueId: "queue-12.2",
+      lastEventId: -1,
+    });
+
+    const body = new URLSearchParams(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(JSON.parse(body.get("client_capabilities")!)).toEqual({
+      notification_settings_null: false,
+      empty_topic_name: true,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 });
 

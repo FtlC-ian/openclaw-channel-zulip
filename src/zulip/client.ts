@@ -395,7 +395,9 @@ export async function registerZulipQueue(
   const body = new URLSearchParams();
   const eventTypes = params.eventTypes ?? ["message"];
   body.set("event_types", JSON.stringify(eventTypes));
-  body.set("client_capabilities", JSON.stringify({ empty_topic_name: true }));
+  // Zulip requires notification_settings_null when capabilities are provided;
+  // false preserves its default notification format while enabling empty topics.
+  body.set("client_capabilities", JSON.stringify({ notification_settings_null: false, empty_topic_name: true }));
   body.set("event_queue_longpoll_timeout_seconds", "90");
   // A stream narrow excludes direct messages. Receive DMs plus subscribed/private and
   // public stream messages, then enforce configured stream and topic policy client-side.

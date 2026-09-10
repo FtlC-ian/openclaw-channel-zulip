@@ -44,12 +44,14 @@ describe("unroutable Zulip message fallback", () => {
   let ownerAvailable = true;
   let ownerActive = true;
   let rejectSend = false;
+  let ownerAvailableAfterSend: boolean | undefined;
 
   beforeEach(() => {
     bodies.length = 0;
     ownerAvailable = true;
     ownerActive = true;
     rejectSend = false;
+    ownerAvailableAfterSend = undefined;
     runtime.warn.mockClear();
     fetchMock.mockReset().mockImplementation(async (url, init) => {
       const path = new URL(String(url)).pathname;
@@ -59,6 +61,7 @@ describe("unroutable Zulip message fallback", () => {
       expect(path).toBe("/api/v1/messages");
       expect(init?.method).toBe("POST");
       bodies.push(new URLSearchParams(String(init?.body)));
+      if (ownerAvailableAfterSend !== undefined) ownerAvailable = ownerAvailableAfterSend;
       return rejectSend
         ? Response.json({ result: "error", msg: "synthetic send rejection" }, { status: 403 })
         : Response.json({ result: "success", id: 100 + bodies.length });
@@ -107,6 +110,30 @@ describe("unroutable Zulip message fallback", () => {
     expect(bodies[0].get("content")).toContain("Recover this");
     expect(result.receipt.threadId).toBe("openclaw-diagnostics");
     expect(result.receipt.parts[0].raw).toMatchObject({ channelId: "42", meta: { routingFallback: { recipient: "diagnostics" } } });
+  });
+
+  it.each([true, false])("keeps all attachments on the first resolved destination when owner availability starts at %s", async (initialOwnerAvailable) => {
+    ownerAvailable = initialOwnerAvailable;
+    ownerAvailableAfterSend = !initialOwnerAvailable;
+    const fallbackCfg = { channels: { zulip: { ...config, routingDiagnosticsTarget: "stream:42:openclaw-diagnostics" } } } as OpenClawConfig;
+    const result = await zulipMessageAdapter.send!.payload!({
+      cfg: fallbackCfg, to, payload: { text: "Complete message", mediaUrls: [mediaUrl, mediaUrl] },
+    });
+    const destination = initialOwnerAvailable ? '["owner@example.test"]' : "42";
+    expect(bodies.map((body) => body.get("to"))).toEqual([destination, destination]);
+    expect(bodies[0].get("content")).toContain("Complete message");
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/users/me"))).toHaveLength(1);
+    const receiptDestination = initialOwnerAvailable ? "owner@example.test" : "42";
+    expect(result.receipt.parts.map((part) => part.raw?.channelId)).toEqual([receiptDestination, receiptDestination]);
+  });
+
+  it("refuses to reuse a recovered destination for a different target or account", async () => {
+    const result = await sendMessageZulip(to, "Original", { cfg });
+    const routingFallback = result.meta!.routingFallback;
+    await expect(sendMessageZulip(`group:${identity}`, "Different", { cfg, routingFallback })).rejects.toThrow("different payload target or account");
+    const otherCfg = { channels: { zulip: { accounts: { other: config } } } } as OpenClawConfig;
+    await expect(sendMessageZulip(to, "Different", { cfg: otherCfg, accountId: "other", routingFallback })).rejects.toThrow("different payload target or account");
+    expect(bodies).toHaveLength(1);
   });
 
   it.each([identity, `group:${identity}`, `agent:main:zulip:channel:${identity}`, `user:account-${"b".repeat(64)}:person@example.test`])(

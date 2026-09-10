@@ -10,7 +10,7 @@ import {
 import type { MessagePresentation, OpenClawConfig } from "../sdk.js";
 import { getZulipRuntime } from "../runtime.js";
 import { resolveZulipRuntimeAccount } from "./accounts.js";
-import { isZulipSessionTarget, normalizeLegacyZulipTarget } from "./destination.js";
+import { isZulipSessionTarget, normalizeLegacyZulipTarget, resolveZulipDestination } from "./destination.js";
 import { prependZulipRoutingNotice, resolveZulipSendDestination, type ZulipRoutingFallback } from "./routing-fallback.js";
 import {
   createZulipClient,
@@ -80,6 +80,8 @@ export type ZulipSendOpts = {
   topic?: string;
   presentation?: MessagePresentation;
   channelData?: ZulipChannelData;
+  /** Reuse one recovery choice across all parts of a logical payload. */
+  routingFallback?: ZulipRoutingFallback;
 };
 
 export type ZulipSendResult = {
@@ -262,9 +264,15 @@ export async function sendMessageZulip(
       normalizedTo: normalizedTarget.normalized,
     });
   }
-  const { target, fallback } = await resolveZulipSendDestination({
-    client, to: normalizedTarget.normalized, topic: opts.topic, accountId: account.accountId, config: account.config,
-  });
+  if (opts.routingFallback && (opts.routingFallback.selectedAccountId !== account.accountId
+    || opts.routingFallback.requestedTarget !== normalizedTarget.normalized)) {
+    throw new Error("Zulip routing fallback belongs to a different payload target or account");
+  }
+  const { target, fallback } = opts.routingFallback
+    ? { target: resolveZulipDestination(opts.routingFallback.destination), fallback: opts.routingFallback }
+    : await resolveZulipSendDestination({
+        client, to: normalizedTarget.normalized, topic: opts.topic, accountId: account.accountId, config: account.config,
+      });
   if (fallback) logger.warn?.("zulip routing fallback", fallback);
   let message = text?.trim() ?? "";
   const rawMediaUrl = opts.mediaUrl?.trim();

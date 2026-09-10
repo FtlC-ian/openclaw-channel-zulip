@@ -30,6 +30,7 @@ import {
 import { zulipApprovalAuth } from "./approval-auth.js";
 import { normalizeZulipBaseUrl } from "./zulip/client.js";
 import { sendMessageZulip, sendPollZulip, type ZulipSendResult } from "./zulip/send.js";
+import type { ZulipRoutingFallback } from "./zulip/routing-fallback.js";
 import {
   resolveZulipOutboundSessionRoute,
   resolveZulipSessionConversation,
@@ -148,6 +149,7 @@ export const zulipOutboundAdapter: ChannelOutboundAdapter = {
     });
     if (mediaUrls.length > 0) {
       const results: ZulipSendResult[] = [];
+      let routingFallback: ZulipRoutingFallback | undefined;
       for (let i = 0; i < mediaUrls.length; i++) {
         const result = await sendMessageZulip(ctx.to, i === 0 ? text : "", {
           cfg: ctx.cfg,
@@ -159,7 +161,9 @@ export const zulipOutboundAdapter: ChannelOutboundAdapter = {
           mediaReadFile: ctx.mediaReadFile,
           presentation: i === 0 ? ctx.payload.presentation : undefined,
           channelData: i === 0 ? (ctx.payload.channelData as ReplyPayload["channelData"] | undefined) : undefined,
+          routingFallback,
         });
+        routingFallback ??= result.meta?.routingFallback;
         results.push(result);
       }
       const primary = results[0];

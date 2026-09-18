@@ -36,9 +36,9 @@ async function copyTreeWithoutLinks(source, destination) {
   }
 }
 
-function resolveInstalledOpenClawRoot() {
-  const sdkPath = fileURLToPath(import.meta.resolve("openclaw/plugin-sdk"));
-  return resolve(dirname(sdkPath), "../..");
+export function resolveInstalledOpenClawRoot(resolveSpecifier = import.meta.resolve) {
+  const cliEntryPath = fileURLToPath(resolveSpecifier("openclaw/cli-entry"));
+  return dirname(cliEntryPath);
 }
 
 export async function stageBundledPlugin({

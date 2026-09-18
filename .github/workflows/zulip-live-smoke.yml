@@ -64,8 +64,6 @@ jobs:
         run: |
           pnpm install --frozen-lockfile --config.minimumReleaseAge=1440
           pnpm run build
-      - name: Stage candidate through the bundled-plugin trust path
-        run: node scripts/live-smoke/stage-bundled-plugin.mjs
       - name: Prepare isolated OpenClaw state
         env:
           OPENCLAW_SMOKE_CONFIG_JSON: ${{ secrets.OPENCLAW_SMOKE_CONFIG_JSON }}
@@ -110,6 +108,13 @@ jobs:
           NODE
           pnpm exec openclaw config set agents.defaults.workspace "$GITHUB_WORKSPACE/scripts/live-smoke/agent-workspace"
           pnpm exec openclaw config validate
+      - name: Stage candidate through the bundled-plugin trust path
+        run: node scripts/live-smoke/stage-bundled-plugin.mjs
+      - name: Verify staged bundled candidate
+        env:
+          OPENCLAW_CONFIG_PATH: ${{ runner.temp }}/openclaw-smoke/openclaw.json
+          OPENCLAW_STATE_DIR: ${{ runner.temp }}/openclaw-smoke/state
+        run: |
           plugin_list="$(mktemp "$RUNNER_TEMP/zulip-plugin-list.XXXXXX.json")"
           trap 'rm -f "$plugin_list"' EXIT
           pnpm exec openclaw plugins list --json > "$plugin_list"

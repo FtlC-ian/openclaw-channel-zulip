@@ -15,7 +15,10 @@ export function validateSmokeBaselineModel(config) {
     throw new Error("Protected smoke config must declare the baseline model");
   }
   const policies = config?.agents?.defaults?.models;
-  if (!policies || typeof policies !== "object" || Array.isArray(policies) || !Object.hasOwn(policies, primary)) {
+  if (
+    policies !== undefined &&
+    (!policies || typeof policies !== "object" || Array.isArray(policies) || !Object.hasOwn(policies, primary))
+  ) {
     throw new Error("Protected smoke config must allow its baseline model");
   }
   return config;

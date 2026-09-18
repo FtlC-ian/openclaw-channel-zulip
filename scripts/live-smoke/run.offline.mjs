@@ -66,6 +66,11 @@ test("validates the protected baseline model without changing config or credenti
       ? config.agents.defaults.model : config.agents.defaults.model.primary, "abacus/gpt-5-mini");
     assert.deepEqual(config, before);
   }
+  const configWithoutPolicy = makeConfig("abacus/gpt-5-mini");
+  delete configWithoutPolicy.agents.defaults.models;
+  const beforeWithoutPolicy = structuredClone(configWithoutPolicy);
+  assert.equal(validateSmokeBaselineModel(configWithoutPolicy), configWithoutPolicy);
+  assert.deepEqual(configWithoutPolicy, beforeWithoutPolicy);
 });
 
 test("rejects incomplete protected baseline model configuration without exposing values", () => {
@@ -82,6 +87,10 @@ test("rejects incomplete protected baseline model configuration without exposing
       /name its model provider and model/],
     [{ ...makeConfig(), models: { providers: {} } }, /declare the baseline provider/],
     [{ ...makeConfig(), models: { providers: { abacus: { models: [] } } } }, /declare the baseline model/],
+    [{
+      ...makeConfig(),
+      agents: { defaults: { model: "abacus/gpt-5-mini", models: [] } },
+    }, /allow its baseline model/],
     [{
       ...makeConfig(),
       agents: { defaults: { model: "abacus/gpt-5-mini", models: {} } },

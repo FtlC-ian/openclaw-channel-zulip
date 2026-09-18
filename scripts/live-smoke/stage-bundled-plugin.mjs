@@ -22,6 +22,19 @@ async function readJson(path) {
   return JSON.parse(await readFile(path, "utf8"));
 }
 
+async function assertPackageLifecycleComplete(hostRoot) {
+  for (const marker of [".openclaw-lifecycle-pending", join("dist", "openclaw-install-guard")]) {
+    try {
+      await lstat(join(hostRoot, marker));
+      throw new Error(
+        `OpenClaw package lifecycle is pending (${marker}); run an OpenClaw command before staging`,
+      );
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+  }
+}
+
 async function copyTreeWithoutLinks(source, destination) {
   const sourceStat = await lstat(source);
   if (sourceStat.isSymbolicLink()) throw new Error(`Refusing to stage symbolic link: ${source}`);
@@ -51,6 +64,7 @@ export async function stageBundledPlugin({
   if (hostPackage.name !== "openclaw" || typeof hostPackage.version !== "string") {
     throw new Error("Host root is not an OpenClaw package");
   }
+  await assertPackageLifecycleComplete(resolvedHostRoot);
 
   const pluginPackage = await readJson(join(resolvedPluginRoot, "package.json"));
   const pluginManifest = await readJson(join(resolvedPluginRoot, "openclaw.plugin.json"));

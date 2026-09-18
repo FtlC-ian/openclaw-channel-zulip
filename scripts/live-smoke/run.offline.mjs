@@ -1240,6 +1240,19 @@ test("workflow is manual, protected, pinned, and bounded", async () => {
   assert.match(agentProtocol, /Only after a later child-completion event resumes\nyou, verify the child's exact result and reply with exactly `VALUE`/);
   assert.match(agentProtocol, /\.smoke-gateway-generation/);
   assert.match(agentProtocol, /at least six\nseconds/);
+  const prepareIndex = workflow.indexOf("- name: Prepare isolated OpenClaw state");
+  const stageIndex = workflow.indexOf("- name: Stage candidate through the bundled-plugin trust path");
+  const verifyIndex = workflow.indexOf("- name: Verify staged bundled candidate");
+  const configSetIndex = workflow.indexOf("pnpm exec openclaw config set");
+  const configValidateIndex = workflow.indexOf("pnpm exec openclaw config validate");
+  const pluginListIndex = workflow.indexOf("pnpm exec openclaw plugins list --json");
+  const liveIndex = workflow.indexOf("- name: Run bounded live scenarios");
+  assert.ok(prepareIndex < configSetIndex);
+  assert.ok(configSetIndex < configValidateIndex);
+  assert.ok(configValidateIndex < stageIndex);
+  assert.ok(stageIndex < verifyIndex);
+  assert.ok(verifyIndex < pluginListIndex);
+  assert.ok(pluginListIndex < liveIndex);
   for (const use of workflow.matchAll(/uses:\s+([^\s]+)/g)) assert.match(use[1], /@[0-9a-f]{40}$/);
 });
 
@@ -1286,6 +1299,39 @@ test("resolves the installed OpenClaw root through its exported CLI entry", () =
 
   assert.equal(requestedSpecifier, "openclaw/cli-entry");
   assert.equal(resolvedRoot, expectedRoot);
+});
+
+test("refuses to stage before the installed OpenClaw package lifecycle completes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "zulip-smoke-bundled-lifecycle-"));
+  const hostRoot = join(root, "host");
+  const pluginRoot = join(root, "candidate");
+  try {
+    await mkdir(join(hostRoot, "dist", "extensions"), { recursive: true });
+    await mkdir(join(pluginRoot, "dist"), { recursive: true });
+    await writeFile(join(hostRoot, "package.json"), JSON.stringify({ name: "openclaw", version: "2026.9.3" }));
+    await writeFile(join(hostRoot, ".openclaw-lifecycle-pending"), "pending\n");
+    await writeFile(join(pluginRoot, "package.json"), JSON.stringify({
+      name: "openclaw-channel-zulip",
+      version: "2026.9.18",
+      openclaw: { extensions: ["./dist/index.js"] },
+    }));
+    await writeFile(join(pluginRoot, "openclaw.plugin.json"), JSON.stringify({ id: "zulip" }));
+    await writeFile(join(pluginRoot, "dist", "index.js"), "export default {};\n");
+
+    await assert.rejects(
+      stageBundledPlugin({ hostRoot, pluginRoot }),
+      /package lifecycle is pending.*run an OpenClaw command before staging/,
+    );
+    await rm(join(hostRoot, ".openclaw-lifecycle-pending"));
+    await writeFile(join(hostRoot, "dist", "openclaw-install-guard"), "pending\n");
+    await assert.rejects(
+      stageBundledPlugin({ hostRoot, pluginRoot }),
+      /package lifecycle is pending.*run an OpenClaw command before staging/,
+    );
+    await assert.rejects(stat(join(hostRoot, "dist", "extensions", "zulip")), /ENOENT/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("refuses symbolic links while staging a bundled candidate", async () => {

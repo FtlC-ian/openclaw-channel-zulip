@@ -90,8 +90,8 @@ export const zulipOutboundAdapter: ChannelOutboundAdapter = {
     },
   },
   resolveTarget: ({ to }) => {
-    const trimmed = to?.trim();
-    if (!trimmed) {
+    const target = to?.trimStart();
+    if (!target?.trim()) {
       return {
         ok: false,
         error: new Error(
@@ -99,7 +99,7 @@ export const zulipOutboundAdapter: ChannelOutboundAdapter = {
         ),
       };
     }
-    return { ok: true, to: trimmed };
+    return { ok: true, to: target };
   },
   sendText: async ({ cfg, to, text, accountId, threadId }) => {
     const result = await sendMessageZulip(to, text, {

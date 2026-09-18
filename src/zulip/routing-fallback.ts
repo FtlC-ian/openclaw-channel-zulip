@@ -13,7 +13,7 @@ export type ZulipRoutingFallback = {
 export async function resolveZulipSendDestination(params: {
   client: ZulipClient;
   to: string;
-  topic?: string;
+  topic?: string | number | null;
   accountId: string;
   config: Pick<ZulipAccountConfig, "defaultTopic" | "routingDiagnosticsTarget">;
 }): Promise<{

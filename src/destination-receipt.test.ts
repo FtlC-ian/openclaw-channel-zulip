@@ -98,6 +98,7 @@ describe("raw destination, wire request, and explicit receipt agreement", () => 
       { to: "stream:42", threadId: "   ", topic: "" },
       { to: "stream:42", threadId: " Inherited Topic ", topic: "Inherited Topic" },
       { to: "stream:42", threadId: 123, topic: "123" },
+      { to: "stream: 42 :  Canonical Topic  ", threadId: "other", topic: "  Canonical Topic  " },
       { to: "#42/Canonical Topic", threadId: "other", topic: "Canonical Topic" },
       { to: "stream:42#Canonical Topic", threadId: "other", topic: "Canonical Topic" },
       { to: "42:topic:Canonical Topic", threadId: "other", topic: "Canonical Topic", stream: "42" },

@@ -527,6 +527,9 @@ export async function sendZulipStreamMessage(
     topic: params.topic,
     content: params.content,
   });
+  if (params.topic === "") {
+    body.set("allow_empty_topic_name", "true");
+  }
   if (params.widgetContent) {
     body.set("widget_content", JSON.stringify(params.widgetContent));
   }

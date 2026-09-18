@@ -11,17 +11,35 @@ export function isZulipSessionTarget(raw: string): boolean {
 }
 
 function normalizeLegacyZulipTarget(raw: string): { normalized: string; convertedFromLegacy: boolean } {
-  const trimmed = raw.trim();
-  if (isZulipSessionTarget(trimmed)) {
+  const candidate = raw.trimStart();
+  if (isZulipSessionTarget(candidate)) {
     throw new Error("Zulip session identities are not message destinations; use the saved stream/topic route");
   }
-  const legacyMatch = trimmed.match(/^(\d+):topic:(.*)$/);
+  const legacyMatch = candidate.match(/^(\d+):topic:(.*)$/s);
   if (!legacyMatch) {
-    return { normalized: trimmed, convertedFromLegacy: false };
+    const lower = candidate.toLowerCase();
+    if (lower.startsWith("stream:")) {
+      const rest = candidate.slice("stream:".length);
+      const hasTopicSeparator = [rest.indexOf(":"), rest.indexOf("/"), rest.indexOf("#")]
+        .some(index => index >= 0);
+      return {
+        normalized: hasTopicSeparator ? candidate : candidate.trimEnd(),
+        convertedFromLegacy: false,
+      };
+    }
+    if (candidate.startsWith("#")) {
+      const rest = candidate.slice(1);
+      const hasTopicSeparator = rest.indexOf(":") >= 0 || rest.indexOf("/") >= 0;
+      return {
+        normalized: hasTopicSeparator ? candidate : candidate.trimEnd(),
+        convertedFromLegacy: false,
+      };
+    }
+    return { normalized: candidate.trimEnd(), convertedFromLegacy: false };
   }
   const [, streamId, topic] = legacyMatch;
   return {
-    normalized: `stream:${streamId}:${topic.trim()}`,
+    normalized: `stream:${streamId}:${topic}`,
     convertedFromLegacy: true,
   };
 }
@@ -34,16 +52,12 @@ function isCanonicalDmEmail(value: string): boolean {
 
 export function parseZulipTarget(raw: string): ZulipTarget {
   const { normalized } = normalizeLegacyZulipTarget(raw);
-  const trimmed = normalized.trim();
-  if (!trimmed) {
+  if (!normalized.trim()) {
     throw new Error("Recipient is required for Zulip sends");
   }
-  const lower = trimmed.toLowerCase();
+  const lower = normalized.toLowerCase();
   if (lower.startsWith("stream:")) {
-    const rest = trimmed.slice("stream:".length).trim();
-    if (!rest) {
-      throw new Error("Stream name is required for Zulip sends");
-    }
+    const rest = normalized.slice("stream:".length);
     const colonIdx = rest.indexOf(":");
     const slashIdx = rest.indexOf("/");
     const hashIdx = rest.indexOf("#");
@@ -51,10 +65,10 @@ export function parseZulipTarget(raw: string): ZulipTarget {
     const stream = sepIdx === Infinity ? rest : rest.slice(0, sepIdx);
     const topic = sepIdx === Infinity ? undefined : rest.slice(sepIdx + 1);
     if (!stream.trim()) throw new Error("Stream name is required for Zulip sends");
-    return { kind: "stream", stream: stream.trim(), topic: topic?.trim() };
+    return { kind: "stream", stream: stream.trim(), topic };
   }
   if (lower.startsWith("user:") || lower.startsWith("dm:")) {
-    const email = trimmed.slice(trimmed.indexOf(":") + 1).trim();
+    const email = normalized.slice(normalized.indexOf(":") + 1).trim();
     if (!email) {
       throw new Error("Email is required for Zulip direct messages");
     }
@@ -64,7 +78,7 @@ export function parseZulipTarget(raw: string): ZulipTarget {
     return { kind: "user", email };
   }
   if (lower.startsWith("zulip:")) {
-    const email = trimmed.slice("zulip:".length).trim();
+    const email = normalized.slice("zulip:".length).trim();
     if (!email) {
       throw new Error("Email is required for Zulip direct messages");
     }
@@ -73,8 +87,8 @@ export function parseZulipTarget(raw: string): ZulipTarget {
     }
     return { kind: "user", email };
   }
-  if (trimmed.startsWith("@")) {
-    const email = trimmed.slice(1).trim();
+  if (normalized.startsWith("@")) {
+    const email = normalized.slice(1).trim();
     if (!email) {
       throw new Error("Email is required for Zulip direct messages");
     }
@@ -83,16 +97,17 @@ export function parseZulipTarget(raw: string): ZulipTarget {
     }
     return { kind: "user", email };
   }
-  if (trimmed.startsWith("#")) {
-    const rest = trimmed.slice(1).trim();
+  if (normalized.startsWith("#")) {
+    const rest = normalized.slice(1);
     const sepIdx2 = [rest.indexOf(":"), rest.indexOf("/")].filter(i => i >= 0).reduce((a, b) => Math.min(a, b), Infinity);
     const stream2 = sepIdx2 === Infinity ? rest : rest.slice(0, sepIdx2);
     const topic2 = sepIdx2 === Infinity ? undefined : rest.slice(sepIdx2 + 1);
-    if (!stream2) {
+    if (!stream2.trim()) {
       throw new Error("Stream name is required for Zulip sends");
     }
-    return { kind: "stream", stream: stream2.trim(), topic: topic2?.trim() };
+    return { kind: "stream", stream: stream2.trim(), topic: topic2 };
   }
+  const trimmed = normalized.trim();
   if (isCanonicalDmEmail(trimmed)) {
     return { kind: "user", email: trimmed };
   }

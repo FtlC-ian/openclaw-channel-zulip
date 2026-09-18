@@ -1,4 +1,8 @@
-import { isZulipSessionTarget, normalizeLegacyZulipTarget } from "./zulip/destination.js";
+import {
+  isZulipSessionTarget,
+  normalizeLegacyZulipTarget,
+  parseZulipTarget,
+} from "./zulip/destination.js";
 
 export function normalizeZulipMessagingTarget(raw: string): string | undefined {
   if (isZulipSessionTarget(raw)) return raw.trim();
@@ -12,9 +16,16 @@ export function normalizeZulipMessagingTarget(raw: string): string | undefined {
     return undefined;
   }
   const lower = trimmed.toLowerCase();
-  if (lower.startsWith("stream:")) {
-    const rest = trimmed.slice("stream:".length).trim();
-    return rest ? `stream:${rest}` : undefined;
+  if (lower.startsWith("stream:") || trimmed.startsWith("#")) {
+    try {
+      const target = parseZulipTarget(trimmed);
+      if (target.kind !== "stream") return undefined;
+      return target.topic === undefined
+        ? `stream:${target.stream}`
+        : `stream:${target.stream}:${target.topic}`;
+    } catch {
+      return undefined;
+    }
   }
   if (lower.startsWith("user:") || lower.startsWith("dm:")) {
     const rest = trimmed.slice(trimmed.indexOf(":") + 1).trim();
@@ -27,10 +38,6 @@ export function normalizeZulipMessagingTarget(raw: string): string | undefined {
   if (trimmed.startsWith("@")) {
     const id = trimmed.slice(1).trim();
     return id ? `user:${id}` : undefined;
-  }
-  if (trimmed.startsWith("#")) {
-    const id = trimmed.slice(1).trim();
-    return id ? `stream:${id}` : undefined;
   }
   if (trimmed.includes("@")) {
     return `user:${trimmed}`;

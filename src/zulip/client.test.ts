@@ -7,6 +7,7 @@ import {
   registerZulipQueue,
   removeZulipReaction,
   searchZulipMessages,
+  sendZulipStreamMessage,
   updateZulipMessageFlag,
   updateZulipMessageFlags,
   zulipRequestWithRetry,
@@ -98,6 +99,29 @@ describe("empty-topic history", () => {
     const url = new URL(String(fetchImpl.mock.calls[0]?.[0]));
     expect(JSON.parse(url.searchParams.get("narrow")!)).toContainEqual({ operator: "topic", operand: "" });
     expect(url.searchParams.get("allow_empty_topic_name")).toBe("true");
+  });
+});
+
+describe("sendZulipStreamMessage", () => {
+  it.each([
+    { topic: "", allowEmptyTopicName: "true" },
+    { topic: "release", allowEmptyTopicName: null },
+  ])("sets the empty-topic opt-in only for an empty topic", async ({ topic, allowEmptyTopicName }) => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({ result: "success", id: 42 }),
+    );
+    const client = createZulipClient({
+      baseUrl: "https://zulip.example.test",
+      email: "bot@example.test",
+      apiKey: "synthetic",
+      fetchImpl,
+    });
+
+    await sendZulipStreamMessage(client, { stream: "general", topic, content: "hello" });
+
+    const body = new URLSearchParams(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(body.get("topic")).toBe(topic);
+    expect(body.get("allow_empty_topic_name")).toBe(allowEmptyTopicName);
   });
 });
 

@@ -275,6 +275,8 @@ describe("reachable action routes", () => {
   it.each([
     { to: "stream:42", threadId: undefined, expected: "Bot replies" },
     { to: "stream:42", threadId: "", expected: "" },
+    { to: "stream:42", threadId: 123, expected: "123" },
+    { to: "stream: 42 :  Explicit  ", threadId: "inherited", expected: "  Explicit  " },
     { to: "stream:42:", threadId: "inherited", expected: "" },
     { to: "stream:42:Explicit", threadId: "inherited", expected: "Explicit" },
   ])("uses shared topic precedence for sends: $to / $threadId", async ({ to, threadId, expected }) => {

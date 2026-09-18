@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   presentationToZulipWidgetContent,
   normalizeLegacyZulipTarget,
+  parseZulipTarget,
   pollToZulipWidgetContent,
   resolveZulipWidgetContent,
   sendMessageZulip,
@@ -148,11 +149,28 @@ describe("normalizeLegacyZulipTarget", () => {
     });
   });
 
+  it("preserves leading and trailing whitespace in legacy topic names", () => {
+    expect(normalizeLegacyZulipTarget("3:topic:  polymarket  ")).toEqual({
+      normalized: "stream:3:  polymarket  ",
+      convertedFromLegacy: true,
+    });
+  });
+
   it("does not auto-convert malformed dm-like targets", () => {
     expect(normalizeLegacyZulipTarget("user:user:user8@zlp.pubnerd.app")).toEqual({
       normalized: "user:user:user8@zlp.pubnerd.app",
       convertedFromLegacy: false,
     });
+  });
+});
+
+describe("parseZulipTarget", () => {
+  it.each([
+    ["stream: 42 :  Release notes  ", "42", "  Release notes  "],
+    ["# 42 /  Release notes  ", "42", "  Release notes  "],
+    ["42:topic:  Release notes  ", "42", "  Release notes  "],
+  ])("trims stream syntax but preserves topic whitespace for %s", (raw, stream, topic) => {
+    expect(parseZulipTarget(raw)).toEqual({ kind: "stream", stream, topic });
   });
 });
 

@@ -1,7 +1,7 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 import { createReplyPrefixOptions } from "openclaw/plugin-sdk/channel-outbound";
 import { describe, expect, it } from "vitest";
-import { zulipPlugin } from "./channel.js";
+import { zulipOutboundAdapter, zulipPlugin } from "./channel.js";
 import {
   buildZulipDirectSessionKey,
   resolveZulipSessionConversation,
@@ -21,6 +21,15 @@ describe("zulipPlugin", () => {
       expect(normalize(`agent:main:zulip:channel:${id}`)).toBe(`agent:main:zulip:channel:${id}`);
       expect(normalize("42:topic:Release A")).toBe("stream:42:Release A");
       expect(normalize("stream:42:")).toBe("stream:42:");
+      expect(normalize("stream: 42 :  Release A  ")).toBe("stream:42:  Release A  ");
+      expect(normalize("# 42 /  Release A  ")).toBe("stream:42:  Release A  ");
+    });
+
+    it("preserves explicit topic whitespace during outbound target resolution", () => {
+      expect(zulipOutboundAdapter.resolveTarget?.({ to: "  stream: 42 :  Release A  " })).toEqual({
+        ok: true,
+        to: "stream: 42 :  Release A  ",
+      });
     });
 
     it("normalizes @username targets", () => {

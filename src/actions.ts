@@ -506,9 +506,11 @@ export const zulipMessageActions: ChannelMessageActionAdapter = {
     const { client, account } = await resolveZulipClient(cfg, accountId ?? undefined);
 
     if (action === "send") {
-      const to = readStringParam(params, "to", { required: true });
+      const to = readStringParam(params, "to", { required: true, trim: false });
       let content = readSendMessageContent(params);
-      const threadId = typeof params.threadId === "string" ? params.threadId : undefined;
+      const threadId = typeof params.threadId === "string" || typeof params.threadId === "number"
+        ? params.threadId
+        : undefined;
       if (dryRun && isZulipSessionTarget(to)) {
         return jsonResult({ ok: true, dryRun: true, action, routingFallback: "bot-owner-lookup", requestedTarget: to });
       }

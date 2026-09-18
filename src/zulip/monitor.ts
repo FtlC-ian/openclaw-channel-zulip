@@ -1138,14 +1138,19 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     const storePath = core.agent.session.resolveStorePath(sessionCfg?.store, {
       agentId: route.agentId,
     });
-    await core.channel.session.updateLastRoute({
+    await core.channel.session.recordInboundSession({
       storePath,
       sessionKey,
-      deliveryContext: {
+      ctx: ctxPayload,
+      updateLastRoute: {
+        sessionKey,
         channel: "zulip",
         to,
         accountId: route.accountId,
         ...(isDM ? {} : { threadId: topic }),
+      },
+      onRecordError: (err) => {
+        runtime.error?.(`zulip: inbound session recording failed: ${String(err)}`);
       },
     });
 

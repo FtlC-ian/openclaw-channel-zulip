@@ -201,7 +201,7 @@ const state = vi.hoisted(() => {
         dispatchReplyWithBufferedBlockDispatcher: vi.fn(async () => {}),
       },
       session: {
-        updateLastRoute: vi.fn(async () => {}),
+        recordInboundSession: vi.fn(async () => {}),
       },
       pairing: {
         buildPairingReply: vi.fn(() => "pairing reply"),
@@ -2682,16 +2682,22 @@ describe("monitorZulipProvider", () => {
       "/configured/{agentId}/sessions.json",
       { agentId: "debbie" },
     );
-    expect(state.core.channel.session.updateLastRoute).toHaveBeenCalledWith({
+    expect(state.core.channel.session.recordInboundSession).toHaveBeenCalledWith({
       storePath: "/resolved/debbie/session-store",
       sessionKey: expect.stringMatching(/^agent:debbie:zulip:channel:4:topic:v2:[0-9a-f]{64}$/),
-      deliveryContext: {
+      ctx: expect.objectContaining({ SessionKey: expect.stringMatching(/^agent:debbie:zulip:channel:4:topic:v2:[0-9a-f]{64}$/) }),
+      updateLastRoute: {
+        sessionKey: expect.stringMatching(/^agent:debbie:zulip:channel:4:topic:v2:[0-9a-f]{64}$/),
         channel: "zulip",
         to: "stream:4:zulip-plugin-pr",
         accountId: "default",
         threadId: "zulip-plugin-pr",
       },
+      onRecordError: expect.any(Function),
     });
+    expect(state.core.channel.session.recordInboundSession.mock.invocationCallOrder[0]).toBeLessThan(
+      state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mock.invocationCallOrder[0],
+    );
   });
 
   it("for private messages, stores user:<sender_email> in context and last-route when sender_email exists", async () => {
@@ -2710,16 +2716,25 @@ describe("monitorZulipProvider", () => {
         OriginatingTo: "user:user8@zlp.pubnerd.app",
       }),
     );
-    expect(state.core.channel.session.updateLastRoute).toHaveBeenCalledWith({
+    expect(state.core.channel.session.recordInboundSession).toHaveBeenCalledWith({
       storePath: "/tmp/openclaw-session-store.json",
       sessionKey: expect.stringMatching(
         /^agent:debbie:zulip:default:direct:account-[0-9a-f]{64}:user8@zlp\.pubnerd\.app$/,
       ),
-      deliveryContext: {
+      ctx: expect.objectContaining({
+        SessionKey: expect.stringMatching(
+          /^agent:debbie:zulip:default:direct:account-[0-9a-f]{64}:user8@zlp\.pubnerd\.app$/,
+        ),
+      }),
+      updateLastRoute: {
+        sessionKey: expect.stringMatching(
+          /^agent:debbie:zulip:default:direct:account-[0-9a-f]{64}:user8@zlp\.pubnerd\.app$/,
+        ),
         channel: "zulip",
         to: "user:user8@zlp.pubnerd.app",
         accountId: "default",
       },
+      onRecordError: expect.any(Function),
     });
   });
 
@@ -2748,16 +2763,25 @@ describe("monitorZulipProvider", () => {
         OriginatingTo: "user:123",
       }),
     );
-    expect(state.core.channel.session.updateLastRoute).toHaveBeenCalledWith({
+    expect(state.core.channel.session.recordInboundSession).toHaveBeenCalledWith({
       storePath: "/tmp/openclaw-session-store.json",
       sessionKey: expect.stringMatching(
         /^agent:debbie:zulip:default:direct:account-[0-9a-f]{64}:123$/,
       ),
-      deliveryContext: {
+      ctx: expect.objectContaining({
+        SessionKey: expect.stringMatching(
+          /^agent:debbie:zulip:default:direct:account-[0-9a-f]{64}:123$/,
+        ),
+      }),
+      updateLastRoute: {
+        sessionKey: expect.stringMatching(
+          /^agent:debbie:zulip:default:direct:account-[0-9a-f]{64}:123$/,
+        ),
         channel: "zulip",
         to: "user:123",
         accountId: "default",
       },
+      onRecordError: expect.any(Function),
     });
   });
 
@@ -2775,20 +2799,24 @@ describe("monitorZulipProvider", () => {
       email: "override-bot@example.test",
     });
 
-    expect(state.core.channel.session.updateLastRoute).toHaveBeenCalledWith({
+    const expectedSessionKey = buildZulipDirectSessionKey({
+      agentId: "debbie",
+      accountId: "default",
+      baseUrl: "https://override-realm.example.test",
+      botIdentity: "override-bot@example.test",
+      senderIdentity: "user8@zlp.pubnerd.app",
+    });
+    expect(state.core.channel.session.recordInboundSession).toHaveBeenCalledWith({
       storePath: "/tmp/openclaw-session-store.json",
-      sessionKey: buildZulipDirectSessionKey({
-        agentId: "debbie",
-        accountId: "default",
-        baseUrl: "https://override-realm.example.test",
-        botIdentity: "override-bot@example.test",
-        senderIdentity: "user8@zlp.pubnerd.app",
-      }),
-      deliveryContext: {
+      sessionKey: expectedSessionKey,
+      ctx: expect.objectContaining({ SessionKey: expectedSessionKey }),
+      updateLastRoute: {
+        sessionKey: expectedSessionKey,
         channel: "zulip",
         to: "user:user8@zlp.pubnerd.app",
         accountId: "default",
       },
+      onRecordError: expect.any(Function),
     });
   });
 
@@ -2958,7 +2986,7 @@ describe("monitorZulipProvider", () => {
     expect(state.core.channel.activity.record).not.toHaveBeenCalled();
     expect(state.core.channel.routing.resolveAgentRoute).not.toHaveBeenCalled();
     expect(state.core.channel.inbound.buildContext).not.toHaveBeenCalled();
-    expect(state.core.channel.session.updateLastRoute).not.toHaveBeenCalled();
+    expect(state.core.channel.session.recordInboundSession).not.toHaveBeenCalled();
     expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
     for (const store of state.durableStores.values()) {
       await expect(store.entries()).resolves.toEqual([]);
@@ -4519,7 +4547,7 @@ describe("monitorZulipProvider", () => {
     enableDurableInboundJournal();
     const message = makeChannelMessage(2104);
     let failedOnce = false;
-    state.core.channel.session.updateLastRoute.mockImplementation(async () => {
+    state.core.channel.session.recordInboundSession.mockImplementation(async () => {
       if (!failedOnce) {
         failedOnce = true;
         throw new Error("synthetic post-dedupe failure");
@@ -4549,7 +4577,7 @@ describe("monitorZulipProvider", () => {
     await runMonitorOnce();
 
     await expect(journal.pending()).resolves.toEqual([]);
-    expect(state.core.channel.session.updateLastRoute).toHaveBeenCalledTimes(2);
+    expect(state.core.channel.session.recordInboundSession).toHaveBeenCalledTimes(2);
     expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
     expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(2);
   });

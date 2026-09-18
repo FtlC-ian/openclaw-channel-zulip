@@ -633,7 +633,7 @@ test("counts only records inside the marker-attributed smoke turn", async () => 
         { type: "text", text: "working" },
         { type: "toolCall", id: "pending-call", name: "read" },
         { type: "toolCall", id: "finished-call", name: "read" },
-      ], stopReason: "tool_use" } }),
+      ], stopReason: "toolUse" } }),
       JSON.stringify({ message: { role: "toolResult", toolCallId: "finished-call", isError: true,
         content: [{ type: "text", text: "api_key=protected-value https://secret.example" }] } }),
       JSON.stringify({ message: { role: "assistant", content: [{ type: "text", text: marker }], stopReason: "end_turn" } }),
@@ -658,6 +658,38 @@ test("counts only records inside the marker-attributed smoke turn", async () => 
     assert.equal(evidence.activeTurnEvidenceCount, 0);
     assert.equal(evidence.pendingToolCallCount, 1);
     assert.doesNotMatch(formatSmokeTurnEvidence(evidence), /protected-value|secret\.example|working/);
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("keeps internal child completion records inside the attributed lifecycle turn", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "zulip-smoke-internal-completion-"));
+  const sessionsDir = join(stateDir, "agents", "main", "sessions");
+  const marker = "lifecycle-current-marker";
+  await mkdir(sessionsDir, { recursive: true });
+  try {
+    await writeFile(join(sessionsDir, "lifecycle.jsonl"), [
+      JSON.stringify({ message: { role: "user", content: `lifecycle ${marker}` } }),
+      JSON.stringify({ message: { role: "assistant", content: [
+        { type: "toolCall", id: "spawn-call", name: "sessions_spawn" },
+      ], stopReason: "toolUse" } }),
+      JSON.stringify({ message: { role: "toolResult", toolCallId: "spawn-call", content: "accepted" } }),
+      JSON.stringify({ message: { role: "user", content: "[Internal task completion event] child settled" } }),
+      JSON.stringify({ message: { role: "assistant", content: marker, stopReason: "endTurn" } }),
+      JSON.stringify({ message: { role: "user", content: "actual next inbound turn" } }),
+      JSON.stringify({ message: { role: "assistant", content: "unrelated later output", stopReason: "stop" } }),
+    ].join("\n"));
+
+    const evidence = await inspectSmokeTurnEvidence(stateDir, marker);
+    assert.equal(evidence.assistantMessageCount, 2);
+    assert.equal(evidence.assistantExactMarkerCount, 1);
+    assert.equal(evidence.toolResultCount, 1);
+    assert.equal(evidence.pendingToolCallCount, 0);
+    assert.equal(evidence.stopReasonToolUse, 1);
+    assert.equal(evidence.stopReasonEndTurn, 1);
+    assert.equal(evidence.stopReasonStop, 0);
+    assert.equal(evidence.activeTurnEvidenceCount, 0);
   } finally {
     await rm(stateDir, { recursive: true, force: true });
   }

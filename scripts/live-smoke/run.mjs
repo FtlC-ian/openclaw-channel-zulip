@@ -435,8 +435,24 @@ function transcriptMessageText(message) {
 
 function classifyStopReason(value) {
   if (typeof value !== "string" || !value) return undefined;
-  const normalized = value.trim().toLowerCase().replaceAll("-", "_");
+  const normalized = value.trim()
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .toLowerCase()
+    .replaceAll("-", "_");
   return smokeTurnStopReasonClasses.includes(normalized) ? normalized : "other";
+}
+
+function isInternalCompletionRecord(record) {
+  const internalEvents = Array.isArray(record?.internalEvents)
+    ? record.internalEvents
+    : Array.isArray(record?.message?.internalEvents)
+      ? record.message.internalEvents
+      : [];
+  if (internalEvents.some((event) => event?.type === "task_completion" && event?.source === "subagent")) {
+    return true;
+  }
+  return record?.message?.role === "user" &&
+    transcriptMessageText(record.message).includes("[Internal task completion event]");
 }
 
 function toolCallIds(message) {
@@ -500,7 +516,7 @@ export async function inspectSmokeTurnEvidence(stateDir, marker) {
     for (const start of markerIndexes) {
       let end = records.length;
       for (let index = start + 1; index < records.length; index += 1) {
-        if (records[index]?.message?.role === "user") {
+        if (records[index]?.message?.role === "user" && !isInternalCompletionRecord(records[index])) {
           end = index;
           break;
         }

@@ -1,22 +1,24 @@
 # Release checklist
 
-## Private combined candidate gate
+## 2026.9.18 stable release gate
 
-This candidate raises the host floor from fallback **2026.7.1-2 to >=2026.8.2**.
-The fallback's old-floor receipts do not apply. Verify public question runtime
-exports, build/typecheck, all unit/offline tests, packaged schema parity and clean
-plugin/setup imports at 2026.8.2 and a separately recorded modern baseline.
+This release requires **OpenClaw >=2026.9.3** and **Node.js >=24.16.0 <25 or
+>=26.1.0**. Verify public question runtime exports, build/typecheck, all
+unit/offline tests, packaged schema parity, and clean plugin/setup imports on both
+supported Node lines. The lockfile and package metadata must remain pinned to the
+reviewed OpenClaw 2026.9.3 SDK baseline.
 
-Before promotion, obtain independent review of the exact frozen commit. Parent
-must separately authorize live acceptance: desktop and real mobile controls,
+Before publishing, obtain independent review of the exact frozen commit. The
+release owner must separately authorize live acceptance: desktop and real mobile
+controls,
 canonical sender/account/conversation and actual destination, stale controls,
 terminal replacement failure/rollback, progress off/legacy/progress/both settings,
 concurrent run cancellation, send/edit/delete failures and explicit visual cleanup.
 The existing offline/live harness does not by itself prove these new scenarios.
-No private candidate creation authorizes public changes, installation, gateway
-restart, production config changes or soak. Keep the frozen fallback available.
+Release preparation does not authorize publication, installation, gateway restart,
+production config changes, or soak.
 
-Before publishing a release candidate:
+Before publishing the stable release:
 
 - Confirm CI passed for the exact commit being released.
 - From the `main` branch, dispatch **Zulip live smoke (protected)** with the

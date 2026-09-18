@@ -1,51 +1,33 @@
 # Changelog
 
-## 2026.9.10-rc.3 — Private test candidate
-
-- Include Zulip's required `notification_settings_null` boolean when registering event queues, preserving the server's default notification format and empty-topic support.
-
-## 2026.9.10-rc.2 — Private test candidate
-
-- When a session-only target has lost its delivery context, forward the message to the selected Zulip bot's active owner with an explicit routing-failure note and investigation details.
-- Permit an explicit `routingDiagnosticsTarget` as backup when the owner cannot be resolved. Do not infer a stream from an opaque key or redirect ordinary API send failures.
-- Derive receipts from the actual sent destination, including fallback metadata and each multipart result, without creating or rebinding session history for the recovery delivery.
-
-## 2026.9.10-rc.1 — Private test candidate
-
-- Isolate topic sessions using scoped, versioned hashes and pinned Unicode 16 lowercase matching; resolve stream names through the 2026.9.3 SDK's async routing hook.
-- Keep raw topic destinations separate from session identity; unify sends, routes, actions, and receipts, including configured defaults and empty topics. Use message IDs for replies and preserve raw thread delivery context.
-- Start fresh topic contexts without parent-history inheritance; include a preview/apply gateway migration tool for archiving legacy sessions.
-- Require OpenClaw >=2026.9.3. This plugin does not contain the separate core completion-batch fix for issue #13.
-
-## Private combined candidate (unpublished)
-
-- **Raised minimum host from fallback 2026.7.1-2 to OpenClaw >=2026.8.2.** Older hosts are not supported by this candidate.
-- Compose native questions/mobile canonical fallback, terminal replacement and actual-destination binding through `0298af0` with opt-in task progress through `086fee7`.
-- Preserve public `thinkingPlaceholder` schema and legacy off-mode behavior. Explicit progress takes precedence without dual messages or implicit activation.
-- Preserve frozen public fixes/retry and release metadata. Exclude private pin removal and unrelated private-main changes. Independent review and live acceptance pending.
-
-## 2026.9.8 — DRAFT (unpublished)
-
-Release candidate only; the version is not a publication date. Exact-commit CI,
-independent review, and protected live validation remain release gates.
-
-### Maintenance
-- **Release packaging**: Include the action capability matrix and release checklist linked from the packaged README; document building before local linking and after source updates.
-- **Compatibility guidance**: Preserve the minimum host and Node engine policy while separating newer-host compatibility checks from production upgrade advice.
-- **Deterministic retry coverage**: Control the deferred retry fairness test clock without changing runtime behavior.
+## 2026.9.18
 
 ### Features
+- **Topic session isolation**: Use account-, realm-, bot-, stream-, and topic-scoped versioned identities with pinned Unicode 16 lowercase matching. Raw Zulip topics remain separate delivery data, parent history is never inherited, and the included preview/apply migration tool archives legacy topic sessions through the gateway API.
+- **Consistent topic delivery**: Resolve stream names through OpenClaw's asynchronous routing hook and use one destination model across sends, actions, routes, replies, and receipts. Configured defaults and explicit empty topics are preserved, while `replyToId` remains a Zulip message ID.
+- **Lost-route recovery**: When OpenClaw retains only an opaque session target, deliver to the selected bot owner's active Zulip conversation with a clear diagnostic note. An explicit `routingDiagnosticsTarget` is the only backup; the plugin never guesses a stream or redirects ordinary send failures.
+- **Native questions and opt-in progress**: Add canonical desktop questions with constrained mobile fallback, actual-destination binding, terminal replacement/rollback behavior, and optional run-local progress updates. Progress remains disabled unless explicitly selected and takes precedence over the legacy `thinkingPlaceholder` without duplicate messages.
 - **Handled-message read state**: Add an account-level `markHandledRead` opt-in that marks DM and stream/topic messages read only after successful dispatch settlement and durable receive completion, with safe batching and non-fatal failure reporting.
-- **Trusted durable live smoke**: Stage protected exact-SHA candidates through OpenClaw's bundled-plugin trust path and require interruption/replay/completion/deduplication evidence with exact host and plugin versions.
-- **Per-stream inbound policy**: Add deterministic name/ID `streamOverrides` for inbound activation, mention requirements, and allowed/excluded topics while preserving legacy `streams`, `topics`, and `streamTopics` behavior.
-- **Early inbound filtering**: Resolve stream policy before durable acceptance, attachment downloads, reactions, typing, routing, or agent dispatch. Outbound access remains independent.
-- **DM session isolation**: Force realm/account/sender-scoped direct-message sessions independently of global `session.dmScope`, and document deterministic migration plus host-owned idle rotation.
+- **Per-stream inbound policy**: Add deterministic name/ID `streamOverrides` for inbound activation, mention requirements, and allowed/excluded topics while preserving legacy `streams`, `topics`, and `streamTopics` behavior. Filtering occurs before durable acceptance, downloads, reactions, typing, routing, or dispatch.
+- **Direct-message isolation**: Force realm/account/sender-scoped DM sessions independently of global `session.dmScope`, with documented deterministic migration and host-owned idle rotation.
 
-### Compatibility
-- **OpenClaw 2026.8.1 compatibility**: Use the shared ingress queue and typed media-runtime SDK surfaces while retaining OpenClaw 2026.7.1-2 as the minimum supported host, draining legacy durable records, and keeping command access-group checks enabled.
+### Bug Fixes
+- **Queue registration**: Include Zulip's required `notification_settings_null` boolean when registering event queues, preserving the server's default notification format and empty-topic support.
+- **Recovery receipts**: Derive receipts from each actual multipart destination, including fallback metadata, without creating or rebinding session history for recovery delivery.
+- **Durable compatibility**: Use the shared ingress queue and typed media-runtime SDK surfaces while draining legacy durable records and keeping command access-group checks enabled.
+- **Deterministic retry coverage**: Control the deferred retry fairness test clock without changing runtime retry behavior.
 
 ### Security
-- **Action capability contract**: Make advertised, schema-described, and handled message actions share one allowlist; remove unreachable provider-specific admin handlers; reject hidden and unadvertised actions before credential or network access; and document the closed shared-action boundary plus plugin-owned agent-tool alternative in a checked-in capability matrix.
+- **Action capability contract**: Make advertised, schema-described, and handled message actions share one allowlist; remove unreachable provider-specific admin handlers; reject hidden and unadvertised actions before credential or network access; and document the closed shared-action boundary plus plugin-owned agent-tool alternative.
+
+### Compatibility
+- **OpenClaw and Node support**: Require OpenClaw >=2026.9.3 and Node.js >=24.16.0 <25 or >=26.1.0. The development dependency and lockfile remain pinned to OpenClaw 2026.9.3 for reproducible release evidence.
+- **Core boundary**: This plugin does not contain the separate OpenClaw core completion-batch fix for issue #13 or remove the core `sessions_send` 200-session lookup limit.
+
+### Maintenance
+- **Release packaging**: Include the action capability matrix, topic migration guide, and release checklist linked from the packaged README; document building before local linking and after source updates.
+- **Trusted durable live smoke**: Stage protected exact-SHA builds through OpenClaw's bundled-plugin trust path and require interruption, replay, completion, deduplication, and handled-read evidence with exact host and plugin versions.
+- **Live-validation boundary**: Desktop/mobile controls, cleanup failure paths, concurrent cancellation, and combined progress behavior still require protected exact-commit live acceptance; offline tests do not claim live soak coverage.
 
 ## 2026.5.26
 

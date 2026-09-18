@@ -1,12 +1,12 @@
 {
   "name": "openclaw-channel-zulip",
-  "version": "2026.9.10-rc.3",
+  "version": "2026.9.18",
   "description": "Zulip channel plugin for OpenClaw \u2014 concurrent message processing, file uploads, approval hooks, and native message actions",
   "type": "module",
   "author": "FtlC-ian",
   "license": "MIT",
   "engines": {
-    "node": "^22.19.0 || ^24.0.0"
+    "node": ">=24.16.0 <25 || >=26.1.0"
   },
   "keywords": [
     "openclaw",

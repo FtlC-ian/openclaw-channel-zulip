@@ -21,7 +21,7 @@
 
 ---
 
-## Opt-in progress and native questions (private combined candidate)
+## Opt-in progress and native questions
 
 Progress is disabled unless `channels.zulip.streaming.mode` (or the selected
 account's mode) is explicitly `"progress"`. Merely setting `streaming.progress`
@@ -48,15 +48,16 @@ mobile numeric/text/list fallback. Controls are bound to account, sender and act
 sent conversation, and intercepted before ordinary dispatch. Terminal replacement
 is sent before deleting the widget; failed deletion rolls back the replacement
 where possible. Bindings are bounded and in memory: expiry/restart do not guarantee
-visual cleanup or persistent recovery. Independent exact-commit review and protected
-desktop/mobile/cleanup/live acceptance remain required; no combined live acceptance
-or soak is claimed.
+visual cleanup or persistent recovery. Protected desktop/mobile/cleanup live
+acceptance remains a release gate for the exact release commit; the offline
+harness does not claim combined live acceptance or soak coverage.
 
 ## Installation
 
-**This private candidate requires OpenClaw >=2026.9.3.** The development SDK is
-pinned to 2026.9.3, including its asynchronous outbound session-routing hook.
-Live acceptance is pending; this archive has not been published or installed.
+This release requires **OpenClaw >=2026.9.3** and **Node.js >=24.16.0 <25 or
+>=26.1.0**. The development SDK and lockfile are pinned to OpenClaw 2026.9.3,
+including its asynchronous outbound session-routing hook. Protected live
+acceptance for the exact release commit remains a release gate.
 
 Durable inbound handling uses the shared ingress queue API. When upgrading an existing installation,
 pending records and
@@ -68,8 +69,9 @@ Outbound media loading uses the typed media-runtime SDK surface.
 Command access-group authorization remains enabled even if an older
 configuration still contains the removed `commands.useAccessGroups` toggle.
 
-Do not install this candidate on the old host floor. Validate any host upgrade
-separately in an isolated environment before changing production.
+Do not install this release on an older host or unsupported Node version. Validate
+host and runtime upgrades separately in an isolated environment before changing
+production.
 
 ### Via plugin manager (recommended)
 
@@ -423,7 +425,7 @@ Idle rotation is owned by OpenClaw. Configure its supported direct-session polic
 
 The host uses the last real interaction and considers the exact expiry timestamp
 fresh; the session rotates on the next millisecond. Restarts preserve that
-timestamp. OpenClaw 2026.7.1-2 through 2026.8.1 does not publish a turn-count
+timestamp. The supported host SDK does not publish a plugin-owned turn-count
 session-rotation API. The plugin therefore does not create parallel session state
 or approximate turn rotation. Turn-count rotation remains blocked on a public
 host policy/API.
@@ -474,7 +476,7 @@ openclaw gateway restart
 
 ## Continuous integration
 
-Pull requests and pushes to `main` run the release-blocking **CI** workflow on Node 22.19 and Node 24. Each run installs from `pnpm-lock.yaml` with `--frozen-lockfile`, builds, runs the full test suite, checks whitespace errors with `git diff --check`, packs the release artifact, installs it with the locked OpenClaw host in a clean temporary project, and imports its public package entry point. The workflow has read-only repository permissions and does not receive repository or Zulip secrets.
+Pull requests and pushes to `main` run the release-blocking **CI** workflow on Node 24.16 and Node 26.x, matching the supported runtime ranges. Each run installs from `pnpm-lock.yaml` with `--frozen-lockfile`, builds, runs the full test suite, checks whitespace errors with `git diff --check`, packs the release artifact, installs it with the locked OpenClaw host in a clean temporary project, and imports its public package entry point. The workflow has read-only repository permissions and does not receive repository or Zulip secrets.
 
 Release candidates also have a manual **Zulip live smoke (protected)** workflow.
 Its workflow definition can run only from `main`. By default it accepts a full

@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { assertFinalPrivateTypingStop, assertMessageRemainsExact, authenticatedUserId, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, drainEventQueueUntilQuiet, DURABLE_OFFLINE_DELAY_MS, enableHandledReadForSmokeConfig, eventOccursBefore, EventQueue, extractExactUploadUrl, Gateway, hasFinalPrivateTypingStop, hasProvableMinimumMessageDelay, inspectChildTranscripts, inspectLifecycleTurnEvidence, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactPollMessage, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, isUsageCountedTranscriptName, lifecycleEvidenceCounts, lifecycleSummary, normalizeScenarioError, parseZulipHandledReadDiagnostic, parseZulipSubagentDiagnostic, probeRunnerLocalGatewayHealth, readZulipMessageFlags, redactError, resolveUploadUrl, signalProcessTree, subagentCompletedBeforeReply, validateEnvironment, waitForProcessTreeExit, waitForZulipMessageRead, writeGatewayGeneration } from "./run.mjs";
+import { assertFinalPrivateTypingStop, assertMessageRemainsExact, authenticatedUserId, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, drainEventQueueUntilQuiet, DURABLE_OFFLINE_DELAY_MS, enableHandledReadForSmokeConfig, eventOccursBefore, EventQueue, extractExactUploadUrl, formatSmokeTurnEvidence, Gateway, hasFinalPrivateTypingStop, hasProvableMinimumMessageDelay, inspectChildTranscripts, inspectLifecycleTurnEvidence, inspectSmokeTurnEvidence, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactPollMessage, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, isUsageCountedTranscriptName, lifecycleEvidenceCounts, lifecycleSummary, normalizeScenarioError, parseZulipHandledReadDiagnostic, parseZulipSubagentDiagnostic, probeRunnerLocalGatewayHealth, readZulipMessageFlags, redactError, resolveUploadUrl, signalProcessTree, subagentCompletedBeforeReply, validateEnvironment, waitForProcessTreeExit, waitForZulipMessageRead, writeGatewayGeneration } from "./run.mjs";
 import { validateSmokeBaselineModel } from "./prepare-config.mjs";
 import { resolveInstalledOpenClawRoot, stageBundledPlugin } from "./stage-bundled-plugin.mjs";
 
@@ -557,6 +557,203 @@ test("bounds and confines lifecycle transcript evidence", async () => {
       writeFile(join(sessionsDir, `irrelevant-${index}.txt`), "x")));
     await assert.rejects(
       inspectLifecycleTurnEvidence(stateDir, "parent", "child"),
+      (error) => error?.message === "Transcript scan limit exceeded",
+    );
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+    await rm(externalDir, { recursive: true, force: true });
+  }
+});
+
+test("classifies the observed current-turn no-reply transcript without exposing content", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "zulip-smoke-no-reply-"));
+  const sessionsDir = join(stateDir, "agents", "main", "sessions");
+  const marker = "smoke-deadbeef-current:dm-ok";
+  const secret = "sk-protected-secret-value";
+  await mkdir(sessionsDir, { recursive: true });
+  try {
+    await writeFile(join(sessionsDir, "current.jsonl"), [
+      JSON.stringify({ message: { role: "user", content: `SMOKE_COMMAND\\necho ${marker}\\nEND_SMOKE_COMMAND ${secret}` } }),
+      "malformed-json-with-https://secret.example/path?token=hidden",
+    ].join("\n"));
+    await writeFile(join(sessionsDir, "unrelated.jsonl"), JSON.stringify({
+      message: { role: "assistant", content: [{ type: "text", text: secret }] },
+    }));
+
+    const evidence = await inspectSmokeTurnEvidence(stateDir, marker);
+    assert.deepEqual(evidence, {
+      matchingTranscripts: 1,
+      userMarkerCount: 1,
+      assistantMessageCount: 0,
+      assistantExactMarkerCount: 0,
+      assistantNonemptyCount: 0,
+      errorRecordCount: 0,
+      toolResultCount: 0,
+      toolResultErrorCount: 0,
+      abortRecordCount: 0,
+      stopReasonStop: 0,
+      stopReasonEndTurn: 0,
+      stopReasonToolUse: 0,
+      stopReasonLength: 0,
+      stopReasonError: 0,
+      stopReasonAborted: 0,
+      stopReasonOther: 0,
+      activeTurnEvidenceCount: 1,
+      pendingToolCallCount: 0,
+    });
+    const summary = formatSmokeTurnEvidence(evidence);
+    assert.match(summary, /matching_transcript=true/);
+    assert.match(summary, /assistant_messages=0/);
+    assert.match(summary, /active_turn_evidence=1/);
+    assert.doesNotMatch(summary, /protected|secret|https?:|token|deadbeef/);
+    assert.equal(Buffer.byteLength(summary, "utf8") < 512, true);
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("captures failure turn evidence before stopping the gateway", async () => {
+  const source = await readFile(new URL("./run.mjs", import.meta.url), "utf8");
+  const captureIndex = source.indexOf("smokeTurnEvidenceLine = formatSmokeTurnEvidence(");
+  const stopIndex = source.indexOf("await gateway.stop().catch(() => {});", captureIndex);
+  assert.equal(captureIndex >= 0, true);
+  assert.equal(stopIndex > captureIndex, true);
+});
+
+test("counts only records inside the marker-attributed smoke turn", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "zulip-smoke-turn-counts-"));
+  const sessionsDir = join(stateDir, "agents", "main", "sessions");
+  const marker = "unique-current-marker";
+  await mkdir(sessionsDir, { recursive: true });
+  try {
+    await writeFile(join(sessionsDir, "current.jsonl"), [
+      JSON.stringify({ message: { role: "assistant", content: "before turn", stopReason: "error" } }),
+      JSON.stringify({ message: { role: "user", content: `echo ${marker}` } }),
+      JSON.stringify({ message: { role: "assistant", content: [
+        { type: "text", text: "working" },
+        { type: "toolCall", id: "pending-call", name: "read" },
+        { type: "toolCall", id: "finished-call", name: "read" },
+      ], stopReason: "toolUse" } }),
+      JSON.stringify({ message: { role: "toolResult", toolCallId: "finished-call", isError: true,
+        content: [{ type: "text", text: "api_key=protected-value https://secret.example" }] } }),
+      JSON.stringify({ message: { role: "assistant", content: [{ type: "text", text: marker }], stopReason: "end_turn" } }),
+      JSON.stringify({ message: { role: "user", content: "later turn" } }),
+      JSON.stringify({ type: "abort", stopReason: "aborted", message: { role: "assistant", content: "later secret" } }),
+    ].join("\n"));
+
+    const evidence = await inspectSmokeTurnEvidence(stateDir, marker);
+    assert.equal(evidence.matchingTranscripts, 1);
+    assert.equal(evidence.userMarkerCount, 1);
+    assert.equal(evidence.assistantMessageCount, 2);
+    assert.equal(evidence.assistantExactMarkerCount, 1);
+    assert.equal(evidence.assistantNonemptyCount, 2);
+    assert.equal(evidence.errorRecordCount, 1);
+    assert.equal(evidence.toolResultCount, 1);
+    assert.equal(evidence.toolResultErrorCount, 1);
+    assert.equal(evidence.abortRecordCount, 0);
+    assert.equal(evidence.stopReasonToolUse, 1);
+    assert.equal(evidence.stopReasonEndTurn, 1);
+    assert.equal(evidence.stopReasonError, 0);
+    assert.equal(evidence.stopReasonAborted, 0);
+    assert.equal(evidence.activeTurnEvidenceCount, 0);
+    assert.equal(evidence.pendingToolCallCount, 1);
+    assert.doesNotMatch(formatSmokeTurnEvidence(evidence), /protected-value|secret\.example|working/);
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("keeps internal child completion records inside the attributed lifecycle turn", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "zulip-smoke-internal-completion-"));
+  const sessionsDir = join(stateDir, "agents", "main", "sessions");
+  const marker = "lifecycle-current-marker";
+  await mkdir(sessionsDir, { recursive: true });
+  try {
+    await writeFile(join(sessionsDir, "lifecycle.jsonl"), [
+      JSON.stringify({ message: { role: "user", content: `lifecycle ${marker}` } }),
+      JSON.stringify({ message: { role: "assistant", content: [
+        { type: "toolCall", id: "spawn-call", name: "sessions_spawn" },
+      ], stopReason: "toolUse" } }),
+      JSON.stringify({ message: { role: "toolResult", toolCallId: "spawn-call", content: "accepted" } }),
+      JSON.stringify({ message: { role: "user", content: "[Internal task completion event] child settled" } }),
+      JSON.stringify({ message: { role: "assistant", content: marker, stopReason: "endTurn" } }),
+      JSON.stringify({ message: { role: "user", content: "actual next inbound turn" } }),
+      JSON.stringify({ message: { role: "assistant", content: "unrelated later output", stopReason: "stop" } }),
+    ].join("\n"));
+
+    const evidence = await inspectSmokeTurnEvidence(stateDir, marker);
+    assert.equal(evidence.assistantMessageCount, 2);
+    assert.equal(evidence.assistantExactMarkerCount, 1);
+    assert.equal(evidence.toolResultCount, 1);
+    assert.equal(evidence.pendingToolCallCount, 0);
+    assert.equal(evidence.stopReasonToolUse, 1);
+    assert.equal(evidence.stopReasonEndTurn, 1);
+    assert.equal(evidence.stopReasonStop, 0);
+    assert.equal(evidence.activeTurnEvidenceCount, 0);
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("classifies terminal error and abort no-reply turns with fixed tokens", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "zulip-smoke-terminal-turn-"));
+  const sessionsDir = join(stateDir, "agents", "main", "sessions");
+  const marker = "terminal-current-marker";
+  await mkdir(sessionsDir, { recursive: true });
+  try {
+    await writeFile(join(sessionsDir, "error.jsonl"), [
+      JSON.stringify({ message: { role: "user", content: marker } }),
+      JSON.stringify({ type: "error", message: { role: "assistant", content: [], stopReason: "provider-error",
+        errorMessage: "Bearer protected-provider-token" } }),
+      JSON.stringify({ type: "abort", aborted: true, message: { role: "assistant", content: [], stopReason: "aborted" } }),
+    ].join("\n"));
+
+    const evidence = await inspectSmokeTurnEvidence(stateDir, marker);
+    assert.equal(evidence.assistantMessageCount, 2);
+    assert.equal(evidence.assistantNonemptyCount, 0);
+    assert.equal(evidence.errorRecordCount, 1);
+    assert.equal(evidence.abortRecordCount, 1);
+    assert.equal(evidence.stopReasonOther, 1);
+    assert.equal(evidence.stopReasonAborted, 1);
+    assert.equal(evidence.activeTurnEvidenceCount, 0);
+    assert.doesNotMatch(formatSmokeTurnEvidence(evidence), /Bearer|provider-token|provider-error/);
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("confines smoke-turn diagnostics and fails closed on bounded transcript violations", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "zulip-smoke-turn-bounds-"));
+  const externalDir = await mkdtemp(join(tmpdir(), "zulip-smoke-turn-external-"));
+  const marker = "bounded-current-marker";
+  try {
+    const linkedStateDir = join(tmpdir(), `zulip-smoke-linked-state-${Date.now()}`);
+    await symlink(externalDir, linkedStateDir);
+    await assert.rejects(
+      inspectSmokeTurnEvidence(linkedStateDir, marker),
+      (error) => error?.message === "Transcript evidence is unavailable",
+    );
+    await rm(linkedStateDir, { force: true });
+
+    const sessionsDir = join(stateDir, "agents", "main", "sessions");
+    await mkdir(sessionsDir, { recursive: true });
+    await writeFile(join(externalDir, "outside.jsonl"), JSON.stringify({
+      message: { role: "user", content: `${marker} sk-outside-secret` },
+    }));
+    await symlink(externalDir, join(sessionsDir, "outside"));
+    assert.equal((await inspectSmokeTurnEvidence(stateDir, marker)).matchingTranscripts, 0);
+
+    await writeFile(join(sessionsDir, "malformed.jsonl"), "not-json\n".repeat(5000));
+    assert.equal((await inspectSmokeTurnEvidence(stateDir, marker)).matchingTranscripts, 0);
+    await writeFile(join(sessionsDir, "too-many-lines.jsonl"), "{}\n".repeat(5001));
+    await assert.rejects(
+      inspectSmokeTurnEvidence(stateDir, marker),
+      (error) => error?.message === "Transcript scan limit exceeded",
+    );
+    await rm(join(sessionsDir, "too-many-lines.jsonl"));
+    await writeFile(join(sessionsDir, "oversized.jsonl"), "x".repeat(2 * 1024 * 1024 + 1));
+    await assert.rejects(
+      inspectSmokeTurnEvidence(stateDir, marker),
       (error) => error?.message === "Transcript scan limit exceeded",
     );
   } finally {

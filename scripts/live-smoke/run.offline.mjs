@@ -8,7 +8,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { assertFinalPrivateTypingStop, assertMessageRemainsExact, authenticatedUserId, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, drainEventQueueUntilQuiet, DURABLE_OFFLINE_DELAY_MS, enableHandledReadForSmokeConfig, eventOccursBefore, EventQueue, extractExactUploadUrl, Gateway, hasFinalPrivateTypingStop, hasProvableMinimumMessageDelay, inspectChildTranscripts, inspectLifecycleTurnEvidence, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactPollMessage, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, isUsageCountedTranscriptName, lifecycleEvidenceCounts, lifecycleSummary, normalizeScenarioError, parseZulipHandledReadDiagnostic, parseZulipSubagentDiagnostic, probeRunnerLocalGatewayHealth, readZulipMessageFlags, redactError, resolveUploadUrl, signalProcessTree, subagentCompletedBeforeReply, validateEnvironment, waitForProcessTreeExit, waitForZulipMessageRead, writeGatewayGeneration } from "./run.mjs";
-import { selectSmokeModel } from "./prepare-config.mjs";
+import { validateSmokeBaselineModel } from "./prepare-config.mjs";
 import { resolveInstalledOpenClawRoot, stageBundledPlugin } from "./stage-bundled-plugin.mjs";
 
 const ACTOR_USER_ID = "42";
@@ -49,22 +49,51 @@ test("validates protected configuration while preserving base paths", () => {
   assert.throws(() => validateEnvironment({ ...validEnv, ZULIP_SMOKE_USER_API_KEY: "" }), /protected configuration/);
 });
 
-test("selects a compatible smoke model while preserving its policy", () => {
+test("validates the protected baseline model without changing config or credentials", () => {
   const makeConfig = (model) => ({
     agents: { defaults: { model, models: { "abacus/gpt-5-mini": { alias: "smoke", params: { safe: true } } } } },
-    models: { providers: { abacus: { models: [{ id: "gpt-5-mini", name: "mini", reasoning: true }] } } },
+    models: { providers: { abacus: {
+      apiKey: "protected-provider-credential",
+      baseUrl: "https://models.example.test/api",
+      models: [{ id: "gpt-5-mini", name: "mini", reasoning: true }],
+    } } },
   });
   for (const model of ["abacus/gpt-5-mini", { primary: "abacus/gpt-5-mini", fallbacks: ["other/model"] }]) {
-    const config = selectSmokeModel(makeConfig(model), "gpt-5.2");
+    const config = makeConfig(model);
+    const before = structuredClone(config);
+    assert.equal(validateSmokeBaselineModel(config), config);
     assert.equal(typeof config.agents.defaults.model === "string"
-      ? config.agents.defaults.model : config.agents.defaults.model.primary, "abacus/gpt-5.2");
-    assert.deepEqual(config.agents.defaults.models["abacus/gpt-5.2"], { alias: "smoke", params: { safe: true } });
-    assert.deepEqual(config.models.providers.abacus.models.at(-1), { id: "gpt-5.2", name: "gpt-5.2", reasoning: true });
+      ? config.agents.defaults.model : config.agents.defaults.model.primary, "abacus/gpt-5-mini");
+    assert.deepEqual(config, before);
   }
-  assert.throws(() => selectSmokeModel({
-    ...makeConfig("abacus/gpt-5-mini"),
-    agents: { defaults: { model: "abacus/gpt-5-mini", models: {} } },
-  }, "gpt-5.2"), /allow its baseline model/);
+});
+
+test("rejects incomplete protected baseline model configuration without exposing values", () => {
+  const makeConfig = () => ({
+    agents: { defaults: {
+      model: "abacus/gpt-5-mini",
+      models: { "abacus/gpt-5-mini": { alias: "smoke" } },
+    } },
+    models: { providers: { abacus: { models: [{ id: "gpt-5-mini" }] } } },
+  });
+  const failures = [
+    [{}, /name its model provider and model/],
+    [{ ...makeConfig(), agents: { defaults: { ...makeConfig().agents.defaults, model: "abacus/" } } },
+      /name its model provider and model/],
+    [{ ...makeConfig(), models: { providers: {} } }, /declare the baseline provider/],
+    [{ ...makeConfig(), models: { providers: { abacus: { models: [] } } } }, /declare the baseline model/],
+    [{
+      ...makeConfig(),
+      agents: { defaults: { model: "abacus/gpt-5-mini", models: {} } },
+    }, /allow its baseline model/],
+  ];
+  for (const [config, expected] of failures) {
+    assert.throws(() => validateSmokeBaselineModel(config), (error) => {
+      assert.match(error.message, expected);
+      assert.doesNotMatch(error.message, /abacus|gpt-5-mini|protected-provider-credential/);
+      return true;
+    });
+  }
 });
 
 test("preserves Zulip base paths when constructing API URLs", () => {
@@ -1231,7 +1260,8 @@ test("workflow is manual, protected, pinned, and bounded", async () => {
   assert.match(workflow, /Protected smoke config must disable stream mention gating/);
   assert.match(workflow, /Protected smoke config must use the robot subagent reaction/);
   assert.match(workflow, /reserves robot and tada reactions for exact evidence/);
-  assert.match(workflow, /const targetId = "gpt-5\.2"/);
+  assert.match(workflow, /validateSmokeBaselineModel\(config\)/);
+  assert.doesNotMatch(workflow, /gpt-5\.2|targetId|selectSmokeModel/);
   assert.match(workflow, /writeFileSync\(process\.env\.OPENCLAW_CONFIG_PATH, JSON\.stringify\(config\), \{ mode: 0o600 \}\)/);
   assert.doesNotMatch(workflow, /printf '%s' "\$OPENCLAW_SMOKE_CONFIG_JSON"/);
   assert.match(agentProtocol, /verify the child's exact result/);

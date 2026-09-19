@@ -29,7 +29,8 @@ import {
 } from "./zulip/accounts.js";
 import { zulipApprovalAuth } from "./approval-auth.js";
 import { normalizeZulipBaseUrl } from "./zulip/client.js";
-import { sendMessageZulip, sendPollZulip } from "./zulip/send.js";
+import { sendMessageZulip, sendPollZulip, type ZulipSendResult } from "./zulip/send.js";
+import type { ZulipRoutingFallback } from "./zulip/routing-fallback.js";
 import {
   resolveZulipOutboundSessionRoute,
   resolveZulipSessionConversation,
@@ -50,6 +51,29 @@ const meta = {
   preferSessionLookupForAnnounceTarget: true,
 } as const;
 
+function zulipSendReceipt(
+  results: ZulipSendResult[],
+  kind: "text" | "media" | "poll",
+) {
+  const threadIds = new Set(results.map((result) => result.threadId));
+  const threadId = threadIds.size === 1 ? results[0]?.threadId : undefined;
+  const platformMessageIds = results.map((result) => result.messageId).filter(Boolean);
+  return {
+    primaryPlatformMessageId: platformMessageIds[0],
+    platformMessageIds,
+    parts: results.map((result, index) => ({
+      platformMessageId: result.messageId,
+      kind,
+      index,
+      ...(result.threadId === undefined ? {} : { threadId: result.threadId }),
+      raw: { channel: "zulip", ...result },
+    })),
+    ...(threadId === undefined ? {} : { threadId }),
+    sentAt: Date.now(),
+    raw: results.map((result) => ({ channel: "zulip", ...result })),
+  };
+}
+
 export const zulipOutboundAdapter: ChannelOutboundAdapter = {
   deliveryMode: "direct",
   chunker: (text, limit) => getZulipRuntime().channel.text.chunkMarkdownText(text, limit),
@@ -66,8 +90,8 @@ export const zulipOutboundAdapter: ChannelOutboundAdapter = {
     },
   },
   resolveTarget: ({ to }) => {
-    const trimmed = to?.trim();
-    if (!trimmed) {
+    const target = to?.trimStart();
+    if (!target?.trim()) {
       return {
         ok: false,
         error: new Error(
@@ -75,7 +99,7 @@ export const zulipOutboundAdapter: ChannelOutboundAdapter = {
         ),
       };
     }
-    return { ok: true, to: trimmed };
+    return { ok: true, to: target };
   },
   sendText: async ({ cfg, to, text, accountId, threadId }) => {
     const result = await sendMessageZulip(to, text, {
@@ -83,7 +107,7 @@ export const zulipOutboundAdapter: ChannelOutboundAdapter = {
       accountId: accountId ?? undefined,
       topic: threadId == null ? undefined : String(threadId),
     });
-    return { channel: "zulip", ...result };
+    return { channel: "zulip", ...result, receipt: zulipSendReceipt([result], "text") };
   },
   sendMedia: async ({
     cfg,
@@ -105,7 +129,7 @@ export const zulipOutboundAdapter: ChannelOutboundAdapter = {
       mediaLocalRoots,
       mediaReadFile,
     });
-    return { channel: "zulip", ...result };
+    return { channel: "zulip", ...result, receipt: zulipSendReceipt([result], "media") };
   },
   sendPayload: async (ctx) => {
     const logger = getZulipRuntime().logging.getChildLogger({ module: "zulip" });
@@ -124,7 +148,8 @@ export const zulipOutboundAdapter: ChannelOutboundAdapter = {
       channelDataKeys: Object.keys(ctx.payload.channelData ?? {}),
     });
     if (mediaUrls.length > 0) {
-      const results: Array<{ messageId: string; channelId: string }> = [];
+      const results: ZulipSendResult[] = [];
+      let routingFallback: ZulipRoutingFallback | undefined;
       for (let i = 0; i < mediaUrls.length; i++) {
         const result = await sendMessageZulip(ctx.to, i === 0 ? text : "", {
           cfg: ctx.cfg,
@@ -136,36 +161,19 @@ export const zulipOutboundAdapter: ChannelOutboundAdapter = {
           mediaReadFile: ctx.mediaReadFile,
           presentation: i === 0 ? ctx.payload.presentation : undefined,
           channelData: i === 0 ? (ctx.payload.channelData as ReplyPayload["channelData"] | undefined) : undefined,
+          routingFallback,
         });
+        routingFallback ??= result.meta?.routingFallback;
         results.push(result);
       }
       const primary = results[0];
       if (!primary) {
         throw new Error("Zulip media payload produced no send results");
       }
-      const platformMessageIds = results.map((result) => result.messageId).filter(Boolean);
       return {
         channel: "zulip",
-        messageId: primary.messageId,
-        channelId: primary.channelId,
-        receipt: {
-          primaryPlatformMessageId: platformMessageIds[0],
-          platformMessageIds,
-          parts: results.map((result, index) => ({
-            platformMessageId: result.messageId,
-            kind: "media" as const,
-            index,
-            ...(ctx.threadId == null ? {} : { threadId: String(ctx.threadId) }),
-            raw: { channel: "zulip", messageId: result.messageId, channelId: result.channelId },
-          })),
-          ...(ctx.threadId == null ? {} : { threadId: String(ctx.threadId) }),
-          sentAt: Date.now(),
-          raw: results.map((result) => ({
-            channel: "zulip",
-            messageId: result.messageId,
-            channelId: result.channelId,
-          })),
-        },
+        ...primary,
+        receipt: zulipSendReceipt(results, "media"),
       };
     }
     const result = await sendMessageZulip(ctx.to, text, {
@@ -175,7 +183,7 @@ export const zulipOutboundAdapter: ChannelOutboundAdapter = {
       presentation: ctx.payload.presentation,
       channelData: ctx.payload.channelData as ReplyPayload["channelData"] | undefined,
     });
-    return { channel: "zulip", ...result };
+    return { channel: "zulip", ...result, receipt: zulipSendReceipt([result], "text") };
   },
   sendPoll: async ({ cfg, to, poll, accountId, threadId }) => {
     const result = await sendPollZulip(to, poll, {
@@ -183,7 +191,7 @@ export const zulipOutboundAdapter: ChannelOutboundAdapter = {
       accountId: accountId ?? undefined,
       topic: threadId == null ? undefined : String(threadId),
     });
-    return { channel: "zulip", pollId: result.messageId, ...result };
+    return { channel: "zulip", pollId: result.messageId, ...result, receipt: zulipSendReceipt([result], "poll") };
   },
 };
 
@@ -338,34 +346,15 @@ export const zulipPlugin = {
   actions: zulipMessageActions,
   messaging: {
     normalizeTarget: normalizeZulipMessagingTarget,
-    ...({
-      resolveSessionConversation: ({
-        kind,
-        rawId,
-      }: {
-        kind: "group" | "channel";
-        rawId: string;
-      }) => resolveZulipSessionConversation({ kind, rawId }),
-      resolveSessionTarget: ({
-        kind,
-        id,
-        threadId,
-      }: {
-        kind: "group" | "channel";
-        id: string;
-        threadId?: string | null;
-      }) => {
-        const trimmedId = id.trim();
-        if (!trimmedId) {
-          return undefined;
-        }
-        if (kind === "group") {
-          return `user:${trimmedId}`;
-        }
-        return undefined;
-      },
-      resolveOutboundSessionRoute: resolveZulipOutboundSessionRoute,
-    } as Record<string, unknown>),
+    resolveSessionConversation: resolveZulipSessionConversation,
+    resolveSessionTarget: ({ kind, id }) => {
+      const trimmedId = id.trim();
+      if (kind === "group" && /^[^\s@:]+@[^\s@:]+$/.test(trimmedId)) {
+        return `user:${trimmedId}`;
+      }
+      return undefined;
+    },
+    resolveOutboundSessionRoute: resolveZulipOutboundSessionRoute,
     targetResolver: {
       looksLikeId: looksLikeZulipTargetId,
       hint: "<stream:NAME[:topic]|user:email|#stream[:topic]|@email>",

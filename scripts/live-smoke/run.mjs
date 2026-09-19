@@ -290,12 +290,23 @@ async function listAgentTranscriptFiles(stateDir) {
   let totalBytes = 0;
   let visitedDirectories = 0;
   let inspectedEntries = 0;
-  const root = resolve(stateDir, "agents");
+  const stateRoot = resolve(stateDir);
+  let canonicalStateRoot;
   let canonicalRoot;
   try {
+    const stateStats = await lstat(stateRoot);
+    if (!stateStats.isDirectory() || stateStats.isSymbolicLink()) {
+      throw new Error("Transcript evidence is unavailable");
+    }
+    canonicalStateRoot = await realpath(stateRoot);
+    const root = resolve(canonicalStateRoot, "agents");
     const rootStats = await lstat(root);
     if (!rootStats.isDirectory() || rootStats.isSymbolicLink()) throw new Error("Transcript evidence is unavailable");
     canonicalRoot = await realpath(root);
+    const stateRelative = relative(canonicalStateRoot, canonicalRoot);
+    if (stateRelative.startsWith("..") || isAbsolute(stateRelative)) {
+      throw new Error("Transcript evidence is unavailable");
+    }
   }
   catch (error) {
     if (error?.code === "ENOENT") return files;
@@ -401,6 +412,172 @@ export async function inspectLifecycleTurnEvidence(stateDir, parentMarker, child
     exactReplies += records.flatMap(assistantMessageTexts).filter((text) => text === parentMarker).length;
   }
   return { parentTranscripts, spawnCalls, yieldCalls, completionEvents, exactReplies };
+}
+
+const smokeTurnStopReasonClasses = Object.freeze([
+  "stop",
+  "end_turn",
+  "tool_use",
+  "length",
+  "error",
+  "aborted",
+  "other",
+]);
+
+function transcriptMessageText(message) {
+  if (typeof message?.content === "string") return message.content;
+  if (!Array.isArray(message?.content)) return "";
+  return message.content.map((part) => {
+    if (typeof part === "string") return part;
+    return typeof part?.text === "string" ? part.text : "";
+  }).join("");
+}
+
+function classifyStopReason(value) {
+  if (typeof value !== "string" || !value) return undefined;
+  const normalized = value.trim()
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .toLowerCase()
+    .replaceAll("-", "_");
+  return smokeTurnStopReasonClasses.includes(normalized) ? normalized : "other";
+}
+
+function isInternalCompletionRecord(record) {
+  const internalEvents = Array.isArray(record?.internalEvents)
+    ? record.internalEvents
+    : Array.isArray(record?.message?.internalEvents)
+      ? record.message.internalEvents
+      : [];
+  if (internalEvents.some((event) => event?.type === "task_completion" && event?.source === "subagent")) {
+    return true;
+  }
+  return record?.message?.role === "user" &&
+    transcriptMessageText(record.message).includes("[Internal task completion event]");
+}
+
+function toolCallIds(message) {
+  if (!Array.isArray(message?.content)) return [];
+  return message.content.flatMap((part) => {
+    if (part?.type !== "toolCall" && part?.type !== "tool_use") return [];
+    const id = part.id ?? part.toolCallId ?? part.tool_call_id;
+    return id === undefined ? [] : [String(id)];
+  });
+}
+
+function toolResultId(message) {
+  if (message?.role !== "toolResult" && message?.role !== "tool_result" && message?.role !== "tool") {
+    return undefined;
+  }
+  const id = message.toolCallId ?? message.tool_call_id ?? message.id;
+  return id === undefined ? undefined : String(id);
+}
+
+function isTranscriptErrorRecord(record) {
+  const message = record?.message;
+  return record?.type === "error" || message?.role === "error" || message?.isError === true ||
+    typeof message?.error === "string" || typeof message?.errorMessage === "string" ||
+    classifyStopReason(message?.stopReason ?? record?.stopReason) === "error";
+}
+
+function isTranscriptAbortRecord(record) {
+  const message = record?.message;
+  const reason = classifyStopReason(message?.stopReason ?? record?.stopReason);
+  return reason === "aborted" || record?.type === "abort" || record?.aborted === true || message?.aborted === true;
+}
+
+export async function inspectSmokeTurnEvidence(stateDir, marker) {
+  const evidence = {
+    matchingTranscripts: 0,
+    userMarkerCount: 0,
+    assistantMessageCount: 0,
+    assistantExactMarkerCount: 0,
+    assistantNonemptyCount: 0,
+    errorRecordCount: 0,
+    toolResultCount: 0,
+    toolResultErrorCount: 0,
+    abortRecordCount: 0,
+    stopReasonStop: 0,
+    stopReasonEndTurn: 0,
+    stopReasonToolUse: 0,
+    stopReasonLength: 0,
+    stopReasonError: 0,
+    stopReasonAborted: 0,
+    stopReasonOther: 0,
+    activeTurnEvidenceCount: 0,
+    pendingToolCallCount: 0,
+  };
+  for (const file of await listAgentTranscriptFiles(stateDir)) {
+    const records = await readTranscriptRecords(file);
+    const markerIndexes = records.flatMap((record, index) =>
+      record?.message?.role === "user" && transcriptMessageText(record.message).includes(marker) ? [index] : []);
+    if (!markerIndexes.length) continue;
+    evidence.matchingTranscripts += 1;
+    evidence.userMarkerCount += markerIndexes.length;
+    for (const start of markerIndexes) {
+      let end = records.length;
+      for (let index = start + 1; index < records.length; index += 1) {
+        if (records[index]?.message?.role === "user" && !isInternalCompletionRecord(records[index])) {
+          end = index;
+          break;
+        }
+      }
+      const turn = records.slice(start + 1, end);
+      const pendingCalls = new Set();
+      let terminal = false;
+      for (const record of turn) {
+        const message = record?.message;
+        if (message?.role === "assistant") {
+          evidence.assistantMessageCount += 1;
+          const text = transcriptMessageText(message);
+          if (text.trim()) evidence.assistantNonemptyCount += 1;
+          if (text === marker) evidence.assistantExactMarkerCount += 1;
+          for (const id of toolCallIds(message)) pendingCalls.add(id);
+        }
+        const resultId = toolResultId(message);
+        if (resultId !== undefined) {
+          evidence.toolResultCount += 1;
+          pendingCalls.delete(resultId);
+          if (message?.isError === true) evidence.toolResultErrorCount += 1;
+        }
+        if (isTranscriptErrorRecord(record)) evidence.errorRecordCount += 1;
+        if (isTranscriptAbortRecord(record)) evidence.abortRecordCount += 1;
+        const stopReason = classifyStopReason(message?.stopReason ?? record?.stopReason);
+        if (stopReason) {
+          const suffix = stopReason.split("_").map((part) => part[0].toUpperCase() + part.slice(1)).join("");
+          evidence[`stopReason${suffix}`] += 1;
+          if (["stop", "end_turn", "length", "error", "aborted"].includes(stopReason)) terminal = true;
+        }
+      }
+      evidence.pendingToolCallCount += pendingCalls.size;
+      if (!terminal) evidence.activeTurnEvidenceCount += 1;
+    }
+  }
+  return evidence;
+}
+
+export function formatSmokeTurnEvidence(evidence) {
+  return "Smoke turn evidence: " + [
+    "available=true",
+    `matching_transcript=${evidence.matchingTranscripts > 0}`,
+    `matching_transcripts=${evidence.matchingTranscripts}`,
+    `user_markers=${evidence.userMarkerCount}`,
+    `assistant_messages=${evidence.assistantMessageCount}`,
+    `assistant_exact_markers=${evidence.assistantExactMarkerCount}`,
+    `assistant_nonempty=${evidence.assistantNonemptyCount}`,
+    `error_records=${evidence.errorRecordCount}`,
+    `tool_results=${evidence.toolResultCount}`,
+    `tool_result_errors=${evidence.toolResultErrorCount}`,
+    `abort_records=${evidence.abortRecordCount}`,
+    `stop_stop=${evidence.stopReasonStop}`,
+    `stop_end_turn=${evidence.stopReasonEndTurn}`,
+    `stop_tool_use=${evidence.stopReasonToolUse}`,
+    `stop_length=${evidence.stopReasonLength}`,
+    `stop_error=${evidence.stopReasonError}`,
+    `stop_aborted=${evidence.stopReasonAborted}`,
+    `stop_other=${evidence.stopReasonOther}`,
+    `active_turn_evidence=${evidence.activeTurnEvidenceCount}`,
+    `pending_tool_calls=${evidence.pendingToolCallCount}`,
+  ].join(" ");
 }
 
 export function isUsageCountedTranscriptName(name) {
@@ -1040,6 +1217,8 @@ async function main() {
   let lifecycleInboundId;
   let lifecyclePhase = "not_started";
   let lifecycleMarkers;
+  let currentTurnMarker;
+  let smokeTurnEvidenceLine;
   const sendDm = async (content, signal) => {
     const result = await actor.request("messages", { method: "POST", body: { type: "private", to: JSON.stringify([env.ZULIP_SMOKE_BOT_EMAIL]), content }, signal });
     messageIds.actor.add(String(result.id)); return String(result.id);
@@ -1057,6 +1236,7 @@ async function main() {
           reject(error);
         }, timeoutMs); }),
       ]);
+      currentTurnMarker = undefined;
       report.push({ name, ok: true, ms: Date.now() - started });
     }
     catch (error) {
@@ -1074,13 +1254,15 @@ async function main() {
     await gateway.start();
 
     await scenario("dm-round-trip", async (signal) => {
-      const marker = `${runId}:dm-ok`; await sendDm(command(`echo ${marker}`), signal);
+      const marker = `${runId}:dm-ok`; currentTurnMarker = marker;
+      await sendDm(command(`echo ${marker}`), signal);
       const event = await queue.waitFor((e) => isPrivateBotMessage(e, botUserId, actorUserId, marker), timeoutMs, "DM reply", signal);
       messageIds.bot.add(String(event.message.id));
     });
 
     await scenario("stream-topic-reply", async (signal) => {
       const marker = `${runId}:stream-ok`; const topic = `${runId}-topic`;
+      currentTurnMarker = marker;
       const sent = await actor.request("messages", { method: "POST", body: { type: "stream", to: env.ZULIP_SMOKE_STREAM, topic, content: command(`echo ${marker}`) }, signal });
       messageIds.actor.add(String(sent.id));
       const event = await queue.waitFor((e) => isBotMessage(e, botUserId, marker) && e.message?.display_recipient === env.ZULIP_SMOKE_STREAM && e.message?.subject === topic, timeoutMs, "stream/topic reply", signal);
@@ -1091,6 +1273,7 @@ async function main() {
       lifecyclePhase = "waiting_for_reaction_cleanup";
       const marker = `${runId}:lifecycle-ok`; const childResult = `${runId}:child-ok`; const eventStart = queue.events.length;
       lifecycleMarkers = { marker, childResult };
+      currentTurnMarker = marker;
       const inboundId = await sendDm(command(`lifecycle ${marker} ${childResult}`), signal);
       lifecycleInboundId = inboundId;
       const deadline = Date.now() + timeoutMs;
@@ -1138,6 +1321,7 @@ async function main() {
 
     await scenario("explicit-reaction", async (signal) => {
       const marker = `${runId}:reacted`;
+      currentTurnMarker = marker;
       const inboundId = await sendDm(command(`react 🎉 ${marker}`), signal);
       const reaction = await queue.waitFor((e) => e.type === "reaction" && e.op === "add" && String(e.message_id) === inboundId && (e.emoji_name === "tada" || e.emoji_code === "1f389"), timeoutMs, "explicit reaction", signal);
       const reply = await queue.waitFor((e) => isPrivateBotMessage(e, botUserId, actorUserId, marker), timeoutMs, "reaction acknowledgement", signal);
@@ -1147,6 +1331,7 @@ async function main() {
 
     await scenario("edit-delete", async (signal) => {
       const before = `${runId}:before-edit`; const after = `${runId}:after-edit`;
+      currentTurnMarker = after;
       await sendDm(command(`edit-delete ${before} ${after}`), signal);
       const created = await queue.waitFor((e) => isPrivateBotMessage(e, botUserId, actorUserId, before), timeoutMs, "message before edit", signal);
       const id = String(created.message.id); messageIds.bot.add(id);
@@ -1162,11 +1347,13 @@ async function main() {
     });
 
     await scenario("upload-download", async (signal) => {
-      const inboundMarker = `${runId}:inbound-upload`; const uri = await actor.upload(`${runId}.txt`, inboundMarker, signal);
+      const inboundMarker = `${runId}:inbound-upload`; currentTurnMarker = inboundMarker;
+      const uri = await actor.upload(`${runId}.txt`, inboundMarker, signal);
       await sendDm(`${command(`read-upload ${inboundMarker}`)}\n[attachment](${uri})`, signal);
       const inboundReply = await queue.waitFor((e) => isPrivateBotMessage(e, botUserId, actorUserId, inboundMarker), timeoutMs, "inbound upload read", signal);
       messageIds.bot.add(String(inboundReply.message.id));
-      const outboundMarker = `${runId}:outbound-upload`; await sendDm(command(`send-upload ${outboundMarker}`), signal);
+      const outboundMarker = `${runId}:outbound-upload`; currentTurnMarker = outboundMarker;
+      await sendDm(command(`send-upload ${outboundMarker}`), signal);
       const outbound = await queue.waitFor((e) => isPrivateBotEvent(e, botUserId, actorUserId) &&
         Boolean(extractExactUploadUrl(e.message?.content)), timeoutMs, "outbound upload", signal);
       messageIds.bot.add(String(outbound.message.id));
@@ -1189,6 +1376,7 @@ async function main() {
       console.log(`poll-and-interactive-reply phase=verify_poll message_id=${sent.id}`);
       await assertNativePollMessagePersisted(bot, sent.id, question, [optionA, optionB], signal);
       console.log(`poll-and-interactive-reply phase=send_choice poll_message_id=${sent.id}`);
+      currentTurnMarker = `${runId}:interactive-ok`;
       const choice = await actor.request("messages", { method: "POST", body: { type: "stream", to: env.ZULIP_SMOKE_STREAM, topic, content: optionA }, signal });
       messageIds.actor.add(String(choice.id));
       console.log(`poll-and-interactive-reply phase=wait_reply choice_message_id=${choice.id}`);
@@ -1200,6 +1388,7 @@ async function main() {
 
     if (process.env.ZULIP_SMOKE_ENABLE_DURABLE === "1") await scenario("durable-receive-completion-deduplication", async (signal) => {
       const marker = `${runId}:durable-ok`;
+      currentTurnMarker = marker;
       const isAttributable = (event) =>
         isDurableReplyEvent(event, botUserId, actorUserId, marker);
       const captureReplies = () => captureMessageIds(queue.events, isAttributable, messageIds.bot);
@@ -1269,6 +1458,15 @@ async function main() {
   } catch (error) {
     runError = error;
   } finally {
+    if (runError && currentTurnMarker) {
+      try {
+        smokeTurnEvidenceLine = formatSmokeTurnEvidence(
+          await inspectSmokeTurnEvidence(env.OPENCLAW_STATE_DIR, currentTurnMarker),
+        );
+      } catch {
+        smokeTurnEvidenceLine = "Smoke turn evidence: available=false";
+      }
+    }
     await gateway.stop().catch(() => {});
     await unlink(gatewayGenerationPath).catch(() => {});
     await queue.poll().catch(() => {});
@@ -1296,6 +1494,7 @@ async function main() {
         }
       }
     }
+    if (smokeTurnEvidenceLine) console.error(smokeTurnEvidenceLine);
     if (runError && gateway.diagnostics.length) {
       for (const diagnostic of gateway.diagnostics) console.error(diagnostic);
     }

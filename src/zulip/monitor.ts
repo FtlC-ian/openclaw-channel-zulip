@@ -17,7 +17,14 @@ import {
 import { formatInboundEnvelope, logInboundDrop } from "openclaw/plugin-sdk/channel-inbound";
 import { mergeDmAllowFromSources, resolveGroupAllowFromSources } from "openclaw/plugin-sdk/allow-from";
 import { readChannelIngressStoreAllowFromForDmPolicy } from "openclaw/plugin-sdk/channel-ingress-runtime";
-import { createReplyPrefixOptions, createTypingCallbacks } from "openclaw/plugin-sdk/channel-outbound";
+import {
+  createChannelProgressDraftCompositor,
+  createReplyPrefixOptions,
+  createTypingCallbacks,
+  resolveChannelPreviewStreamMode,
+  resolveChannelStreamingPreviewCommandText,
+  resolveChannelStreamingProgressNarration,
+} from "openclaw/plugin-sdk/channel-outbound";
 import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/temp-path";
 import { getZulipRuntime } from "../runtime.js";
 import { resolveZulipRuntimeAccount } from "./accounts.js";
@@ -55,8 +62,14 @@ import {
 import {
   buildZulipDirectSessionKey,
   buildZulipStreamConversation,
+  buildZulipStreamSessionKey,
 } from "../session-conversation.js";
 import { sendMessageZulip } from "./send.js";
+import {
+  runWithZulipQuestionDeliveryContext,
+  zulipQuestionZformStore,
+  type ZulipQuestionConversation,
+} from "./question-zform.js";
 import { downloadZulipUpload, extractZulipUploadUrls, sanitizeUploadFilename } from "./uploads.js";
 import {
   createZulipStatusReactionAdapter,
@@ -90,13 +103,86 @@ const RECENT_MESSAGE_MAX = 2000;
 const DEFAULT_ONCHAR_PREFIXES = [">", "!"];
 const PLACEHOLDER_DELETE_MAX_ATTEMPTS = 3;
 const PLACEHOLDER_DELETE_RETRY_MS = 50;
-/** Empty string = Zulip's "general chat" (no topic). */
-const FALLBACK_TOPIC = "";
+const PROGRESS_MUTATION_MIN_INTERVAL_MS = 1_000;
+const DEFAULT_ZULIP_PROGRESS_DRAFT_MAX_LINES = 4;
+const PROGRESS_DELETE_MAX_ATTEMPTS = 3;
+const PROGRESS_DELETE_RETRY_BASE_MS = 100;
+const PROGRESS_DELETE_RETRY_MAX_DELAY_MS = 1_000;
+// Final-reply cleanup must not block on an unbounded server retry window.
+const PROGRESS_DELETE_RETRY_TOTAL_MAX_DELAY_MS = 2_000;
+const PROGRESS_RETRY_MAX_DELAY_MS = 120_000;
 
 const recentInboundMessages = createDedupeCache({
   ttlMs: RECENT_MESSAGE_TTL_MS,
   maxSize: RECENT_MESSAGE_MAX,
 });
+
+type ProgressOperationError = Error & {
+  status?: number;
+  retryAfterMs?: number;
+};
+
+function getProgressOperationError(err: unknown): ProgressOperationError | undefined {
+  return err instanceof Error ? err as ProgressOperationError : undefined;
+}
+
+function isRetryableProgressOperationError(err: unknown): boolean {
+  const operationError = getProgressOperationError(err);
+  const status = operationError?.status;
+  if (
+    status === 408 ||
+    status === 425 ||
+    status === 429 ||
+    (status !== undefined && status >= 500) ||
+    operationError?.retryAfterMs !== undefined
+  ) {
+    return true;
+  }
+  return operationError?.name === "TypeError" || /(?:network|socket|timed? out|fetch failed)/iu.test(
+    operationError?.message ?? "",
+  );
+}
+
+function resolveProgressRetryDelayMs(err: unknown, retryAttempt: number): number {
+  const retryAfterMs = getProgressOperationError(err)?.retryAfterMs;
+  if (retryAfterMs !== undefined && retryAfterMs >= 0) {
+    return Math.min(PROGRESS_RETRY_MAX_DELAY_MS, Math.max(PROGRESS_MUTATION_MIN_INTERVAL_MS, retryAfterMs));
+  }
+  return Math.min(
+    PROGRESS_RETRY_MAX_DELAY_MS,
+    PROGRESS_MUTATION_MIN_INTERVAL_MS * 2 ** Math.min(retryAttempt, 6),
+  );
+}
+
+function resolveProgressDeleteRetryDelayMs(retryAttempt: number): number {
+  return Math.min(
+    PROGRESS_DELETE_RETRY_MAX_DELAY_MS,
+    PROGRESS_DELETE_RETRY_BASE_MS * 2 ** retryAttempt,
+  );
+}
+
+function resolveBoundedProgressDeleteRetryDelayMs(
+  err: unknown,
+  retryAttempt: number,
+  elapsedRetryDelayMs: number,
+): number {
+  const remainingDelayMs = PROGRESS_DELETE_RETRY_TOTAL_MAX_DELAY_MS - elapsedRetryDelayMs;
+  if (remainingDelayMs <= 0) {
+    return 0;
+  }
+  const retryAfterMs = getProgressOperationError(err)?.retryAfterMs;
+  const requestedDelayMs =
+    retryAfterMs !== undefined && retryAfterMs >= 0
+      ? retryAfterMs
+      : resolveProgressDeleteRetryDelayMs(retryAttempt);
+  return Math.min(remainingDelayMs, requestedDelayMs);
+}
+
+const isRetryableProgressEditError = isRetryableProgressOperationError;
+
+function delayProgressRetry(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 type ZulipStreamMetadata = {
   streamId: string;
@@ -484,7 +570,6 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     log: logVerboseMessage,
   });
 
-  const defaultTopic = account.config.defaultTopic?.trim() ?? FALLBACK_TOPIC;
   const oncharPrefixes = resolveOncharPrefixes(account.oncharPrefixes);
   const oncharEnabled = account.chatmode === "onchar";
 
@@ -539,12 +624,12 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       return undefined;
     }
     const streamId = String(message.stream_id ?? "").trim();
-    if (!streamId) {
+    if (!streamId || typeof message.subject !== "string") {
       return {
         accepted: false,
         streamId,
         streamName: "",
-        topic: message.subject?.trim() || defaultTopic,
+        topic: "",
         policy: { enabled: false },
       };
     }
@@ -584,7 +669,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       }
     }
 
-    const topic = message.subject?.trim() || defaultTopic;
+    const topic = message.subject;
     const policy = resolveZulipInboundStreamPolicy({
       config: account.config,
       streamName,
@@ -652,7 +737,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
 
     let streamName = "";
     let streamId = "";
-    let topic = defaultTopic;
+    let topic = "";
     let channelId = "";
     let inboundStreamPolicy: ResolvedZulipInboundStreamPolicy | undefined;
 
@@ -678,7 +763,27 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       inboundStreamPolicy = streamDecision.policy;
     }
 
+    const streamConversation = isDM ? null : buildZulipStreamConversation({
+      accountId: account.accountId,
+      baseUrl,
+      botIdentity: email,
+      streamId,
+      topic,
+    });
+
     const rawText = stripHtmlToText(message.content ?? "");
+
+    const questionConversation: ZulipQuestionConversation = isDM
+      ? { kind: "dm", recipient: dmTargetIdentity }
+      : { kind: "stream", stream: streamId, topic };
+    const questionMessage = {
+      accountId: account.accountId,
+      conversation: questionConversation,
+      senderId: senderIdentity,
+      text: rawText,
+      html: message.content ?? "",
+      expectedBotMention: botUsername,
+    };
     const oncharResult = stripOncharPrefix(rawText, oncharPrefixes);
 
     const oncharTriggered = oncharEnabled && oncharResult.triggered;
@@ -716,7 +821,8 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       cfg,
       surface: "zulip",
     });
-    const hasControlCommand = core.channel.text.hasControlCommand(rawText, cfg);
+    const isQuestionControl = zulipQuestionZformStore.recognizes(questionMessage);
+    const hasControlCommand = isQuestionControl || core.channel.text.hasControlCommand(rawText, cfg);
     const isControlCommand = allowTextCommands && hasControlCommand;
     const useAccessGroups = true;
     const senderAllowedForCommands = isSenderAllowed({
@@ -752,7 +858,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         return;
       }
       if (dmPolicy !== "open" && !senderAllowedForCommands) {
-        if (dmPolicy === "pairing") {
+        if (dmPolicy === "pairing" && !isQuestionControl) {
           const { code, created } = await pairing.upsertPairingRequest({
             id: senderIdentity,
             meta: { name: senderName },
@@ -803,6 +909,31 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         reason: "control command (unauthorized)",
         target: senderIdentity,
       });
+      return;
+    }
+
+    if (isQuestionControl && !commandAuthorized) {
+      return;
+    }
+
+    const questionControl = await zulipQuestionZformStore.intercept({
+      message: questionMessage,
+      cfg,
+      logDebug: logVerboseMessage,
+    });
+    if (questionControl.recognized) {
+      if (questionControl.status !== "answered") {
+        try {
+          await sendMessageZulip(
+            isDM ? `user:${dmTargetIdentity}` : `stream:${streamId}:${topic}`,
+            questionControl.feedback,
+            { cfg, accountId: account.accountId, topic },
+          );
+          opts.statusSink?.({ lastOutboundAt: Date.now() });
+        } catch (error) {
+          logVerboseMessage(`zulip: failed sending ask_user control feedback: ${String(error)}`);
+        }
+      }
       return;
     }
 
@@ -899,13 +1030,6 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       directId: senderIdentity,
     });
 
-    const streamConversation =
-      kind === "dm"
-        ? null
-        : buildZulipStreamConversation({
-            streamId: channelId,
-            topic,
-          });
     const streamMetadata =
       kind === "dm"
         ? undefined
@@ -927,27 +1051,13 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         id: isDM ? dmTargetIdentity : (streamConversation?.conversationId ?? channelId),
       },
       parentPeer:
-        !isDM && streamConversation?.threadId
+        !isDM
           ? {
               kind: chatType,
               id: channelId,
             }
           : undefined,
     });
-
-    const parentSessionKey =
-      !isDM && streamConversation?.threadId
-        ? core.channel.routing.resolveAgentRoute({
-            cfg,
-            channel: "zulip",
-            accountId: account.accountId,
-            teamId: undefined,
-            peer: {
-              kind: chatType,
-              id: channelId,
-            },
-          }).sessionKey
-        : undefined;
 
     const sessionKey = isDM
       ? buildZulipDirectSessionKey({
@@ -957,7 +1067,10 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
           botIdentity: email,
           senderIdentity: dmTargetIdentity,
         })
-      : route.sessionKey ?? `zulip:${account.accountId}:${channelId}`;
+      : buildZulipStreamSessionKey({
+          agentId: route.agentId,
+          conversationId: streamConversation!.conversationId,
+        });
 
     const timestamp = message.timestamp ? message.timestamp * 1000 : undefined;
     const textWithId = `${bodyText}\n[zulip message id: ${messageId}]`;
@@ -971,7 +1084,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     });
 
     const to =
-      kind === "dm" ? `user:${dmTargetIdentity}` : `stream:${streamName || streamId}:${topic}`;
+      kind === "dm" ? `user:${dmTargetIdentity}` : `stream:${streamId}:${topic}`;
     const ctxPayload = core.channel.inbound.buildContext({
       channel: "zulip",
       accountId: route.accountId,
@@ -983,18 +1096,17 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         kind: chatType,
         id: isDM ? dmTargetIdentity : (streamConversation?.conversationId ?? channelId),
         label: fromLabel,
-        threadId: streamConversation?.threadId,
+        threadId: isDM ? undefined : topic,
       },
       route: {
         agentId: route.agentId,
         accountId: route.accountId,
         routeSessionKey: sessionKey,
-        parentSessionKey,
       },
       reply: {
         to,
-        replyToId: topic || undefined,
-        messageThreadId: streamConversation?.threadId,
+        replyToId: messageId,
+        messageThreadId: isDM ? undefined : topic,
       },
       message: { body, rawBody: bodyText, commandBody: bodyText },
       access: {
@@ -1019,20 +1131,6 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         StreamId: kind !== "dm" ? streamId : undefined,
         GroupSubject: kind !== "dm" ? roomLabel : undefined,
         GroupChannel: streamName ? `#${streamName}` : undefined,
-      },
-    });
-
-    const sessionCfg = cfg.session;
-      const storePath = core.agent.session.resolveStorePath(sessionCfg?.store, {
-      agentId: route.agentId,
-    });
-    await core.channel.session.updateLastRoute({
-      storePath,
-      sessionKey,
-      deliveryContext: {
-        channel: "zulip",
-        to,
-        accountId: route.accountId,
       },
     });
 
@@ -1204,6 +1302,232 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         );
       }
     };
+    const streamingMode = account.config.streaming?.mode === "progress"
+      ? resolveChannelPreviewStreamMode(account.config, "off")
+      : "off";
+    const progressDraftActive = streamingMode === "progress";
+    const progressStreamingConfig = account.config.streaming;
+    const progressDraftEntry = progressDraftActive && progressStreamingConfig
+      ? {
+          ...account.config,
+          streaming: {
+            ...progressStreamingConfig,
+            progress: {
+              ...progressStreamingConfig.progress,
+              maxLines:
+                progressStreamingConfig.progress?.maxLines ?? DEFAULT_ZULIP_PROGRESS_DRAFT_MAX_LINES,
+            },
+          },
+        }
+      : account.config;
+    const narrationHideCommandText =
+      progressDraftActive && resolveChannelStreamingPreviewCommandText(account.config) !== "raw";
+    let progressMessageId: string | undefined;
+    const progressMessageIds = new Set<string>();
+    let progressOperation = Promise.resolve();
+    let progressClosing = false;
+    let progressRotationUsed = false;
+    let queuedProgressText: string | undefined;
+    let queuedProgressRevision = 0;
+    let progressEditRetryAttempt = 0;
+    let progressUpdateTimer: ReturnType<typeof setTimeout> | undefined;
+    let progressUpdateInFlight: Promise<boolean> | undefined;
+    let nextProgressMutationAt = 0;
+    const runProgressOperation = async <T>(operation: () => Promise<T>): Promise<T> => {
+      const result = progressOperation.then(operation, operation);
+      progressOperation = result.then(
+        () => undefined,
+        () => undefined,
+      );
+      return await result;
+    };
+    const deleteProgressMessage = async (messageId: string): Promise<boolean> => {
+      let elapsedRetryDelayMs = 0;
+      for (let attempt = 0; attempt < PROGRESS_DELETE_MAX_ATTEMPTS; attempt += 1) {
+        try {
+          await deleteZulipMessage(client, { messageId });
+          progressMessageIds.delete(messageId);
+          if (progressMessageId === messageId) {
+            progressMessageId = undefined;
+          }
+          return true;
+        } catch (err) {
+          if (!isRetryableProgressOperationError(err)) {
+            logVerboseMessage(`zulip: failed to delete task-progress draft: ${String(err)}`);
+            return false;
+          }
+          const retryDelayMs = resolveBoundedProgressDeleteRetryDelayMs(
+            err,
+            attempt,
+            elapsedRetryDelayMs,
+          );
+          if (attempt + 1 >= PROGRESS_DELETE_MAX_ATTEMPTS || retryDelayMs <= 0) {
+            logVerboseMessage(
+              "zulip: failed to delete task-progress draft " +
+                `after ${PROGRESS_DELETE_MAX_ATTEMPTS} attempts: ${String(err)}`,
+            );
+            return false;
+          }
+          elapsedRetryDelayMs += retryDelayMs;
+          await delayProgressRetry(retryDelayMs);
+        }
+      }
+      return false;
+    };
+    const deleteProgressDraft = async (): Promise<void> => {
+      await runProgressOperation(async () => {
+        for (const messageId of progressMessageIds) {
+          await deleteProgressMessage(messageId);
+        }
+      });
+    };
+    const scheduleProgressUpdate = (delayMs: number): void => {
+      if (progressClosing || progressUpdateTimer || !queuedProgressText) {
+        return;
+      }
+      progressUpdateTimer = setTimeout(() => {
+        progressUpdateTimer = undefined;
+        void flushProgressUpdate().catch((err) => {
+          logVerboseMessage(`zulip: failed to schedule task-progress draft update: ${String(err)}`);
+        });
+      }, Math.max(0, delayMs));
+    };
+    const flushProgressUpdate = async (): Promise<boolean> => {
+      if (progressUpdateInFlight) {
+        return false;
+      }
+      const update = runProgressOperation(async () => {
+        if (progressClosing) {
+          return false;
+        }
+        const text = queuedProgressText;
+        const textRevision = queuedProgressRevision;
+        queuedProgressText = undefined;
+        if (!text) {
+          return false;
+        }
+        const remainingDelayMs = nextProgressMutationAt - Date.now();
+        if (remainingDelayMs > 0) {
+          if (queuedProgressRevision <= textRevision) {
+            queuedProgressText = text;
+            queuedProgressRevision = textRevision;
+          }
+          scheduleProgressUpdate(remainingDelayMs);
+          return false;
+        }
+        if (progressMessageId) {
+          const messageId = progressMessageId;
+          try {
+            nextProgressMutationAt = Date.now() + PROGRESS_MUTATION_MIN_INTERVAL_MS;
+            await editZulipMessage(client, { messageId, content: text });
+            progressEditRetryAttempt = 0;
+            core.channel.activity.record({
+              channel: "zulip",
+              accountId: account.accountId,
+              direction: "outbound",
+            });
+            return true;
+          } catch (err) {
+            if (isRetryableProgressEditError(err)) {
+              if (!progressClosing) {
+                if (queuedProgressRevision <= textRevision) {
+                  queuedProgressText = text;
+                  queuedProgressRevision = textRevision;
+                }
+                const retryDelayMs = resolveProgressRetryDelayMs(err, progressEditRetryAttempt);
+                progressEditRetryAttempt += 1;
+                scheduleProgressUpdate(retryDelayMs);
+              }
+              logVerboseMessage(`zulip: retrying task-progress draft edit later: ${String(err)}`);
+              return false;
+            }
+            if (progressRotationUsed) {
+              logVerboseMessage(
+                `zulip: task-progress draft edit failed after rotation; retaining draft: ${String(err)}`,
+              );
+              return false;
+            }
+            progressRotationUsed = true;
+            logVerboseMessage(`zulip: task-progress draft edit failed; rotating it once: ${String(err)}`);
+            if (!await deleteProgressMessage(messageId) || progressClosing) {
+              return false;
+            }
+          }
+        }
+        if (progressClosing) {
+          return false;
+        }
+        nextProgressMutationAt = Date.now() + PROGRESS_MUTATION_MIN_INTERVAL_MS;
+        const sent = await sendMessageZulip(to, text, {
+          cfg,
+          accountId: account.accountId,
+          topic,
+        });
+        if (sent.messageId !== "unknown") {
+          progressMessageId = sent.messageId;
+          progressMessageIds.add(sent.messageId);
+        }
+        progressEditRetryAttempt = 0;
+        core.channel.activity.record({
+          channel: "zulip",
+          accountId: account.accountId,
+          direction: "outbound",
+        });
+        return Boolean(progressMessageId);
+      });
+      progressUpdateInFlight = update;
+      try {
+        return await update;
+      } catch (err) {
+        logVerboseMessage(`zulip: failed to update task-progress draft: ${String(err)}`);
+        return false;
+      } finally {
+        if (progressUpdateInFlight === update) {
+          progressUpdateInFlight = undefined;
+        }
+        if (!progressClosing && queuedProgressText) {
+          scheduleProgressUpdate(Math.max(0, nextProgressMutationAt - Date.now()));
+        }
+      }
+    };
+    const progressDraft = createChannelProgressDraftCompositor({
+      presentation: "summary",
+      entry: progressDraftEntry,
+      mode: streamingMode,
+      active: progressDraftActive,
+      seed: `${account.accountId}:${to}`,
+      reasoningLinePrefix: "🧠 ",
+      commentaryLinePrefix: "💬 ",
+      commentaryItalics: false,
+      update: async (text) => {
+        if (progressClosing) {
+          return false;
+        }
+        queuedProgressText = text;
+        queuedProgressRevision += 1;
+        if (progressUpdateInFlight) {
+          return false;
+        }
+        const remainingDelayMs = nextProgressMutationAt - Date.now();
+        if (remainingDelayMs > 0) {
+          scheduleProgressUpdate(remainingDelayMs);
+          return false;
+        }
+        return await flushProgressUpdate();
+      },
+      deleteCurrent: deleteProgressDraft,
+    });
+    const cleanupProgressDraft = async (): Promise<void> => {
+      progressClosing = true;
+      progressDraft.cancel();
+      queuedProgressText = undefined;
+      if (progressUpdateTimer) {
+        clearTimeout(progressUpdateTimer);
+        progressUpdateTimer = undefined;
+      }
+      await progressUpdateInFlight;
+      await deleteProgressDraft();
+    };
     if (opts.abortSignal?.aborted || monitorReactionShutdownStarted) {
       return ABORTED_INBOUND_MESSAGE;
     }
@@ -1234,7 +1558,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     let statusLifecycleSettled = false;
     let subagentLifecycleSettled = false;
     const releaseReactionCleanupIfSettled = () => {
-      if (statusLifecycleSettled && subagentLifecycleSettled && !placeholderMessageId) {
+      if (statusLifecycleSettled && subagentLifecycleSettled && progressMessageIds.size === 0 && !placeholderMessageId) {
         activeReactionCleanups.delete(cancelReactionLifecycle);
       }
     };
@@ -1250,6 +1574,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         await Promise.allSettled([
           statusReactions.clear(),
           subagentContext.cancel(),
+          cleanupProgressDraft(),
           cleanupPlaceholderLifecycle(),
         ]);
       })();
@@ -1319,6 +1644,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
 
     if (
       thinkingPlaceholderEnabled &&
+      !progressDraftActive &&
       !reactionLifecycleCancelled &&
       !monitorReactionShutdownStarted &&
       !opts.abortSignal?.aborted
@@ -1357,6 +1683,8 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       },
       onIdle: typingCallbacks.onIdle,
       deliver: async (payload: ReplyPayload) => {
+        progressDraft.markFinalReplyStarted();
+        await cleanupProgressDraft();
         let deliveredThisPayload = false;
         const mediaUrls = payload.mediaUrls ?? (payload.mediaUrl ? [payload.mediaUrl] : []);
         const hasOutboundMetadata = Boolean(payload.presentation || payload.channelData);
@@ -1387,13 +1715,16 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
             if (first) {
               await deletePlaceholder(true);
             }
-            await sendMessageZulip(to, chunk, {
-              cfg,
-              accountId: account.accountId,
-              topic: resolvedTopic,
-              presentation: first ? payload.presentation : undefined,
-              channelData: first ? payload.channelData : undefined,
-            });
+            await runWithZulipQuestionDeliveryContext(
+              { authorizedSenderId: senderIdentity, conversation: questionConversation },
+              () => sendMessageZulip(to, chunk, {
+                cfg,
+                accountId: account.accountId,
+                topic: resolvedTopic,
+                presentation: first ? payload.presentation : undefined,
+                channelData: first ? payload.channelData : undefined,
+              }),
+            );
             replyDeliveryCommitted = true;
             deliveredReply = true;
             deliveredThisPayload = true;
@@ -1405,14 +1736,17 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
           for (const mediaUrl of mediaUrls) {
             const isFirst = first;
             const caption = isFirst ? text : "";
-            await sendMessageZulip(to, caption, {
-              cfg,
-              accountId: account.accountId,
-              mediaUrl,
-              topic: resolvedTopic,
-              presentation: isFirst ? payload.presentation : undefined,
-              channelData: isFirst ? payload.channelData : undefined,
-            });
+            await runWithZulipQuestionDeliveryContext(
+              { authorizedSenderId: senderIdentity, conversation: questionConversation },
+              () => sendMessageZulip(to, caption, {
+                cfg,
+                accountId: account.accountId,
+                mediaUrl,
+                topic: resolvedTopic,
+                presentation: isFirst ? payload.presentation : undefined,
+                channelData: isFirst ? payload.channelData : undefined,
+              }),
+            );
             replyDeliveryCommitted = true;
             deliveredReply = true;
             deliveredThisPayload = true;
@@ -1420,6 +1754,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
           }
         }
         if (deliveredThisPayload) {
+          progressDraft.markFinalReplyDelivered();
           opts.statusSink?.({ lastOutboundAt: Date.now() });
         }
       },
@@ -1440,35 +1775,109 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         }
       | undefined;
     try {
-      dispatchResult = await subagentContext.run(() =>
-        core.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
-          ctx: ctxPayload,
+      const { deliver, onError, ...routedDispatcherOptions } = dispatcherOptions;
+      const turnResult = await subagentContext.run(() =>
+        core.channel.inbound.dispatch({
           cfg,
-          dispatcherOptions,
+          channel: "zulip",
+          accountId: route.accountId,
+          route: { agentId: route.agentId, sessionKey },
+          ctxPayload,
+          record: {
+            updateLastRoute: {
+              sessionKey,
+              channel: "zulip",
+              to,
+              accountId: route.accountId,
+              ...(isDM ? {} : { threadId: topic }),
+            },
+            onRecordError: (err) => {
+              runtime.error?.(`zulip: inbound session recording failed: ${String(err)}`);
+            },
+          },
+          delivery: { deliver, onError },
+          dispatcherOptions: routedDispatcherOptions,
           replyOptions: {
             disableBlockStreaming:
               typeof account.blockStreaming === "boolean" ? !account.blockStreaming : undefined,
             abortSignal: opts.abortSignal,
             onModelSelected,
-            allowToolLifecycleWhenProgressHidden: statusReactionConfig.enabled ? true : undefined,
+            allowToolLifecycleWhenProgressHidden:
+              statusReactionConfig.enabled || progressDraftActive ? true : undefined,
+            suppressDefaultToolProgressMessages:
+              progressDraft.suppressDefaultToolProgressMessages || undefined,
+            narrationHideCommandText: narrationHideCommandText || undefined,
+            commentaryProgressEnabled: progressDraft.commentaryProgressEnabled || undefined,
+            progressPreambleEnabled: progressDraftActive ? true : undefined,
+            reasoningPayloadsEnabled: progressDraftActive ? true : undefined,
+            isProgressDraftVisible: progressDraftActive ? () => progressDraft.isVisible : undefined,
+            onNarrationUpdate: progressDraftActive && resolveChannelStreamingProgressNarration(account.config)
+              ? async (payload) => {
+                  await progressDraft.pushNarrationProgress(payload.text);
+                }
+              : undefined,
             onToolStart: async (payload) => {
+              const visible = await progressDraft.pushToolEvent(payload);
               if (payload.phase === "end") {
                 statusReactions.cancelPending();
                 await statusReactions.setThinking();
-                return;
+                return visible;
               }
               await statusReactions.setTool(payload.name);
+              return visible;
             },
+            onToolResult: async () => await progressDraft.noteActivity(),
+            onItemEvent: async (payload) => {
+              const preambleVisible = await progressDraft.pushPreambleHeadline(payload.progressText, {
+                itemId: payload.itemId,
+              });
+              if (payload.kind === "preamble" || payload.kind === "commentary") {
+                return await progressDraft.pushCommentaryProgress(payload.progressText, {
+                  itemId: payload.itemId,
+                });
+              }
+              const itemVisible = await progressDraft.pushItemEvent(payload);
+              return preambleVisible || itemVisible;
+            },
+            onPlanUpdate: async (payload) =>
+              payload.phase === "update"
+                ? await progressDraft.pushPlanProgress(payload.steps, {
+                    explanation: payload.explanation,
+                  })
+                : false,
+            onReasoningStream: async (payload) =>
+              await progressDraft.pushReasoningProgress(payload.text, {
+                snapshot: payload.isReasoningSnapshot === true,
+              }),
+            onReasoningProgress: async () => {
+              await progressDraft.noteActivity();
+            },
+            onReasoningEnd: async () => {
+              progressDraft.resetReasoningProgress();
+              return false;
+            },
+            onAssistantMessageStart: async () => {
+              progressDraft.resetReasoningProgress();
+              return false;
+            },
+            onApprovalEvent: async (payload) => await progressDraft.pushApprovalEvent(payload),
+            onCommandOutput: async (payload) =>
+              await progressDraft.pushCommandOutputEvent(payload),
+            onPatchSummary: async (payload) => await progressDraft.pushPatchEvent(payload),
             onCompactionStart: async () => {
               await statusReactions.setCompacting();
+              await progressDraft.pushToolEvent({ name: "compaction", phase: "start" });
             },
             onCompactionEnd: async () => {
               statusReactions.cancelPending();
               await statusReactions.setThinking();
+              await progressDraft.pushToolEvent({ name: "compaction", phase: "end" });
             },
           },
+          messageId,
         }),
       );
+      dispatchResult = turnResult.dispatched ? turnResult.dispatchResult : undefined;
     } catch (err) {
       dispatchError = err;
       runtime.error?.(`zulip reply failed: ${String(err)}`);
@@ -1486,6 +1895,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       replyDeliveryCommitted ? undefined : ABORTED_INBOUND_MESSAGE;
 
     if (reactionLifecycleCancelled || opts.abortSignal?.aborted) {
+      await cleanupProgressDraft();
       await deletePlaceholder();
       await cancelReactionLifecycle();
       opts.statusSink?.({ lastInboundAt: Date.now() });
@@ -1494,6 +1904,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
 
     await subagentContext.finish();
     if (reactionLifecycleCancelled || opts.abortSignal?.aborted) {
+      await cleanupProgressDraft();
       await deletePlaceholder();
       await cancelReactionLifecycle();
       opts.statusSink?.({ lastInboundAt: Date.now() });
@@ -1501,6 +1912,8 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     }
     const finalDeliveryFailed = (dispatchResult?.failedCounts?.final ?? 0) > 0;
     const terminalError = Boolean(dispatchError) || finalDeliveryFailed;
+    progressDraft.markFinalReplyDelivered();
+    await cleanupProgressDraft();
     if (placeholderMessageId) {
       const cancelled = dispatchError instanceof Error && dispatchError.name === "AbortError";
       if (!terminalError || cancelled || deliveredReply) {
@@ -1544,6 +1957,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       await statusReactions.setDone();
     }
     if (reactionLifecycleCancelled || opts.abortSignal?.aborted) {
+      await cleanupProgressDraft();
       await deletePlaceholder();
       await cancelReactionLifecycle();
       opts.statusSink?.({ lastInboundAt: Date.now() });

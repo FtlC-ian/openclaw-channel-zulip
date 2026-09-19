@@ -10,13 +10,20 @@ import {
 import type { MessagePresentation, OpenClawConfig } from "../sdk.js";
 import { getZulipRuntime } from "../runtime.js";
 import { resolveZulipRuntimeAccount } from "./accounts.js";
+import { isZulipSessionTarget, normalizeLegacyZulipTarget, resolveZulipDestination } from "./destination.js";
+import { prependZulipRoutingNotice, resolveZulipSendDestination, type ZulipRoutingFallback } from "./routing-fallback.js";
 import {
   createZulipClient,
   normalizeZulipBaseUrl,
+  resolveZulipStreamId,
   sendZulipPrivateMessage,
   sendZulipStreamMessage,
   uploadZulipFile,
 } from "./client.js";
+import {
+  getZulipQuestionDeliveryContext,
+  zulipQuestionZformStore,
+} from "./question-zform.js";
 
 type ZulipChannelData = {
   zulip?: {
@@ -73,18 +80,19 @@ export type ZulipSendOpts = {
   topic?: string;
   presentation?: MessagePresentation;
   channelData?: ZulipChannelData;
+  /** Reuse one recovery choice across all parts of a logical payload. */
+  routingFallback?: ZulipRoutingFallback;
 };
 
 export type ZulipSendResult = {
   messageId: string;
   channelId: string;
+  target: { kind: "chat" | "channel"; id: string };
+  threadId?: string;
+  meta?: { routingFallback: ZulipRoutingFallback };
 };
 
-export type ZulipTarget =
-  | { kind: "stream"; stream: string; topic?: string }
-  | { kind: "user"; email: string };
-
-const DEFAULT_TOPIC = "general";
+export { normalizeLegacyZulipTarget, parseZulipTarget, type ZulipTarget } from "./destination.js";
 
 const getCore = () => getZulipRuntime();
 
@@ -213,91 +221,6 @@ async function writeTempFile(
   return { filePath, dir };
 }
 
-function normalizeLegacyZulipTarget(raw: string): { normalized: string; convertedFromLegacy: boolean } {
-  const trimmed = raw.trim();
-  const legacyMatch = trimmed.match(/^(\d+):topic:(.+)$/);
-  if (!legacyMatch) {
-    return { normalized: trimmed, convertedFromLegacy: false };
-  }
-  const [, streamId, topic] = legacyMatch;
-  return {
-    normalized: `stream:${streamId}:${topic.trim()}`,
-    convertedFromLegacy: true,
-  };
-}
-
-export { normalizeLegacyZulipTarget };
-
-function isCanonicalDmEmail(value: string): boolean {
-  return /^[^\s@:]+@[^\s@:]+$/.test(value);
-}
-
-export function parseZulipTarget(raw: string): ZulipTarget {
-  const { normalized } = normalizeLegacyZulipTarget(raw);
-  const trimmed = normalized.trim();
-  if (!trimmed) {
-    throw new Error("Recipient is required for Zulip sends");
-  }
-  const lower = trimmed.toLowerCase();
-  if (lower.startsWith("stream:")) {
-    const rest = trimmed.slice("stream:".length).trim();
-    if (!rest) {
-      throw new Error("Stream name is required for Zulip sends");
-    }
-    const colonIdx = rest.indexOf(":");
-    const slashIdx = rest.indexOf("/");
-    const hashIdx = rest.indexOf("#");
-    const sepIdx = [colonIdx, slashIdx, hashIdx].filter(i => i >= 0).reduce((a, b) => Math.min(a, b), Infinity);
-    const stream = sepIdx === Infinity ? rest : rest.slice(0, sepIdx);
-    const topic = sepIdx === Infinity ? undefined : rest.slice(sepIdx + 1);
-    return { kind: "stream", stream: stream.trim(), topic: topic?.trim() };
-  }
-  if (lower.startsWith("user:") || lower.startsWith("dm:")) {
-    const email = trimmed.slice(trimmed.indexOf(":") + 1).trim();
-    if (!email) {
-      throw new Error("Email is required for Zulip direct messages");
-    }
-    if (!isCanonicalDmEmail(email)) {
-      throw new Error("Invalid Zulip direct-message target; expected an email address");
-    }
-    return { kind: "user", email };
-  }
-  if (lower.startsWith("zulip:")) {
-    const email = trimmed.slice("zulip:".length).trim();
-    if (!email) {
-      throw new Error("Email is required for Zulip direct messages");
-    }
-    if (!isCanonicalDmEmail(email)) {
-      throw new Error("Invalid Zulip direct-message target; expected an email address");
-    }
-    return { kind: "user", email };
-  }
-  if (trimmed.startsWith("@")) {
-    const email = trimmed.slice(1).trim();
-    if (!email) {
-      throw new Error("Email is required for Zulip direct messages");
-    }
-    if (!isCanonicalDmEmail(email)) {
-      throw new Error("Invalid Zulip direct-message target; expected an email address");
-    }
-    return { kind: "user", email };
-  }
-  if (trimmed.startsWith("#")) {
-    const rest = trimmed.slice(1).trim();
-    const sepIdx2 = [rest.indexOf(":"), rest.indexOf("/")].filter(i => i >= 0).reduce((a, b) => Math.min(a, b), Infinity);
-    const stream2 = sepIdx2 === Infinity ? rest : rest.slice(0, sepIdx2);
-    const topic2 = sepIdx2 === Infinity ? undefined : rest.slice(sepIdx2 + 1);
-    if (!stream2) {
-      throw new Error("Stream name is required for Zulip sends");
-    }
-    return { kind: "stream", stream: stream2.trim(), topic: topic2?.trim() };
-  }
-  if (isCanonicalDmEmail(trimmed)) {
-    return { kind: "user", email: trimmed };
-  }
-  return { kind: "stream", stream: trimmed };
-}
-
 export async function sendMessageZulip(
   to: string,
   text: string,
@@ -332,14 +255,25 @@ export async function sendMessageZulip(
       failure: (event) => logger.error?.("zulip api request failed", event),
     },
   });
-  const normalizedTarget = normalizeLegacyZulipTarget(to);
+  const normalizedTarget = isZulipSessionTarget(to)
+    ? { normalized: to.trim(), convertedFromLegacy: false }
+    : normalizeLegacyZulipTarget(to);
   if (normalizedTarget.convertedFromLegacy) {
     logger.warn?.("zulip send received legacy session-key target, auto-converting", {
       originalTo: to,
       normalizedTo: normalizedTarget.normalized,
     });
   }
-  const target = parseZulipTarget(normalizedTarget.normalized);
+  if (opts.routingFallback && (opts.routingFallback.selectedAccountId !== account.accountId
+    || opts.routingFallback.requestedTarget !== normalizedTarget.normalized)) {
+    throw new Error("Zulip routing fallback belongs to a different payload target or account");
+  }
+  const { target, fallback } = opts.routingFallback
+    ? { target: resolveZulipDestination(opts.routingFallback.destination), fallback: opts.routingFallback }
+    : await resolveZulipSendDestination({
+        client, to: normalizedTarget.normalized, topic: opts.topic, accountId: account.accountId, config: account.config,
+      });
+  if (fallback) logger.warn?.("zulip routing fallback", fallback);
   let message = text?.trim() ?? "";
   const rawMediaUrl = opts.mediaUrl?.trim();
   let mediaUrl = rawMediaUrl;
@@ -427,6 +361,8 @@ export async function sendMessageZulip(
     message = core.channel.text.convertMarkdownTables(message, tableMode);
   }
 
+  message = prependZulipRoutingNotice(message, fallback);
+
   const preflightTargetSummary = (() => {
     if (target.kind === "user") {
       return { targetKind: target.kind, to: target.email };
@@ -434,12 +370,24 @@ export async function sendMessageZulip(
     return {
       targetKind: target.kind,
       stream: target.stream,
-      topic: target.topic || opts.topic || DEFAULT_TOPIC,
+      topic: target.topic,
     };
   })();
 
-  const presentationWidget = presentationToZulipWidgetContent(opts.presentation);
-  const widgetContent = presentationWidget ?? resolveZulipWidgetContent({
+  const questionDeliveryContext = getZulipQuestionDeliveryContext();
+  const questionPreparation = questionDeliveryContext
+    ? zulipQuestionZformStore.prepare({
+        presentation: opts.presentation,
+        channelData: opts.channelData,
+      })
+    : undefined;
+  const presentationWidget = questionPreparation
+    ? undefined
+    : presentationToZulipWidgetContent(opts.presentation);
+  const questionStreamId = questionPreparation && target.kind !== "user"
+    ? await resolveZulipStreamId(client, target.stream)
+    : undefined;
+  const widgetContent = questionPreparation?.widgetContent ?? presentationWidget ?? resolveZulipWidgetContent({
     presentation: undefined,
     channelData: opts.channelData,
   });
@@ -448,8 +396,10 @@ export async function sendMessageZulip(
     throw new Error("Zulip message is empty");
   }
 
-  const widgetContentSource = presentationWidget
-    ? "presentation"
+  const widgetContentSource = questionPreparation
+    ? "ask_user"
+    : presentationWidget
+      ? "presentation"
     : opts.channelData?.zulip?.widgetContent
       ? "channelData"
       : "none";
@@ -479,13 +429,9 @@ export async function sendMessageZulip(
     });
     messageId = response.id ? String(response.id) : "unknown";
   } else {
-    const topic = target.topic || opts.topic || DEFAULT_TOPIC;
-    if (!topic) {
-      logger.debug?.("zulip send: missing topic for stream message");
-    }
     const response = await sendZulipStreamMessage(client, {
       stream: target.stream,
-      topic: topic || DEFAULT_TOPIC,
+      topic: target.topic,
       content: message,
       widgetContent,
     });
@@ -500,6 +446,35 @@ export async function sendMessageZulip(
     widgetContentSource,
   });
 
+  if (questionPreparation) {
+    const conversation =
+      target.kind === "user"
+        ? { kind: "dm" as const, recipient: target.email }
+        : {
+            kind: "stream" as const,
+            stream: target.stream,
+            topic: target.topic,
+          };
+    if (!zulipQuestionZformStore.register({
+      preparation: questionPreparation,
+      accountId: account.accountId,
+      conversation: conversation.kind === "stream"
+        ? { ...conversation, stream: questionStreamId! }
+        : conversation,
+      deliveryConversation: conversation,
+      authorizedSenderId: questionDeliveryContext!.authorizedSenderId,
+      sourceMessageId: messageId,
+      sourceText: message,
+      client,
+      logDebug: (detail) => logger.debug?.(detail),
+    })) {
+      logger.debug?.("zulip ask_user widget sent without native resolution binding", {
+        accountId: account.accountId,
+        messageId,
+      });
+    }
+  }
+
   core.channel.activity.record({
     channel: "zulip",
     accountId: account.accountId,
@@ -509,6 +484,9 @@ export async function sendMessageZulip(
   return {
     messageId,
     channelId: target.kind === "stream" ? target.stream : target.email,
+    target: { kind: target.kind === "stream" ? "channel" : "chat", id: target.kind === "stream" ? target.stream : target.email },
+    ...(target.kind === "stream" ? { threadId: target.topic } : {}),
+    ...(fallback ? { meta: { routingFallback: fallback } } : {}),
   };
 }
 

@@ -112,6 +112,7 @@
                 "additionalProperties": { "$ref": "#/$defs/zulipStreamRule" }
               },
               "defaultTopic": { "type": "string" },
+              "routingDiagnosticsTarget": { "type": "string", "pattern": "^stream:[^:\\/#]+[:\\/#].*$" },
               "chatmode": { "type": "string", "enum": ["oncall", "onmessage", "onchar"] },
               "oncharPrefixes": { "type": "array", "items": { "type": "string" } },
               "requireMention": { "type": "boolean" },
@@ -138,6 +139,164 @@
               "agentReactionGuidance": { "type": "string", "enum": ["off", "minimal", "extensive"] },
               "textChunkLimit": { "type": "integer", "minimum": 1 },
               "chunkMode": { "type": "string", "enum": ["length", "newline"] },
+              "streaming": {
+                "type": "object",
+                "properties": {
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "off",
+                      "partial",
+                      "block",
+                      "progress"
+                    ]
+                  },
+                  "chunkMode": {
+                    "type": "string",
+                    "enum": [
+                      "length",
+                      "newline"
+                    ]
+                  },
+                  "preview": {
+                    "type": "object",
+                    "properties": {
+                      "chunk": {
+                        "type": "object",
+                        "properties": {
+                          "minChars": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "maxChars": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "breakPreference": {
+                            "type": "string",
+                            "enum": [
+                              "paragraph",
+                              "newline",
+                              "sentence"
+                            ]
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      "toolProgress": {
+                        "type": "boolean"
+                      },
+                      "commandText": {
+                        "type": "string",
+                        "enum": [
+                          "raw",
+                          "status"
+                        ]
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "progress": {
+                    "type": "object",
+                    "properties": {
+                      "label": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "boolean",
+                            "const": false
+                          }
+                        ]
+                      },
+                      "labels": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "maxLines": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "maxLineChars": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "toolProgress": {
+                        "type": "boolean"
+                      },
+                      "commandText": {
+                        "type": "string",
+                        "enum": [
+                          "raw",
+                          "status"
+                        ]
+                      },
+                      "commentary": {
+                        "type": "boolean"
+                      },
+                      "narration": {
+                        "type": "boolean"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "block": {
+                    "type": "object",
+                    "properties": {
+                      "enabled": {
+                        "type": "boolean"
+                      },
+                      "coalesce": {
+                        "type": "object",
+                        "properties": {
+                          "minChars": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "maxChars": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "idleMs": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false
+              },
+              "thinkingPlaceholder": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "text": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "errorText": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "additionalProperties": false
+              },
               "blockStreaming": {
                 "type": "boolean"
               },
@@ -183,6 +342,7 @@
             "additionalProperties": { "$ref": "#/$defs/zulipStreamRule" }
           },
           "defaultTopic": { "type": "string" },
+          "routingDiagnosticsTarget": { "type": "string", "pattern": "^stream:[^:\\/#]+[:\\/#].*$" },
           "chatmode": { "type": "string", "enum": ["oncall", "onmessage", "onchar"] },
           "oncharPrefixes": { "type": "array", "items": { "type": "string" } },
           "requireMention": { "type": "boolean" },
@@ -209,6 +369,164 @@
           "agentReactionGuidance": { "type": "string", "enum": ["off", "minimal", "extensive"] },
           "textChunkLimit": { "type": "integer", "minimum": 1 },
           "chunkMode": { "type": "string", "enum": ["length", "newline"] },
+          "streaming": {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "off",
+                  "partial",
+                  "block",
+                  "progress"
+                ]
+              },
+              "chunkMode": {
+                "type": "string",
+                "enum": [
+                  "length",
+                  "newline"
+                ]
+              },
+              "preview": {
+                "type": "object",
+                "properties": {
+                  "chunk": {
+                    "type": "object",
+                    "properties": {
+                      "minChars": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "maxChars": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "breakPreference": {
+                        "type": "string",
+                        "enum": [
+                          "paragraph",
+                          "newline",
+                          "sentence"
+                        ]
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "toolProgress": {
+                    "type": "boolean"
+                  },
+                  "commandText": {
+                    "type": "string",
+                    "enum": [
+                      "raw",
+                      "status"
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              },
+              "progress": {
+                "type": "object",
+                "properties": {
+                  "label": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "boolean",
+                        "const": false
+                      }
+                    ]
+                  },
+                  "labels": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "maxLines": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "maxLineChars": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "toolProgress": {
+                    "type": "boolean"
+                  },
+                  "commandText": {
+                    "type": "string",
+                    "enum": [
+                      "raw",
+                      "status"
+                    ]
+                  },
+                  "commentary": {
+                    "type": "boolean"
+                  },
+                  "narration": {
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "block": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "coalesce": {
+                    "type": "object",
+                    "properties": {
+                      "minChars": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "maxChars": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "idleMs": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          },
+          "thinkingPlaceholder": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1
+              },
+              "errorText": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "additionalProperties": false
+          },
           "blockStreaming": { "type": "boolean" },
           "blockStreamingCoalesce": {
             "type": "object",
@@ -260,6 +578,11 @@
         "defaultTopic": {
           "label": "Default Topic",
           "placeholder": "general chat"
+        },
+        "routingDiagnosticsTarget": {
+          "label": "Routing Diagnostics Topic",
+          "description": "Receives an unroutable message if its bot owner cannot be resolved. Choose a private stream/topic authorized to receive the original content.",
+          "placeholder": "stream:private-ops:openclaw-diagnostics"
         },
         "dmPolicy": {
           "label": "DM Policy"
@@ -320,6 +643,10 @@
     "defaultTopic": {
       "label": "Default Topic",
       "placeholder": "general chat"
+    },
+    "routingDiagnosticsTarget": {
+      "label": "Routing Diagnostics Topic",
+      "placeholder": "stream:private-ops:openclaw-diagnostics"
     },
     "dmPolicy": {
       "label": "DM Policy"

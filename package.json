@@ -1,12 +1,12 @@
 {
   "name": "openclaw-channel-zulip",
-  "version": "2026.5.26",
+  "version": "2026.9.18",
   "description": "Zulip channel plugin for OpenClaw \u2014 concurrent message processing, file uploads, approval hooks, and native message actions",
   "type": "module",
   "author": "FtlC-ian",
   "license": "MIT",
   "engines": {
-    "node": "^22.19.0 || ^24.0.0"
+    "node": ">=24.16.0 <25 || >=26.1.0"
   },
   "keywords": [
     "openclaw",
@@ -28,14 +28,22 @@
   "types": "./dist/index.d.ts",
   "files": [
     "dist/",
+    "docs/ACTION_CAPABILITIES.md",
+    "docs/RELEASE_CHECKLIST.md",
+    "docs/TOPIC_MIGRATION.md",
+    "docs/UNICODE-NOTICE.txt",
+    "scripts/migrate-topic-sessions.mjs",
     "openclaw.plugin.json",
     "README.md",
     "LICENSE",
     "CHANGELOG.md"
   ],
   "scripts": {
-    "build": "tsc",
-    "test": "vitest run && node --test scripts/live-smoke/run.offline.mjs",
+    "build": "tsc && node scripts/sync-plugin-manifest.mjs --check",
+    "manifest:sync": "tsc && node scripts/sync-plugin-manifest.mjs",
+    "manifest:check": "tsc && node scripts/sync-plugin-manifest.mjs --check",
+    "prepack": "npm run build",
+    "test": "vitest run src && node --test scripts/live-smoke/run.offline.mjs scripts/migrate-topic-sessions.test.mjs",
     "test:live-smoke:offline": "node --test scripts/live-smoke/run.offline.mjs",
     "prepublishOnly": "npm run build"
   },
@@ -44,7 +52,7 @@
   },
   "devDependencies": {
     "@types/ws": "^8.18.1",
-    "openclaw": "2026.7.1-2",
+    "openclaw": "2026.9.3",
     "typescript": "^5.7.0",
     "vitest": "^3.2.4"
   },
@@ -64,7 +72,7 @@
     "install": {
       "npmSpec": "openclaw-channel-zulip",
       "defaultChoice": "npm",
-      "minHostVersion": ">=2026.7.1-2"
+      "minHostVersion": ">=2026.9.3"
     }
   }
 }

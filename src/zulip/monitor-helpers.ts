@@ -1,5 +1,4 @@
 import { Buffer } from "node:buffer";
-import { createHash } from "node:crypto";
 import type { OpenClawConfig } from "../sdk.js";
 import type WebSocket from "ws";
 
@@ -147,51 +146,4 @@ function resolveAgentEntry(cfg: OpenClawConfig, agentId: string): AgentEntry | u
 export function resolveIdentityName(cfg: OpenClawConfig, agentId: string): string | undefined {
   const entry = resolveAgentEntry(cfg, agentId);
   return entry?.identity?.name?.trim() || undefined;
-}
-
-/**
- * Sanitizes a thread ID for safe use in session keys and file paths.
- * Replaces unsafe characters with hyphens to avoid path traversal and encoding issues.
- * Falls back to a SHA-256 hash prefix if the result exceeds 200 characters.
- */
-export function sanitizeThreadId(threadId: string): string {
-  const sanitized = threadId
-    .replace(/[/\\:*?"<>|]/g, "-") // Path-unsafe chars
-    .replace(/\s+/g, "-") // Spaces → hyphens
-    .replace(/-+/g, "-") // Collapse multiple hyphens
-    .replace(/^-|-$/g, "") // Trim leading/trailing hyphens
-    .toLowerCase();
-  if (sanitized.length > 200) {
-    return createHash("sha256").update(threadId).digest("hex").slice(0, 16);
-  }
-  return sanitized;
-}
-
-export function resolveThreadSessionKeys(params: {
-  baseSessionKey: string;
-  threadId?: string | null;
-  parentSessionKey?: string;
-  useSuffix?: boolean;
-}): { sessionKey: string; parentSessionKey?: string; sanitizedThreadId?: string } {
-  const rawThreadId = (params.threadId ?? "").trim();
-  if (!rawThreadId) {
-    return {
-      sessionKey: params.baseSessionKey,
-      parentSessionKey: undefined,
-      sanitizedThreadId: undefined,
-    };
-  }
-  const sanitizedThreadId = sanitizeThreadId(rawThreadId);
-  if (!sanitizedThreadId) {
-    return {
-      sessionKey: params.baseSessionKey,
-      parentSessionKey: undefined,
-      sanitizedThreadId: undefined,
-    };
-  }
-  const useSuffix = params.useSuffix ?? true;
-  const sessionKey = useSuffix
-    ? `${params.baseSessionKey}:thread:${sanitizedThreadId}`
-    : params.baseSessionKey;
-  return { sessionKey, parentSessionKey: params.parentSessionKey, sanitizedThreadId };
 }

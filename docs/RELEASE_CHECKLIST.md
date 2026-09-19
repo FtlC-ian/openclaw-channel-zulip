@@ -1,6 +1,24 @@
 # Release checklist
 
-Before publishing a release candidate:
+## 2026.9.18 stable release gate
+
+This release requires **OpenClaw >=2026.9.3** and **Node.js >=24.16.0 <25 or
+>=26.1.0**. Verify public question runtime exports, build/typecheck, all
+unit/offline tests, packaged schema parity, and clean plugin/setup imports on both
+supported Node lines. The lockfile and package metadata must remain pinned to the
+reviewed OpenClaw 2026.9.3 SDK baseline.
+
+Before publishing, obtain independent review of the exact frozen commit. The
+release owner must separately authorize live acceptance: desktop and real mobile
+controls,
+canonical sender/account/conversation and actual destination, stale controls,
+terminal replacement failure/rollback, progress off/legacy/progress/both settings,
+concurrent run cancellation, send/edit/delete failures and explicit visual cleanup.
+The existing offline/live harness does not by itself prove these new scenarios.
+Release preparation does not authorize publication, installation, gateway restart,
+production config changes, or soak.
+
+Before publishing the stable release:
 
 - Confirm CI passed for the exact commit being released.
 - From the `main` branch, dispatch **Zulip live smoke (protected)** with the

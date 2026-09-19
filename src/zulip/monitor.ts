@@ -1134,26 +1134,6 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       },
     });
 
-    const sessionCfg = cfg.session;
-    const storePath = core.agent.session.resolveStorePath(sessionCfg?.store, {
-      agentId: route.agentId,
-    });
-    await core.channel.session.recordInboundSession({
-      storePath,
-      sessionKey,
-      ctx: ctxPayload,
-      updateLastRoute: {
-        sessionKey,
-        channel: "zulip",
-        to,
-        accountId: route.accountId,
-        ...(isDM ? {} : { threadId: topic }),
-      },
-      onRecordError: (err) => {
-        runtime.error?.(`zulip: inbound session recording failed: ${String(err)}`);
-      },
-    });
-
     const previewLine = bodyText.slice(0, 200).replace(/\n/g, "\\n");
     logVerboseMessage(
       `zulip inbound: from=${ctxPayload.From} len=${bodyText.length} preview="${previewLine}"`,
@@ -1795,12 +1775,28 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         }
       | undefined;
     try {
-      dispatchResult = await subagentContext.run(() =>
-        core.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
-          ctx: ctxPayload,
+      const { deliver, onError, ...routedDispatcherOptions } = dispatcherOptions;
+      const turnResult = await subagentContext.run(() =>
+        core.channel.inbound.dispatch({
           cfg,
-          dispatchReplyFromConfig: core.channel.reply.dispatchReplyFromConfig,
-          dispatcherOptions,
+          channel: "zulip",
+          accountId: route.accountId,
+          route: { agentId: route.agentId, sessionKey },
+          ctxPayload,
+          record: {
+            updateLastRoute: {
+              sessionKey,
+              channel: "zulip",
+              to,
+              accountId: route.accountId,
+              ...(isDM ? {} : { threadId: topic }),
+            },
+            onRecordError: (err) => {
+              runtime.error?.(`zulip: inbound session recording failed: ${String(err)}`);
+            },
+          },
+          delivery: { deliver, onError },
+          dispatcherOptions: routedDispatcherOptions,
           replyOptions: {
             disableBlockStreaming:
               typeof account.blockStreaming === "boolean" ? !account.blockStreaming : undefined,
@@ -1878,8 +1874,10 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
               await progressDraft.pushToolEvent({ name: "compaction", phase: "end" });
             },
           },
+          messageId,
         }),
       );
+      dispatchResult = turnResult.dispatched ? turnResult.dispatchResult : undefined;
     } catch (err) {
       dispatchError = err;
       runtime.error?.(`zulip reply failed: ${String(err)}`);

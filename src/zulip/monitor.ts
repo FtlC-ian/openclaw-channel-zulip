@@ -19,7 +19,6 @@ import { mergeDmAllowFromSources, resolveGroupAllowFromSources } from "openclaw/
 import { readChannelIngressStoreAllowFromForDmPolicy } from "openclaw/plugin-sdk/channel-ingress-runtime";
 import {
   createChannelProgressDraftCompositor,
-  createReplyPrefixOptions,
   createTypingCallbacks,
   resolveChannelPreviewStreamMode,
   resolveChannelStreamingPreviewCommandText,
@@ -480,6 +479,120 @@ function logHandledReadDiagnostic(event: string): void {
     return;
   }
   process.stderr.write(`ZULIP_HANDLED_READ_DIAGNOSTIC event=${event}\n`);
+}
+
+const channelTurnDiagnosticStages = new Set([
+  "ingest",
+  "classify",
+  "preflight",
+  "resolve",
+  "authorize",
+  "assemble",
+  "record",
+  "dispatch",
+  "finalize",
+]);
+const channelTurnDiagnosticEvents = new Set([
+  "start",
+  "done",
+  "drop",
+  "handled",
+  "error",
+  "warning",
+]);
+const channelTurnDiagnosticAdmissions = new Set(["dispatch", "drop", "handled", "observeOnly"]);
+const channelTurnDiagnosticDeferrals = new Set(["steer", "followup"]);
+const channelTurnDiagnosticReasons = new Set([
+  "bot-loop-protection",
+  "outbound-echo",
+  "zero-count-visible-dispatch",
+]);
+
+function fixedDiagnosticToken(value: unknown, allowed: ReadonlySet<string>): string {
+  return typeof value === "string" && allowed.has(value) ? value : "none";
+}
+
+function fixedDiagnosticCount(value: unknown): number {
+  return Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) <= 9999
+    ? Number(value)
+    : 0;
+}
+
+function logChannelTurnDiagnostic(event: {
+  stage: string;
+  event: string;
+  admission?: string;
+  reason?: string;
+}): void {
+  if (process.env.ZULIP_CHANNEL_TURN_DIAGNOSTICS !== "1") {
+    return;
+  }
+  process.stderr.write(
+    "ZULIP_CHANNEL_TURN_DIAGNOSTIC " + [
+      `stage=${fixedDiagnosticToken(event.stage, channelTurnDiagnosticStages)}`,
+      `event=${fixedDiagnosticToken(event.event, channelTurnDiagnosticEvents)}`,
+      `admission=${fixedDiagnosticToken(event.admission, channelTurnDiagnosticAdmissions)}`,
+      `reason=${fixedDiagnosticToken(event.reason, channelTurnDiagnosticReasons)}`,
+    ].join(" ") + "\n",
+  );
+}
+
+function logChannelTurnResultDiagnostic(result: {
+  dispatched: boolean;
+  admission: { kind: string; reason?: string };
+  dispatchResult?: {
+    queuedFinal?: boolean;
+    counts?: Partial<Record<"tool" | "block" | "final", number>>;
+    failedCounts?: Partial<Record<"tool" | "block" | "final", number>>;
+    settledReceipt?: {
+      counts?: Partial<Record<"tool" | "block" | "final", {
+        delivered?: number;
+        failedBeforeSend?: number;
+        failedAfterSend?: number;
+      }>>;
+      anyVisibleDelivered?: boolean;
+      hasPendingDelivery?: true;
+    };
+    sendPolicyDenied?: boolean;
+    observedReplyDelivery?: boolean;
+    deferredToActiveRun?: "steer" | "followup";
+    noVisibleReplyFallbackEligible?: boolean;
+    noVisibleReplyFallbackDelivered?: boolean;
+    deliberateSilentTerminalReply?: boolean;
+    beforeAgentRunBlocked?: boolean;
+  };
+}): void {
+  if (process.env.ZULIP_CHANNEL_TURN_DIAGNOSTICS !== "1") {
+    return;
+  }
+  const dispatch = result.dispatchResult;
+  const settledFinal = dispatch?.settledReceipt?.counts?.final;
+  process.stderr.write(
+    "ZULIP_CHANNEL_TURN_RESULT " + [
+      `dispatched=${result.dispatched}`,
+      `admission=${fixedDiagnosticToken(result.admission.kind, channelTurnDiagnosticAdmissions)}`,
+      `reason=${fixedDiagnosticToken(result.admission.reason, channelTurnDiagnosticReasons)}`,
+      `tool=${fixedDiagnosticCount(dispatch?.counts?.tool)}`,
+      `block=${fixedDiagnosticCount(dispatch?.counts?.block)}`,
+      `final=${fixedDiagnosticCount(dispatch?.counts?.final)}`,
+      `failed_tool=${fixedDiagnosticCount(dispatch?.failedCounts?.tool)}`,
+      `failed_block=${fixedDiagnosticCount(dispatch?.failedCounts?.block)}`,
+      `failed_final=${fixedDiagnosticCount(dispatch?.failedCounts?.final)}`,
+      `settled_visible=${dispatch?.settledReceipt?.anyVisibleDelivered === true}`,
+      `settled_pending=${dispatch?.settledReceipt?.hasPendingDelivery === true}`,
+      `settled_final_delivered=${fixedDiagnosticCount(settledFinal?.delivered)}`,
+      `settled_final_failed_before=${fixedDiagnosticCount(settledFinal?.failedBeforeSend)}`,
+      `settled_final_failed_after=${fixedDiagnosticCount(settledFinal?.failedAfterSend)}`,
+      `queued_final=${dispatch?.queuedFinal === true}`,
+      `deferred=${fixedDiagnosticToken(dispatch?.deferredToActiveRun, channelTurnDiagnosticDeferrals)}`,
+      `send_policy_denied=${dispatch?.sendPolicyDenied === true}`,
+      `observed_delivery=${dispatch?.observedReplyDelivery === true}`,
+      `fallback_eligible=${dispatch?.noVisibleReplyFallbackEligible === true}`,
+      `fallback_delivered=${dispatch?.noVisibleReplyFallbackDelivered === true}`,
+      `silent_terminal=${dispatch?.deliberateSilentTerminalReply === true}`,
+      `before_agent_run_blocked=${dispatch?.beforeAgentRunBlocked === true}`,
+    ].join(" ") + "\n",
+  );
 }
 
 export function startZulipMonitorReactionLifecycles(): void {
@@ -1600,13 +1713,6 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       accountId: account.accountId,
     });
 
-    const { onModelSelected, ...prefixOptions } = createReplyPrefixOptions({
-      cfg,
-      agentId: route.agentId,
-      channel: "zulip",
-      accountId: account.accountId,
-    });
-
     const typingParams = isDM
       ? { op: "start" as const, type: "direct" as const, to: [Number(message.sender_id)] }
       : streamId
@@ -1674,14 +1780,14 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     }
     let deliveryError: unknown;
     let hasDeliveryError = false;
-    const dispatcherOptions = {
-      ...prefixOptions,
-      humanDelay: core.channel.reply.resolveHumanDelayConfig(cfg, route.agentId),
+    const replyTypingCallbacks = {
+      ...typingCallbacks,
       onReplyStart: async () => {
         await typingCallbacks.onReplyStart();
         await statusReactions.setThinking();
       },
-      onIdle: typingCallbacks.onIdle,
+    };
+    const delivery = {
       deliver: async (payload: ReplyPayload) => {
         progressDraft.markFinalReplyStarted();
         await cleanupProgressDraft();
@@ -1770,12 +1876,30 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     let dispatchError: unknown;
     let dispatchResult:
       | {
+          queuedFinal?: boolean;
           counts?: Partial<Record<"tool" | "block" | "final", number>>;
           failedCounts?: Partial<Record<"tool" | "block" | "final", number>>;
+          settledReceipt?: {
+            counts?: Partial<Record<"tool" | "block" | "final", {
+              delivered?: number;
+              deliveredNotVisible?: number;
+              cancelled?: number;
+              failedBeforeSend?: number;
+              failedAfterSend?: number;
+            }>>;
+            anyVisibleDelivered?: boolean;
+            hasPendingDelivery?: true;
+          };
+          sendPolicyDenied?: boolean;
+          observedReplyDelivery?: boolean;
+          deferredToActiveRun?: "steer" | "followup";
+          noVisibleReplyFallbackEligible?: boolean;
+          noVisibleReplyFallbackDelivered?: boolean;
+          deliberateSilentTerminalReply?: boolean;
+          beforeAgentRunBlocked?: boolean;
         }
       | undefined;
     try {
-      const { deliver, onError, ...routedDispatcherOptions } = dispatcherOptions;
       const turnResult = await subagentContext.run(() =>
         core.channel.inbound.dispatch({
           cfg,
@@ -1795,13 +1919,13 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
               runtime.error?.(`zulip: inbound session recording failed: ${String(err)}`);
             },
           },
-          delivery: { deliver, onError },
-          dispatcherOptions: routedDispatcherOptions,
+          delivery,
+          replyPipeline: { typingCallbacks: replyTypingCallbacks },
+          dispatcherOptions: { propagateRetryableNoSendFailure: true },
           replyOptions: {
             disableBlockStreaming:
               typeof account.blockStreaming === "boolean" ? !account.blockStreaming : undefined,
             abortSignal: opts.abortSignal,
-            onModelSelected,
             allowToolLifecycleWhenProgressHidden:
               statusReactionConfig.enabled || progressDraftActive ? true : undefined,
             suppressDefaultToolProgressMessages:
@@ -1875,8 +1999,10 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
             },
           },
           messageId,
+          log: logChannelTurnDiagnostic,
         }),
       );
+      logChannelTurnResultDiagnostic(turnResult);
       dispatchResult = turnResult.dispatched ? turnResult.dispatchResult : undefined;
     } catch (err) {
       dispatchError = err;
@@ -1886,11 +2012,14 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       dispatchError = deliveryError;
     }
 
-    const successfulReplyCount =
-      (dispatchResult?.counts?.tool ?? 0) +
-      (dispatchResult?.counts?.block ?? 0) +
-      (dispatchResult?.counts?.final ?? 0);
-    replyDeliveryCommitted ||= successfulReplyCount > 0;
+    const settledReceipt = dispatchResult?.settledReceipt;
+    const settledFinal = settledReceipt?.counts?.final;
+    const settledFinalFailedBeforeSend = settledFinal?.failedBeforeSend ?? 0;
+    const settledFinalFailedAfterSend = settledFinal?.failedAfterSend ?? 0;
+    replyDeliveryCommitted ||=
+      settledReceipt?.anyVisibleDelivered === true ||
+      settledFinalFailedAfterSend > 0 ||
+      settledReceipt?.hasPendingDelivery === true;
     const abortOutcome = () =>
       replyDeliveryCommitted ? undefined : ABORTED_INBOUND_MESSAGE;
 
@@ -1910,13 +2039,17 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       opts.statusSink?.({ lastInboundAt: Date.now() });
       return abortOutcome();
     }
-    const finalDeliveryFailed = (dispatchResult?.failedCounts?.final ?? 0) > 0;
+    const finalDeliveryFailed =
+      (dispatchResult?.failedCounts?.final ?? 0) > 0 ||
+      settledFinalFailedBeforeSend > 0 ||
+      settledFinalFailedAfterSend > 0 ||
+      settledReceipt?.hasPendingDelivery === true;
     const terminalError = Boolean(dispatchError) || finalDeliveryFailed;
     progressDraft.markFinalReplyDelivered();
     await cleanupProgressDraft();
     if (placeholderMessageId) {
       const cancelled = dispatchError instanceof Error && dispatchError.name === "AbortError";
-      if (!terminalError || cancelled || deliveredReply) {
+      if (!terminalError || cancelled || deliveredReply || replyDeliveryCommitted) {
         await deletePlaceholder();
       } else {
         const errorFeedbackCommitted = await replacePlaceholder(thinkingPlaceholderErrorText);
@@ -1931,7 +2064,8 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       dispatchError &&
       !(dispatchError instanceof Error && dispatchError.name === "AbortError") &&
       placeholderRemovedForDelivery &&
-      !deliveredReply
+      !deliveredReply &&
+      !replyDeliveryCommitted
     ) {
       try {
         await sendMessageZulip(to, thinkingPlaceholderErrorText, {

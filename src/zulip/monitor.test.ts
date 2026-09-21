@@ -141,6 +141,7 @@ const state = vi.hoisted(() => {
       ctxPayload,
       delivery,
       dispatcherOptions,
+      replyPipeline,
       replyOptions,
     }: Record<string, any>) => ({
       admission: { kind: "dispatch" },
@@ -151,6 +152,10 @@ const state = vi.hoisted(() => {
         ctx: ctxPayload,
         cfg,
         dispatcherOptions: {
+          ...replyPipeline,
+          onReplyStart: replyPipeline?.typingCallbacks?.onReplyStart,
+          onIdle: replyPipeline?.typingCallbacks?.onIdle,
+          onCleanup: replyPipeline?.typingCallbacks?.onCleanup,
           ...dispatcherOptions,
           deliver: delivery.deliver,
           onError: delivery.onError,
@@ -222,7 +227,6 @@ const state = vi.hoisted(() => {
         dispatch,
       },
       reply: {
-        resolveHumanDelayConfig: vi.fn(() => undefined),
         dispatchReplyFromConfig: vi.fn(),
         dispatchReplyWithBufferedBlockDispatcher,
       },
@@ -394,7 +398,6 @@ vi.mock("../sdk.js", async (importOriginal) => ({
 
 vi.mock("openclaw/plugin-sdk/channel-outbound", async (importOriginal) => ({
   ...await importOriginal<typeof import("openclaw/plugin-sdk/channel-outbound")>(),
-  createReplyPrefixOptions: vi.fn(() => ({ onModelSelected: vi.fn() })),
   createTypingCallbacks: typingCallbacksMock,
 }));
 
@@ -629,10 +632,69 @@ describe("monitorZulipProvider", () => {
         deliver: expect.any(Function),
         onError: expect.any(Function),
       }),
-      dispatcherOptions: expect.any(Object),
+      replyPipeline: {
+        typingCallbacks: expect.objectContaining({
+          onReplyStart: expect.any(Function),
+          onIdle: expect.any(Function),
+        }),
+      },
+      dispatcherOptions: { propagateRetryableNoSendFailure: true },
       replyOptions: expect.any(Object),
       messageId: "9100001",
     }));
+  });
+
+  it("emits bounded channel-turn lifecycle and result diagnostics", async () => {
+    const previous = process.env.ZULIP_CHANNEL_TURN_DIAGNOSTICS;
+    process.env.ZULIP_CHANNEL_TURN_DIAGNOSTICS = "1";
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    state.core.channel.inbound.dispatch.mockImplementationOnce(async (params: Record<string, any>) => {
+      params.log({
+        stage: "dispatch",
+        event: "warning",
+        channel: "zulip",
+        admission: "dispatch",
+        reason: "zero-count-visible-dispatch",
+        error: new Error("protected detail"),
+      });
+      return {
+        admission: { kind: "dispatch" },
+        dispatched: true,
+        ctxPayload: params.ctxPayload,
+        routeSessionKey: params.route.sessionKey,
+        dispatchResult: {
+          queuedFinal: false,
+          counts: { tool: 0, block: 0, final: 0 },
+          deferredToActiveRun: "protected-detail",
+          beforeAgentRunBlocked: true,
+        },
+      };
+    });
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 1, type: "message", message: makePrivateMessage(9100003) }],
+    }];
+
+    let output = "";
+    try {
+      await runMonitorOnce();
+      output = stderr.mock.calls.map(([chunk]) => String(chunk)).join("");
+    } finally {
+      stderr.mockRestore();
+      if (previous === undefined) delete process.env.ZULIP_CHANNEL_TURN_DIAGNOSTICS;
+      else process.env.ZULIP_CHANNEL_TURN_DIAGNOSTICS = previous;
+    }
+
+    expect(output).toContain(
+      "ZULIP_CHANNEL_TURN_DIAGNOSTIC stage=dispatch event=warning admission=dispatch reason=zero-count-visible-dispatch",
+    );
+    expect(output).toContain(
+      "ZULIP_CHANNEL_TURN_RESULT dispatched=true admission=dispatch reason=none tool=0 block=0 final=0",
+    );
+    expect(output).toContain("deferred=none");
+    expect(output).toContain("before_agent_run_blocked=true");
+    expect(output).not.toContain("protected detail");
+    expect(output).not.toContain("protected-detail");
   });
 
   it("keeps the raw topic and reply message ID in their SDK fields", async () => {
@@ -4272,8 +4334,79 @@ describe("monitorZulipProvider", () => {
   });
 
   it.each([
+    {
+      settlement: "failed-after-send",
+      messageId: 2114,
+      receipt: {
+        anyVisibleDelivered: true,
+        hasPendingDelivery: true,
+        counts: {
+          tool: { delivered: 0, deliveredNotVisible: 0, cancelled: 0, failedBeforeSend: 0, failedAfterSend: 0 },
+          block: { delivered: 0, deliveredNotVisible: 0, cancelled: 0, failedBeforeSend: 0, failedAfterSend: 0 },
+          final: { delivered: 0, deliveredNotVisible: 0, cancelled: 0, failedBeforeSend: 0, failedAfterSend: 1 },
+        },
+      },
+    },
+    {
+      settlement: "pending",
+      messageId: 2115,
+      receipt: {
+        anyVisibleDelivered: false,
+        hasPendingDelivery: true,
+        counts: {
+          tool: { delivered: 0, deliveredNotVisible: 0, cancelled: 0, failedBeforeSend: 0, failedAfterSend: 0 },
+          block: { delivered: 0, deliveredNotVisible: 0, cancelled: 0, failedBeforeSend: 0, failedAfterSend: 0 },
+          final: { delivered: 0, deliveredNotVisible: 0, cancelled: 0, failedBeforeSend: 0, failedAfterSend: 0 },
+        },
+      },
+    },
+  ])("suppresses fallback error feedback for $settlement delivery", async ({ messageId, receipt }) => {
+    enableDurableInboundJournal();
+    state.account.config.markHandledRead = true;
+    state.account.config.thinkingPlaceholder = { enabled: true, errorText: "Turn failed." };
+    state.sendMessageZulip
+      .mockResolvedValueOnce({ messageId: "placeholder-1", channelId: "debbie" })
+      .mockRejectedValueOnce(new Error("ambiguous reply send failure"));
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementationOnce(
+      async ({ dispatcherOptions }) => {
+        try {
+          await dispatcherOptions.deliver({
+            presentation: {
+              blocks: [{ type: "buttons", buttons: [{ label: "Confirm", action: "confirm" }] }],
+            },
+          });
+        } catch (err) {
+          dispatcherOptions.onError(err);
+        }
+        return {
+          counts: { tool: 0, block: 0, final: 1 },
+          settledReceipt: receipt,
+        };
+      },
+    );
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 8, type: "message", message: makePrivateMessage(messageId) }],
+    }];
+
+    await runMonitorOnce();
+
+    const { createZulipDurableInboundReceiveJournal } = await import("./durable-receive.js");
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    await expect(journal.pending()).resolves.toEqual([]);
+    expect(state.sendMessageZulip).toHaveBeenCalledTimes(2);
+    expect(state.editZulipMessage).not.toHaveBeenCalled();
+    expect(state.updateZulipMessageFlags).not.toHaveBeenCalled();
+
+    await runMonitorOnce();
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+    expect(state.sendMessageZulip).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
     { failureMode: "dispatcher rejection", messageId: 2108 },
     { failureMode: "failed final result", messageId: 2109 },
+    { failureMode: "settled final failure", messageId: 2113 },
   ])(
     "keeps durable inbound retryable after $failureMode with no visible delivery",
     async ({ failureMode, messageId }) => {
@@ -4287,13 +4420,30 @@ describe("monitorZulipProvider", () => {
             throw new Error("synthetic durable dispatch failure");
           },
         );
-      } else {
+      } else if (failureMode === "failed final result") {
         state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementationOnce(
           async () => {
             dispatchAttempts += 1;
             return {
               counts: { tool: 0, block: 0, final: 0 },
               failedCounts: { tool: 0, block: 0, final: 1 },
+            };
+          },
+        );
+      } else {
+        state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementationOnce(
+          async () => {
+            dispatchAttempts += 1;
+            return {
+              counts: { tool: 0, block: 0, final: 1 },
+              settledReceipt: {
+                anyVisibleDelivered: false,
+                counts: {
+                  tool: { delivered: 0, deliveredNotVisible: 0, cancelled: 0, failedBeforeSend: 0, failedAfterSend: 0 },
+                  block: { delivered: 0, deliveredNotVisible: 0, cancelled: 0, failedBeforeSend: 0, failedAfterSend: 0 },
+                  final: { delivered: 0, deliveredNotVisible: 0, cancelled: 0, failedBeforeSend: 1, failedAfterSend: 0 },
+                },
+              },
             };
           },
         );
@@ -4325,9 +4475,20 @@ describe("monitorZulipProvider", () => {
 
       state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher
         .mockReset()
-        .mockImplementation(async () => {
+        .mockImplementation(async ({ dispatcherOptions }) => {
           dispatchAttempts += 1;
-          return { counts: { tool: 0, block: 0, final: 1 } };
+          await dispatcherOptions.deliver({ text: "replayed reply" });
+          return {
+            counts: { tool: 0, block: 0, final: 1 },
+            settledReceipt: {
+              anyVisibleDelivered: true,
+              counts: {
+                tool: { delivered: 0, deliveredNotVisible: 0, cancelled: 0, failedBeforeSend: 0, failedAfterSend: 0 },
+                block: { delivered: 0, deliveredNotVisible: 0, cancelled: 0, failedBeforeSend: 0, failedAfterSend: 0 },
+                final: { delivered: 1, deliveredNotVisible: 0, cancelled: 0, failedBeforeSend: 0, failedAfterSend: 0 },
+              },
+            },
+          };
         });
       await runMonitorOnce();
 

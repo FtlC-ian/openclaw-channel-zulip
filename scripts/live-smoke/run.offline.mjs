@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { assertFinalPrivateTypingStop, assertMessageRemainsExact, authenticatedUserId, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, drainEventQueueUntilQuiet, DURABLE_OFFLINE_DELAY_MS, enableHandledReadForSmokeConfig, eventOccursBefore, EventQueue, extractExactUploadUrl, formatSmokeTurnEvidence, Gateway, hasFinalPrivateTypingStop, hasProvableMinimumMessageDelay, inspectChildTranscripts, inspectLifecycleTurnEvidence, inspectSmokeTurnEvidence, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactPollMessage, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, isUsageCountedTranscriptName, lifecycleEvidenceCounts, lifecycleSummary, normalizeScenarioError, parseZulipHandledReadDiagnostic, parseZulipSubagentDiagnostic, probeRunnerLocalGatewayHealth, readZulipMessageFlags, redactError, resolveUploadUrl, signalProcessTree, subagentCompletedBeforeReply, validateEnvironment, waitForProcessTreeExit, waitForZulipMessageRead, writeGatewayGeneration } from "./run.mjs";
+import { assertFinalPrivateTypingStop, assertMessageRemainsExact, authenticatedUserId, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, drainEventQueueUntilQuiet, DURABLE_OFFLINE_DELAY_MS, enableHandledReadForSmokeConfig, eventOccursBefore, EventQueue, extractExactUploadUrl, formatSmokeTurnEvidence, Gateway, hasFinalPrivateTypingStop, hasProvableMinimumMessageDelay, inspectChildTranscripts, inspectLifecycleTurnEvidence, inspectSmokeTurnEvidence, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactPollMessage, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, isUsageCountedTranscriptName, lifecycleDiagnosticSummary, lifecycleEvidenceCounts, lifecycleSummary, normalizeScenarioError, parseZulipChannelTurnDiagnostic, parseZulipChannelTurnResult, parseZulipHandledReadDiagnostic, parseZulipSubagentDiagnostic, probeRunnerLocalGatewayHealth, readZulipMessageFlags, redactError, resolveUploadUrl, signalProcessTree, subagentCompletedBeforeReply, validateEnvironment, waitForProcessTreeExit, waitForZulipMessageRead, writeGatewayGeneration } from "./run.mjs";
 import { validateSmokeBaselineModel } from "./prepare-config.mjs";
 import { resolveInstalledOpenClawRoot, stageBundledPlugin } from "./stage-bundled-plugin.mjs";
 
@@ -925,12 +925,16 @@ test("captures only bounded allowlisted gateway lifecycle diagnostics", () => {
   gateway.captureDiagnostics("ZULIP_SUBAGENT_DIAGNOSTIC event=indicator_");
   gateway.captureDiagnostics("shown\n");
   gateway.captureDiagnostics("ZULIP_HANDLED_READ_DIAGNOSTIC event=attempted\n");
+  gateway.captureDiagnostics("ZULIP_CHANNEL_TURN_DIAGNOSTIC stage=dispatch event=warning admission=dispatch reason=zero-count-visible-dispatch\n");
+  gateway.captureDiagnostics("ZULIP_CHANNEL_TURN_RESULT dispatched=true admission=dispatch reason=none tool=0 block=0 final=0 failed_tool=0 failed_block=0 failed_final=0 settled_visible=false settled_pending=false settled_final_delivered=0 settled_final_failed_before=0 settled_final_failed_after=0 queued_final=false deferred=none send_policy_denied=false observed_delivery=false fallback_eligible=false fallback_delivered=false silent_terminal=false before_agent_run_blocked=true\n");
   for (let index = 0; index < 250; index += 1) {
     gateway.captureDiagnostics("ZULIP_SUBAGENT_DIAGNOSTIC event=reaction_add_succeeded\n");
   }
 
   assert.equal(gateway.diagnostics[0], "ZULIP_SUBAGENT_DIAGNOSTIC event=indicator_shown");
   assert.equal(gateway.diagnostics[1], "ZULIP_HANDLED_READ_DIAGNOSTIC event=attempted");
+  assert.equal(gateway.diagnostics[2], "ZULIP_CHANNEL_TURN_DIAGNOSTIC stage=dispatch event=warning admission=dispatch reason=zero-count-visible-dispatch");
+  assert.match(gateway.diagnostics[3], /^ZULIP_CHANNEL_TURN_RESULT /);
   assert.equal(gateway.diagnostics.length, 200);
   assert.equal(gateway.diagnostics.some((line) => line.includes("secret")), false);
 });
@@ -971,6 +975,15 @@ test("isolates diagnostic parser state across gateway child generations", () => 
   assert.equal(gateway.diagnosticStreamState.discardingOversizedLine, false);
 });
 
+test("summarizes only exact subagent lifecycle diagnostics", () => {
+  assert.deepEqual(lifecycleDiagnosticSummary([
+    "ZULIP_SUBAGENT_DIAGNOSTIC event=indicator_shown",
+    "ZULIP_SUBAGENT_DIAGNOSTIC event=run_ended binding_found=true",
+    "ZULIP_SUBAGENT_DIAGNOSTIC event=run_ended binding_found=false",
+    "ZULIP_SUBAGENT_DIAGNOSTIC event=indicator_shown secret=hidden",
+  ]), { indicatorShown: 1, runEndedWithBinding: 1 });
+});
+
 test("rejects unknown lifecycle diagnostic schemas and secret-shaped values", () => {
   assert.equal(parseZulipSubagentDiagnostic("ZULIP_SUBAGENT_DIAGNOSTIC event=unknown"), undefined);
   assert.equal(parseZulipSubagentDiagnostic("ZULIP_SUBAGENT_DIAGNOSTIC event=run_ended unknown=true"), undefined);
@@ -979,6 +992,38 @@ test("rejects unknown lifecycle diagnostic schemas and secret-shaped values", ()
   assert.equal(parseZulipHandledReadDiagnostic("ZULIP_HANDLED_READ_DIAGNOSTIC event=succeeded"), "ZULIP_HANDLED_READ_DIAGNOSTIC event=succeeded");
   assert.equal(parseZulipHandledReadDiagnostic("ZULIP_HANDLED_READ_DIAGNOSTIC event=unknown"), undefined);
   assert.equal(parseZulipHandledReadDiagnostic("ZULIP_HANDLED_READ_DIAGNOSTIC event=failed secret=ABC123"), undefined);
+  assert.equal(
+    parseZulipChannelTurnDiagnostic(
+      "ZULIP_CHANNEL_TURN_DIAGNOSTIC stage=authorize event=drop admission=drop reason=outbound-echo",
+    ),
+    "ZULIP_CHANNEL_TURN_DIAGNOSTIC stage=authorize event=drop admission=drop reason=outbound-echo",
+  );
+  assert.equal(parseZulipChannelTurnDiagnostic(
+    "ZULIP_CHANNEL_TURN_DIAGNOSTIC stage=dispatch event=error admission=dispatch reason=secret",
+  ), undefined);
+  const result = "ZULIP_CHANNEL_TURN_RESULT dispatched=true admission=dispatch reason=none tool=0 block=0 final=0 failed_tool=0 failed_block=0 failed_final=0 settled_visible=false settled_pending=false settled_final_delivered=0 settled_final_failed_before=0 settled_final_failed_after=0 queued_final=false deferred=none send_policy_denied=false observed_delivery=false fallback_eligible=false fallback_delivered=false silent_terminal=false before_agent_run_blocked=true";
+  assert.equal(parseZulipChannelTurnResult(result), result);
+  assert.equal(parseZulipChannelTurnResult(`${result} token=secret`), undefined);
+});
+
+test("does not misclassify legacy transcript artifacts when canonical SQLite state exists", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "zulip-smoke-sqlite-state-"));
+  const sessionsDir = join(stateDir, "agents", "main", "sessions");
+  const databaseDir = join(stateDir, "agents", "main", "agent");
+  await mkdir(sessionsDir, { recursive: true });
+  await mkdir(databaseDir, { recursive: true });
+  try {
+    await writeFile(join(databaseDir, "openclaw-agent.sqlite"), "sqlite-placeholder");
+    await writeFile(join(sessionsDir, "stale.jsonl"), JSON.stringify({
+      message: { role: "user", content: "stale-marker" },
+    }));
+    await assert.rejects(
+      inspectSmokeTurnEvidence(stateDir, "stale-marker"),
+      (error) => error?.message === "Transcript evidence is unavailable",
+    );
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
 });
 
 test("reconciles a placeholder update into cached message matching and cleanup attribution", async () => {

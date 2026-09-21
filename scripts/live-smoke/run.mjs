@@ -279,7 +279,36 @@ export async function inspectChildTranscripts(stateDir, marker) {
   return { total, completedExact };
 }
 
+export async function hasCanonicalSqliteSessionStore(stateDir) {
+  const agentsRoot = resolve(stateDir, "agents");
+  let agents;
+  try {
+    agents = await opendir(agentsRoot);
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw new Error("Transcript evidence is unavailable");
+  }
+  try {
+    for await (const entry of agents) {
+      if (!entry.isDirectory()) continue;
+      const databasePath = resolve(agentsRoot, entry.name, "agent", "openclaw-agent.sqlite");
+      try {
+        const stats = await lstat(databasePath);
+        if (stats.isFile() && !stats.isSymbolicLink()) return true;
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw new Error("Transcript evidence is unavailable");
+      }
+    }
+  } finally {
+    await agents.close().catch(() => {});
+  }
+  return false;
+}
+
 async function listAgentTranscriptFiles(stateDir) {
+  if (await hasCanonicalSqliteSessionStore(stateDir)) {
+    throw new Error("Transcript evidence is unavailable");
+  }
   const maxDepth = 8;
   const maxDirectories = 128;
   const maxEntries = 512;
@@ -974,6 +1003,43 @@ export function parseZulipHandledReadDiagnostic(line) {
   return match && zulipHandledReadDiagnosticEvents.has(match[1]) ? line : undefined;
 }
 
+const zulipChannelTurnDiagnosticStages = new Set([
+  "ingest", "classify", "preflight", "resolve", "authorize", "assemble", "record", "dispatch", "finalize",
+]);
+const zulipChannelTurnDiagnosticEvents = new Set(["start", "done", "drop", "handled", "error", "warning"]);
+const zulipChannelTurnDiagnosticAdmissions = new Set(["dispatch", "drop", "handled", "observeOnly", "none"]);
+const zulipChannelTurnDiagnosticReasons = new Set([
+  "bot-loop-protection", "outbound-echo", "zero-count-visible-dispatch", "none",
+]);
+
+export function parseZulipChannelTurnDiagnostic(line) {
+  const match = line.match(
+    /^ZULIP_CHANNEL_TURN_DIAGNOSTIC stage=([A-Za-z]+) event=([a-z]+) admission=([A-Za-z]+) reason=([a-z-]+)$/,
+  );
+  if (!match || !zulipChannelTurnDiagnosticStages.has(match[1]) ||
+      !zulipChannelTurnDiagnosticEvents.has(match[2]) ||
+      !zulipChannelTurnDiagnosticAdmissions.has(match[3]) ||
+      !zulipChannelTurnDiagnosticReasons.has(match[4])) return undefined;
+  return line;
+}
+
+export function parseZulipChannelTurnResult(line) {
+  const match = line.match(
+    /^ZULIP_CHANNEL_TURN_RESULT dispatched=(true|false) admission=([A-Za-z]+) reason=([a-z-]+) tool=(\d{1,4}) block=(\d{1,4}) final=(\d{1,4}) failed_tool=(\d{1,4}) failed_block=(\d{1,4}) failed_final=(\d{1,4}) settled_visible=(true|false) settled_pending=(true|false) settled_final_delivered=(\d{1,4}) settled_final_failed_before=(\d{1,4}) settled_final_failed_after=(\d{1,4}) queued_final=(true|false) deferred=(none|steer|followup) send_policy_denied=(true|false) observed_delivery=(true|false) fallback_eligible=(true|false) fallback_delivered=(true|false) silent_terminal=(true|false) before_agent_run_blocked=(true|false)$/,
+  );
+  if (!match || !zulipChannelTurnDiagnosticAdmissions.has(match[2]) ||
+      !zulipChannelTurnDiagnosticReasons.has(match[3])) return undefined;
+  return line;
+}
+
+export function lifecycleDiagnosticSummary(lines) {
+  return {
+    indicatorShown: lines.filter((line) => line === "ZULIP_SUBAGENT_DIAGNOSTIC event=indicator_shown").length,
+    runEndedWithBinding: lines.filter((line) =>
+      line === "ZULIP_SUBAGENT_DIAGNOSTIC event=run_ended binding_found=true").length,
+  };
+}
+
 export class Gateway {
   constructor(port, {
     termTimeoutMs = 10000,
@@ -1026,7 +1092,9 @@ export class Gateway {
           state.remainder = candidate;
         } else {
           const diagnostic = parseZulipSubagentDiagnostic(candidate) ??
-            parseZulipHandledReadDiagnostic(candidate);
+            parseZulipHandledReadDiagnostic(candidate) ??
+            parseZulipChannelTurnDiagnostic(candidate) ??
+            parseZulipChannelTurnResult(candidate);
           if (diagnostic && this.diagnostics.length < 200) this.diagnostics.push(diagnostic);
           state.remainder = "";
         }
@@ -1191,11 +1259,13 @@ function command(value) { return `SMOKE_COMMAND\n${value}\nEND_SMOKE_COMMAND`; }
 
 async function main() {
   const env = validateEnvironment(process.env);
+  process.env.ZULIP_SUBAGENT_DIAGNOSTICS = "1";
   if (env.ZULIP_SMOKE_ENABLE_DURABLE === "1") {
     const configPath = env.OPENCLAW_CONFIG_PATH?.trim();
     if (!configPath) throw new Error("OPENCLAW_CONFIG_PATH is required for durable smoke");
     await enableHandledReadForSmokeConfig(configPath);
     process.env.ZULIP_HANDLED_READ_DIAGNOSTICS = "1";
+    process.env.ZULIP_CHANNEL_TURN_DIAGNOSTICS = "1";
   }
   const timeoutMs = Number(env.SMOKE_SCENARIO_TIMEOUT_MS || 120000);
   if (!Number.isFinite(timeoutMs) || timeoutMs < 10000 || timeoutMs > 300000) throw new Error("Invalid SMOKE_SCENARIO_TIMEOUT_MS");
@@ -1272,6 +1342,7 @@ async function main() {
     await scenario("typing-and-lifecycle-reactions", async (signal) => {
       lifecyclePhase = "waiting_for_reaction_cleanup";
       const marker = `${runId}:lifecycle-ok`; const childResult = `${runId}:child-ok`; const eventStart = queue.events.length;
+      const diagnosticStart = gateway.diagnostics.length;
       lifecycleMarkers = { marker, childResult };
       currentTurnMarker = marker;
       const inboundId = await sendDm(command(`lifecycle ${marker} ${childResult}`), signal);
@@ -1284,15 +1355,31 @@ async function main() {
         await queue.poll(signal);
         await delay(500, undefined, { signal });
       }
-      lifecyclePhase = "waiting_for_child_transcript";
-      const transcriptDeadline = Date.now() + timeoutMs;
-      let childTranscripts;
-      while (Date.now() < transcriptDeadline && (childTranscripts = await inspectChildTranscripts(env.OPENCLAW_STATE_DIR, childResult)).completedExact === 0) {
-        await delay(250, undefined, { signal });
-      }
-      childTranscripts = await inspectChildTranscripts(env.OPENCLAW_STATE_DIR, childResult);
-      if (childTranscripts.total !== 1 || childTranscripts.completedExact !== 1) {
-        throw new Error(`Found ${childTranscripts.total} child transcripts and ${childTranscripts.completedExact} exact completed results; expected exactly one of each`);
+      const canonicalSqlite = await hasCanonicalSqliteSessionStore(env.OPENCLAW_STATE_DIR);
+      if (canonicalSqlite) {
+        lifecyclePhase = "checking_subagent_diagnostics";
+        const diagnosticDeadline = Date.now() + timeoutMs;
+        let diagnosticEvidence;
+        while (Date.now() < diagnosticDeadline) {
+          diagnosticEvidence = lifecycleDiagnosticSummary(gateway.diagnostics.slice(diagnosticStart));
+          if (diagnosticEvidence.indicatorShown > 0 && diagnosticEvidence.runEndedWithBinding > 0) break;
+          await delay(250, undefined, { signal });
+        }
+        diagnosticEvidence = lifecycleDiagnosticSummary(gateway.diagnostics.slice(diagnosticStart));
+        if (diagnosticEvidence.indicatorShown !== 1 || diagnosticEvidence.runEndedWithBinding !== 1) {
+          throw new Error(`Observed ${diagnosticEvidence.indicatorShown} subagent indicators and ${diagnosticEvidence.runEndedWithBinding} bound run completions; expected exactly one of each`);
+        }
+      } else {
+        lifecyclePhase = "waiting_for_child_transcript";
+        const transcriptDeadline = Date.now() + timeoutMs;
+        let childTranscripts;
+        while (Date.now() < transcriptDeadline && (childTranscripts = await inspectChildTranscripts(env.OPENCLAW_STATE_DIR, childResult)).completedExact === 0) {
+          await delay(250, undefined, { signal });
+        }
+        childTranscripts = await inspectChildTranscripts(env.OPENCLAW_STATE_DIR, childResult);
+        if (childTranscripts.total !== 1 || childTranscripts.completedExact !== 1) {
+          throw new Error(`Found ${childTranscripts.total} child transcripts and ${childTranscripts.completedExact} exact completed results; expected exactly one of each`);
+        }
       }
       lifecyclePhase = "checking_optional_parent_reply";
       const reply = await waitForOptionalPrivateBotMessage(
@@ -1302,8 +1389,10 @@ async function main() {
         signal,
       );
       if (reply) messageIds.bot.add(String(reply.message.id));
-      const turn = await inspectLifecycleTurnEvidence(env.OPENCLAW_STATE_DIR, marker, childResult);
-      if (turn.exactReplies > 0 && turn.completionEvents === 0) console.warn("Lifecycle parent reply was observed without persisted transcript evidence of the suppressed child-completion handoff");
+      if (!canonicalSqlite) {
+        const turn = await inspectLifecycleTurnEvidence(env.OPENCLAW_STATE_DIR, marker, childResult);
+        if (turn.exactReplies > 0 && turn.completionEvents === 0) console.warn("Lifecycle parent reply was observed without persisted transcript evidence of the suppressed child-completion handoff");
+      }
       lifecyclePhase = "waiting_for_final_typing_stop";
       await drainEventQueueUntilQuiet(queue, signal, 500, timeoutMs, 100, () =>
         lifecycleSummary(queue.events, inboundId).allRemoved &&

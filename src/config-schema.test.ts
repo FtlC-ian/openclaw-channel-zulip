@@ -2,7 +2,54 @@ import fs from "node:fs";
 import { describe, expect, it } from "vitest";
 import { zulipChannelConfigSchema } from "./config-schema.js";
 
+type JsonSchema = {
+  $defs?: Record<string, JsonSchema>;
+  $ref?: string;
+  additionalProperties?: boolean | JsonSchema;
+  anyOf?: JsonSchema[];
+  const?: unknown;
+  enum?: unknown[];
+  items?: JsonSchema;
+  maximum?: number;
+  minimum?: number;
+  exclusiveMinimum?: number;
+  properties?: Record<string, JsonSchema>;
+  propertyNames?: JsonSchema;
+  required?: string[];
+  type?: string;
+};
+
+const loadPackagedChannelSchema = (): JsonSchema => {
+  const manifest = JSON.parse(
+    fs.readFileSync(new URL("../openclaw.plugin.json", import.meta.url), "utf8"),
+  ) as { channelConfigs: { zulip: { schema: JsonSchema } } };
+  return manifest.channelConfigs.zulip.schema;
+};
+
 describe("Zulip lifecycle reaction config", () => {
+  it("accepts explicit routing diagnostics topics consistently across account and packaged schemas", () => {
+    const config = { routingDiagnosticsTarget: "stream:private-ops:openclaw-diagnostics" };
+    expect(zulipChannelConfigSchema.runtime.safeParse({ ...config, accounts: { work: config } }).success).toBe(true);
+    for (const target of ["", "stream:private-ops", "user:owner@example.test", "channel:42:topic:v2:abc"]) {
+      expect(zulipChannelConfigSchema.runtime.safeParse({ routingDiagnosticsTarget: target }).success).toBe(false);
+    }
+    const runtime = (zulipChannelConfigSchema.schema as JsonSchema).properties?.routingDiagnosticsTarget;
+    const manifest = loadPackagedChannelSchema();
+    expect(manifest.properties?.routingDiagnosticsTarget).toEqual(runtime);
+    expect(manifest.$defs?.zulipAccount?.properties?.routingDiagnosticsTarget).toEqual(runtime);
+  });
+
+  it("preserves packaged and runtime legacy placeholder configuration alongside progress", () => {
+    const manifest = loadPackagedChannelSchema();
+    const runtime = zulipChannelConfigSchema.schema as JsonSchema;
+    const legacy = runtime.properties?.thinkingPlaceholder;
+    expect(legacy).toBeDefined();
+    expect(manifest.properties?.thinkingPlaceholder).toEqual(legacy);
+    expect(manifest.$defs?.zulipAccount?.properties?.thinkingPlaceholder).toEqual(legacy);
+    const both = { thinkingPlaceholder: { enabled: true, text: "Working", errorText: "Failed" }, streaming: { mode: "progress" } };
+    expect(zulipChannelConfigSchema.runtime.safeParse({ ...both, accounts: { work: both } }).success).toBe(true);
+    expect(zulipChannelConfigSchema.runtime.safeParse({ ...both, thinkingPlaceholder: { enabled: true, text: "" } }).success).toBe(false);
+  });
   it("accepts the conservative handled-read account opt-in and exposes it in the manifest", () => {
     expect(zulipChannelConfigSchema.runtime.safeParse({ markHandledRead: true }).success).toBe(true);
     expect(zulipChannelConfigSchema.runtime.safeParse({ markHandledRead: false }).success).toBe(true);
@@ -25,6 +72,76 @@ describe("Zulip lifecycle reaction config", () => {
     expect(config.schema.properties).toHaveProperty("markHandledRead");
     expect(config.schema.$defs.zulipAccount.properties).toHaveProperty("markHandledRead");
     expect(config.uiHints).toHaveProperty("markHandledRead");
+  });
+
+  it("keeps packaged top-level and account streaming schemas identical to runtime", () => {
+    const manifestSchema = loadPackagedChannelSchema();
+    const runtimeSchema = zulipChannelConfigSchema.schema as JsonSchema;
+    const runtimeStreaming = runtimeSchema.properties?.streaming;
+    const runtimeAccountStreaming = runtimeSchema.properties?.accounts?.additionalProperties;
+    const manifestStreaming = manifestSchema.properties?.streaming;
+    const manifestAccountStreaming = manifestSchema.properties?.accounts?.additionalProperties;
+
+    expect(runtimeStreaming).toBeDefined();
+    expect(runtimeAccountStreaming).toMatchObject({ properties: { streaming: runtimeStreaming } });
+    expect(manifestStreaming).toEqual(runtimeStreaming);
+    expect(manifestSchema.properties?.accounts).toEqual({
+      type: "object",
+      additionalProperties: { $ref: "#/$defs/zulipAccount" },
+    });
+    expect(manifestSchema.properties?.streaming).toEqual(runtimeStreaming);
+    expect(
+      manifestSchema.$defs?.zulipAccount?.properties?.streaming,
+    ).toEqual(runtimeStreaming);
+  });
+
+  it("declares progress mode and representative progress options in the packaged manifest", () => {
+    const manifestSchema = loadPackagedChannelSchema();
+    const defs = manifestSchema.$defs;
+    const streamingSchemas = [
+      manifestSchema.properties?.streaming,
+      defs?.zulipAccount?.properties?.streaming,
+    ];
+
+    for (const streaming of streamingSchemas) {
+      expect(streaming?.additionalProperties).toBe(false);
+      expect(streaming?.properties?.mode?.enum).toContain("progress");
+      expect(streaming?.properties?.progress).toMatchObject({
+        additionalProperties: false,
+        properties: {
+          commentary: { type: "boolean" },
+          narration: { type: "boolean" },
+          toolProgress: { type: "boolean" },
+          commandText: { type: "string", enum: ["raw", "status"] },
+        },
+      });
+    }
+
+    const fixture = {
+      streaming: {
+        mode: "progress",
+        progress: {
+          commentary: true,
+          narration: false,
+          toolProgress: true,
+          commandText: "status",
+        },
+      },
+      accounts: {
+        work: {
+          streaming: {
+            mode: "progress",
+            progress: {
+              commentary: false,
+              narration: true,
+              toolProgress: false,
+              commandText: "raw",
+            },
+          },
+        },
+      },
+    };
+    expect(zulipChannelConfigSchema.runtime.safeParse(fixture).success).toBe(true);
   });
 
   it("accepts strict per-stream inbound policy fields", () => {

@@ -36,6 +36,9 @@ export type ZulipUser = {
   email?: string | null;
   full_name?: string | null;
   is_admin?: boolean | null;
+  is_bot?: boolean;
+  is_active?: boolean;
+  bot_owner_id?: number | null;
 };
 
 export type ZulipStream = {
@@ -173,8 +176,9 @@ export function createZulipClient(params: {
       const detail = await readZulipError(res);
       const error = new Error(
         `Zulip API ${res.status} ${res.statusText}: ${detail || "unknown error"}`,
-      ) as Error & { status?: number };
+      ) as Error & { status?: number; retryAfterMs?: number };
       error.status = res.status;
+      error.retryAfterMs = resolveRetryAfterMs(res);
       throw error;
     }
     return (await res.json()) as T;
@@ -324,7 +328,7 @@ export async function fetchZulipMe(client: ZulipClient): Promise<ZulipUser> {
 
 export async function fetchZulipUser(client: ZulipClient, userId: string): Promise<ZulipUser> {
   const payload = await client.request<
-    ZulipApiResponse & { user?: { user_id: number; email?: string; full_name?: string } }
+    ZulipApiResponse & { user?: { user_id: number; email?: string; full_name?: string; is_bot?: boolean; is_active?: boolean; bot_owner_id?: number | null } }
   >(`/users/${userId}`);
   assertSuccess(payload, "Zulip /users/{id} failed");
   const user = payload.user;
@@ -332,6 +336,9 @@ export async function fetchZulipUser(client: ZulipClient, userId: string): Promi
     id: String(user?.user_id ?? userId),
     email: user?.email ?? null,
     full_name: user?.full_name ?? null,
+    ...(user?.is_bot === undefined ? {} : { is_bot: user.is_bot }),
+    ...(user?.is_active === undefined ? {} : { is_active: user.is_active }),
+    ...(user?.bot_owner_id === undefined ? {} : { bot_owner_id: user.bot_owner_id }),
   };
 }
 
@@ -388,6 +395,9 @@ export async function registerZulipQueue(
   const body = new URLSearchParams();
   const eventTypes = params.eventTypes ?? ["message"];
   body.set("event_types", JSON.stringify(eventTypes));
+  // Zulip requires notification_settings_null when capabilities are provided;
+  // false preserves its default notification format while enabling empty topics.
+  body.set("client_capabilities", JSON.stringify({ notification_settings_null: false, empty_topic_name: true }));
   body.set("event_queue_longpoll_timeout_seconds", "90");
   // A stream narrow excludes direct messages. Receive DMs plus subscribed/private and
   // public stream messages, then enforce configured stream and topic policy client-side.
@@ -517,6 +527,9 @@ export async function sendZulipStreamMessage(
     topic: params.topic,
     content: params.content,
   });
+  if (params.topic === "") {
+    body.set("allow_empty_topic_name", "true");
+  }
   if (params.widgetContent) {
     body.set("widget_content", JSON.stringify(params.widgetContent));
   }
@@ -977,7 +990,7 @@ export async function fetchZulipMessages(
 ): Promise<ZulipMessage[]> {
   const limit = Math.min(Math.max(1, params.limit ?? 50), 1000);
   const narrow = [{ operator: "stream", operand: params.stream } as Record<string, unknown>];
-  if (params.topic) {
+  if (params.topic !== undefined) {
     narrow.push({ operator: "topic", operand: params.topic });
   }
   const qs = new URLSearchParams({
@@ -985,6 +998,7 @@ export async function fetchZulipMessages(
     num_before: String(limit),
     num_after: "0",
     narrow: JSON.stringify(narrow),
+    allow_empty_topic_name: "true",
   });
   const payload = await client.request<ZulipApiResponse & { messages?: ZulipMessage[] }>(
     `/messages?${qs.toString()}`,
@@ -1007,7 +1021,7 @@ export async function searchZulipMessages(
   if (params.stream) {
     narrow.push({ operator: "stream", operand: params.stream });
   }
-  if (params.topic) {
+  if (params.topic !== undefined) {
     narrow.push({ operator: "topic", operand: params.topic });
   }
   const qs = new URLSearchParams({
@@ -1015,6 +1029,7 @@ export async function searchZulipMessages(
     num_before: String(limit),
     num_after: "0",
     narrow: JSON.stringify(narrow),
+    allow_empty_topic_name: "true",
   });
   const payload = await client.request<ZulipApiResponse & { messages?: ZulipMessage[] }>(
     `/messages?${qs.toString()}`,

@@ -21,25 +21,57 @@
 
 ---
 
+## Opt-in progress and native questions
+
+Progress is disabled unless `channels.zulip.streaming.mode` (or the selected
+account's mode) is explicitly `"progress"`. Merely setting `streaming.progress`
+options does not enable it. The public `thinkingPlaceholder` schema remains supported.
+
+| Configuration | Behavior |
+|---|---|
+| Neither enabled / progress off | No progress draft or legacy placeholder |
+| Legacy only, including explicit progress off | Legacy text-only final replaces the placeholder; media/questions delete it first |
+| Explicit progress only | One evolving run-local draft, deleted before normal final/question delivery |
+| Both enabled | Progress takes precedence; no legacy placeholder or legacy error message |
+
+Opt in with `"streaming": { "mode": "progress", "progress": { "toolProgress": true,
+"narration": true, "commandText": "status" } }`. Progress uses a four-line default
+summary and coalesces updates with per-run mutation spacing. Cancellation and
+errors close queued/in-flight progress work and attempt bounded cleanup. Permanent
+edit failure permits one replacement only after successful deletion; persistent
+delete failure can leave residue. This is not account-wide rate limiting.
+Legacy errors retain configured `errorText`; silent/cancelled turns remove the
+legacy placeholder. These behaviors do not imply guaranteed provider cleanup.
+
+Native questions support canonical single-choice desktop controls and constrained
+mobile numeric/text/list fallback. Controls are bound to account, sender and actual
+sent conversation, and intercepted before ordinary dispatch. Terminal replacement
+is sent before deleting the widget; failed deletion rolls back the replacement
+where possible. Bindings are bounded and in memory: expiry/restart do not guarantee
+visual cleanup or persistent recovery. Protected desktop/mobile/cleanup live
+acceptance remains a release gate for the exact release commit; the offline
+harness does not claim combined live acceptance or soak coverage.
+
 ## Installation
 
-This source supports OpenClaw **2026.7.1-2 through 2026.8.1**. The development
-dependency and minimum host version remain pinned to 2026.7.1-2, so the same
-plugin build can still be installed and tested on the current stable host.
+This release requires **OpenClaw >=2026.9.3** and **Node.js >=24.16.0 <25 or
+>=26.1.0**. The development SDK and lockfile are pinned to OpenClaw 2026.9.3,
+including its asynchronous outbound session-routing hook. Protected live
+acceptance for the exact release commit remains a release gate.
 
-Durable inbound handling uses the shared ingress queue API available in both
-supported versions. When upgrading an existing installation, pending records and
+Durable inbound handling uses the shared ingress queue API. When upgrading an existing installation,
+pending records and
 deduplication tombstones from the older keyed-store journal retain their original
 namespaces and retention. They are replayed or completed through the compatibility
 journal instead of being silently discarded.
 
-Outbound media loading uses the typed media-runtime SDK surface shared by both
-versions. Command access-group authorization remains enabled even if an older
+Outbound media loading uses the typed media-runtime SDK surface.
+Command access-group authorization remains enabled even if an older
 configuration still contains the removed `commands.useAccessGroups` toggle.
 
-OpenClaw 2026.8.1 compatibility does not require upgrading a running Gateway.
-Keep production on 2026.7.1-2 until the separate 2026.8.1 core startup regressions
-are resolved.
+Do not install this release on an older host or unsupported Node version. Validate
+host and runtime upgrades separately in an isolated environment before changing
+production.
 
 ### Via plugin manager (recommended)
 
@@ -57,7 +89,10 @@ cd openclaw-channel-zulip
 # 2. Install dependencies
 npm install
 
-# 3. Install as a local linked plugin
+# 3. Build the compiled entry points
+npm run build
+
+# 4. Install as a local linked plugin
 openclaw plugins install -l .
 ```
 
@@ -308,13 +343,68 @@ Topic-scoped conversations now resolve through the SDK session-conversation hook
 
 Basic approval authorization is now wired through `approvalCapability`, using normalized Zulip identities from `allowFrom` as the first pass.
 
+### Topic isolation and migration
+
+Each topic uses a versioned, opaque session identity scoped to the agent,
+configured account, normalized Zulip URL, bot email, and numeric stream ID.
+Unicode 16 lowercase matching preserves case aliases while keeping punctuation,
+spacing, and distinct Unicode sequences separate. `Release A` and `Release-A`
+no longer share history. Topic isolation applies even with `session.groupScope: "main"`.
+Stream bindings still select the agent; parent sessions never seed topic history.
+
+Wire topics remain readable and are stored separately from the session identity.
+Destinations and receipts use explicit target topic, inherited `threadId`, account
+`defaultTopic`, then `general`, in that order. Explicit empty topics stay empty;
+inbound messages without a subject are rejected. `replyToId` is a message ID.
+Empty topics require a Zulip server that supports them.
+
+The first message after upgrade starts a fresh v2 context. A rename or move uses
+the destination's context, and changing account, endpoint, or bot identity also
+starts fresh. No legacy history is imported automatically. Use the included
+[migration tool](docs/TOPIC_MIGRATION.md) to preview and archive old topic sessions
+through the gateway API while all Zulip accounts remain stopped. Archives follow
+ordinary OpenClaw history and retention policy.
+
+### Delivery fallback
+
+If OpenClaw loses a saved delivery route and supplies only an opaque Zulip session
+identity, the plugin forwards the message to the **selected bot's active owner**.
+It discovers the owner through the Zulip API; an email does not need to be hard-coded.
+The message includes a routing-failure note, the unresolved session target, and the
+selected account. Attachments remain attached, and receipts identify where each part
+actually went. The recovery delivery does not create or rebind a conversation session.
+
+If the owner cannot be resolved, an explicitly configured diagnostics topic can receive
+the message instead:
+
+```json
+{
+  "channels": {
+    "zulip": {
+      "routingDiagnosticsTarget": "stream:private-ops:openclaw-diagnostics"
+    }
+  }
+}
+```
+
+Choose a private stream/topic authorized to receive the original content. The setting
+also works under `accounts.<id>`. If neither owner nor diagnostics target is available,
+delivery fails with a configuration error; it never guesses a stream. If a recovered
+send itself fails, normal failure/retry behavior applies without redirecting it again.
+Ordinary destination errors and API send failures do not trigger this fallback.
+
+Some core session-key fallbacks omit the original account. In that case, OpenClaw's
+selected/default account supplies the bot whose owner is notified. The note makes
+clear that the original account and topic could not be recovered. This fallback is
+also useful for the core `sessions_send` lookup limit of 200 sessions; it does not
+remove that core limit.
+
 ### Direct-message isolation and rotation
 
 Zulip DMs always use an isolated OpenClaw session keyed by agent, channel,
 normalized account id, Zulip realm, bot identity, and sender identity. This
 remains enforced when the global `session.dmScope` is `main`; explicit identity
-links do not merge Zulip DM sessions. Stream and topic sessions retain their
-existing keys.
+links do not merge Zulip DM sessions.
 
 The isolated key format replaces older Zulip DM keys. After upgrading, each DM
 starts a fresh session on its first message. Existing transcripts remain on disk
@@ -335,7 +425,7 @@ Idle rotation is owned by OpenClaw. Configure its supported direct-session polic
 
 The host uses the last real interaction and considers the exact expiry timestamp
 fresh; the session rotates on the next millisecond. Restarts preserve that
-timestamp. OpenClaw 2026.7.1-2 through 2026.8.1 does not publish a turn-count
+timestamp. The supported host SDK does not publish a plugin-owned turn-count
 session-rotation API. The plugin therefore does not create parallel session state
 or approximate turn rotation. Turn-count rotation remains blocked on a public
 host policy/API.
@@ -377,6 +467,8 @@ If installed from local source:
 ```sh
 cd openclaw-channel-zulip
 git pull
+npm install
+npm run build
 openclaw gateway restart
 ```
 
@@ -384,7 +476,7 @@ openclaw gateway restart
 
 ## Continuous integration
 
-Pull requests and pushes to `main` run the release-blocking **CI** workflow on Node 22.19 and Node 24. Each run installs from `pnpm-lock.yaml` with `--frozen-lockfile`, builds, runs the full test suite, checks whitespace errors with `git diff --check`, packs the release artifact, installs it with the locked OpenClaw host in a clean temporary project, and imports its public package entry point. The workflow has read-only repository permissions and does not receive repository or Zulip secrets.
+Pull requests and pushes to `main` run the release-blocking **CI** workflow on Node 24.16 and Node 26.x, matching the supported runtime ranges. Each run installs from `pnpm-lock.yaml` with `--frozen-lockfile`, builds, runs the full test suite, checks whitespace errors with `git diff --check`, packs the release artifact, installs it with the locked OpenClaw host in a clean temporary project, and imports its public package entry point. The workflow has read-only repository permissions and does not receive repository or Zulip secrets.
 
 Release candidates also have a manual **Zulip live smoke (protected)** workflow.
 Its workflow definition can run only from `main`. By default it accepts a full

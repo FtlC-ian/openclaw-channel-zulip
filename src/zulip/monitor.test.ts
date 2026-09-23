@@ -1,6 +1,22 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildChannelInboundEventContext } from "openclaw/plugin-sdk/channel-inbound";
 import type { RuntimeEnv } from "../sdk.js";
+
+const questionRuntimeMocks = vi.hoisted(() => ({
+  registerChannelDelivery: vi.fn(),
+  resolveOption: vi.fn(),
+}));
+
+vi.mock("openclaw/plugin-sdk/question-gateway-runtime", () => ({
+  questionGatewayRuntime: {
+    readAskUserQuestionId: vi.fn(
+      (payload: { channelData?: { askUser?: { questionId?: string } } }) =>
+        payload.channelData?.askUser?.questionId,
+    ),
+    registerChannelDelivery: questionRuntimeMocks.registerChannelDelivery,
+    resolveOption: questionRuntimeMocks.resolveOption,
+  },
+}));
 
 const state = vi.hoisted(() => {
   const createMemoryKeyedStore = <T>(maxEntries = Number.MAX_SAFE_INTEGER) => {
@@ -117,8 +133,38 @@ const state = vi.hoisted(() => {
     };
   };
 
-  const createCore = () => ({
-    config: {
+  const createCore = () => {
+    const dispatchReplyWithBufferedBlockDispatcher = vi.fn(async () => {});
+    const dispatch = vi.fn(async ({
+      cfg,
+      route,
+      ctxPayload,
+      delivery,
+      dispatcherOptions,
+      replyPipeline,
+      replyOptions,
+    }: Record<string, any>) => ({
+      admission: { kind: "dispatch" },
+      dispatched: true,
+      ctxPayload,
+      routeSessionKey: route.sessionKey,
+      dispatchResult: await dispatchReplyWithBufferedBlockDispatcher({
+        ctx: ctxPayload,
+        cfg,
+        dispatcherOptions: {
+          ...replyPipeline,
+          onReplyStart: replyPipeline?.typingCallbacks?.onReplyStart,
+          onIdle: replyPipeline?.typingCallbacks?.onIdle,
+          onCleanup: replyPipeline?.typingCallbacks?.onCleanup,
+          ...dispatcherOptions,
+          deliver: delivery.deliver,
+          onError: delivery.onError,
+        },
+        replyOptions,
+      }),
+    }));
+    return {
+      config: {
       channels: {
         zulip: {},
       },
@@ -178,19 +224,21 @@ const state = vi.hoisted(() => {
       },
       inbound: {
         buildContext: vi.fn(),
+        dispatch,
       },
       reply: {
-        resolveHumanDelayConfig: vi.fn(() => undefined),
-        dispatchReplyWithBufferedBlockDispatcher: vi.fn(async () => {}),
+        dispatchReplyFromConfig: vi.fn(),
+        dispatchReplyWithBufferedBlockDispatcher,
       },
       session: {
-        updateLastRoute: vi.fn(async () => {}),
+        recordInboundSession: vi.fn(async () => {}),
       },
       pairing: {
         buildPairingReply: vi.fn(() => "pairing reply"),
       },
-    },
-  });
+      },
+    };
+  };
 
   return {
     createMemoryKeyedStore,
@@ -200,6 +248,7 @@ const state = vi.hoisted(() => {
     durableStores: new Map<string, ReturnType<typeof createMemoryKeyedStore>>(),
     durableQueues: new Map<string, ReturnType<typeof createMemoryIngressQueue>>(),
     pollResponses: [] as Array<Record<string, unknown>>,
+    nextQuestionMessageId: 59000,
     pairingAllowFrom: [] as string[],
     pairingUpsertError: undefined as Error | undefined,
     upsertPairingRequest: vi.fn(async () => ({ code: "123456", created: false })),
@@ -213,7 +262,14 @@ const state = vi.hoisted(() => {
     removeZulipReaction: vi.fn(async () => {}),
     updateZulipMessageFlags: vi.fn(async () => {}),
     sendMessageZulip: vi.fn(async () => ({ messageId: "outbound-1", channelId: "debbie" })),
-    client: { authHeader: "fake-auth" },
+    client: {
+      authHeader: "fake-auth",
+      baseUrl: "https://zulip.example.test",
+      fetchImpl: vi.fn(async (_url: string, _init?: RequestInit) => new Response("Unexpected offline request", { status: 400 })),
+      request: vi.fn(async (_path: string, _options?: { method?: string; body?: string }) => {
+        throw new Error("Unexpected offline API request");
+      }),
+    },
     botUser: {
       id: 999,
       email: "debbie-bot@zlp.pubnerd.app",
@@ -270,7 +326,8 @@ const fetchZulipStreamMock = vi.fn(async (_client: unknown, streamId: string) =>
   throw new Error(`unexpected stream metadata lookup: ${streamId}`);
 });
 
-vi.mock("./client.js", () => ({
+vi.mock("./client.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("./client.js")>(),
   createZulipClient: vi.fn(() => state.client),
   fetchZulipMe: vi.fn(async () => state.botUser),
   fetchZulipStream: fetchZulipStreamMock,
@@ -341,7 +398,6 @@ vi.mock("../sdk.js", async (importOriginal) => ({
 
 vi.mock("openclaw/plugin-sdk/channel-outbound", async (importOriginal) => ({
   ...await importOriginal<typeof import("openclaw/plugin-sdk/channel-outbound")>(),
-  createReplyPrefixOptions: vi.fn(() => ({ onModelSelected: vi.fn() })),
   createTypingCallbacks: typingCallbacksMock,
 }));
 
@@ -488,6 +544,8 @@ function enableDurableInboundJournal(
 }
 
 describe("monitorZulipProvider", () => {
+  afterEach(() => vi.useRealTimers());
+
   beforeEach(async () => {
     const { startZulipMonitorReactionLifecycles } = await import("./monitor.js");
     startZulipMonitorReactionLifecycles();
@@ -544,6 +602,780 @@ describe("monitorZulipProvider", () => {
     state.addZulipReaction.mockReset().mockResolvedValue(undefined);
     state.removeZulipReaction.mockReset().mockResolvedValue(undefined);
     typingCallbacksMock.mockClear();
+  });
+
+  it("dispatches an accepted inbound message through the channel-turn lifecycle", async () => {
+    state.pollResponses = [
+      {
+        result: "success",
+        events: [{ id: 1, type: "message", message: makeChannelMessage(9100001) }],
+      },
+    ];
+
+    await runMonitorOnce();
+
+    const dispatch = state.core.channel.inbound.dispatch;
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({
+      channel: "zulip",
+      accountId: "default",
+      route: expect.objectContaining({ agentId: "debbie" }),
+      record: expect.objectContaining({
+        updateLastRoute: expect.objectContaining({
+          channel: "zulip",
+          to: "stream:4:zulip-plugin-pr",
+          accountId: "default",
+          threadId: "zulip-plugin-pr",
+        }),
+      }),
+      delivery: expect.objectContaining({
+        deliver: expect.any(Function),
+        onError: expect.any(Function),
+      }),
+      replyPipeline: {
+        typingCallbacks: expect.objectContaining({
+          onReplyStart: expect.any(Function),
+          onIdle: expect.any(Function),
+        }),
+      },
+      dispatcherOptions: { propagateRetryableNoSendFailure: true },
+      replyOptions: expect.any(Object),
+      messageId: "9100001",
+    }));
+  });
+
+  it("emits bounded channel-turn lifecycle and result diagnostics", async () => {
+    const previous = process.env.ZULIP_CHANNEL_TURN_DIAGNOSTICS;
+    process.env.ZULIP_CHANNEL_TURN_DIAGNOSTICS = "1";
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    state.core.channel.inbound.dispatch.mockImplementationOnce(async (params: Record<string, any>) => {
+      params.log({
+        stage: "dispatch",
+        event: "warning",
+        channel: "zulip",
+        admission: "dispatch",
+        reason: "zero-count-visible-dispatch",
+        error: new Error("protected detail"),
+      });
+      return {
+        admission: { kind: "dispatch" },
+        dispatched: true,
+        ctxPayload: params.ctxPayload,
+        routeSessionKey: params.route.sessionKey,
+        dispatchResult: {
+          queuedFinal: false,
+          counts: { tool: 0, block: 0, final: 0 },
+          deferredToActiveRun: "protected-detail",
+          beforeAgentRunBlocked: true,
+        },
+      };
+    });
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 1, type: "message", message: makePrivateMessage(9100003) }],
+    }];
+
+    let output = "";
+    try {
+      await runMonitorOnce();
+      output = stderr.mock.calls.map(([chunk]) => String(chunk)).join("");
+    } finally {
+      stderr.mockRestore();
+      if (previous === undefined) delete process.env.ZULIP_CHANNEL_TURN_DIAGNOSTICS;
+      else process.env.ZULIP_CHANNEL_TURN_DIAGNOSTICS = previous;
+    }
+
+    expect(output).toContain(
+      "ZULIP_CHANNEL_TURN_DIAGNOSTIC stage=dispatch event=warning admission=dispatch reason=zero-count-visible-dispatch",
+    );
+    expect(output).toContain(
+      "ZULIP_CHANNEL_TURN_RESULT dispatched=true admission=dispatch reason=none tool=0 block=0 final=0",
+    );
+    expect(output).toContain("deferred=none");
+    expect(output).toContain("before_agent_run_blocked=true");
+    expect(output).not.toContain("protected detail");
+    expect(output).not.toContain("protected-detail");
+  });
+
+  it("keeps the raw topic and reply message ID in their SDK fields", async () => {
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 1, type: "message", message: {
+        ...makeChannelMessage(9100002), subject: "Release A / B",
+      } }],
+    }];
+
+    await runMonitorOnce();
+
+    expect(state.core.channel.inbound.buildContext).toHaveBeenCalledWith(expect.objectContaining({
+      conversation: expect.objectContaining({ threadId: "Release A / B" }),
+      reply: expect.objectContaining({ replyToId: "9100002", messageThreadId: "Release A / B" }),
+    }));
+    const ctx = state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mock.calls[0]?.[0]?.ctx;
+    expect(ctx).toMatchObject({ ReplyToId: "9100002", MessageThreadId: "Release A / B" });
+  });
+
+  it("dispatches colliding legacy slugs and the empty topic into separate fresh sessions", async () => {
+    state.account.config.defaultTopic = "general";
+    const topics = ["Release A", "Release-A", "", "general"];
+    state.autoAbort = false;
+    let turns = 0;
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async () => {
+      if (++turns === topics.length) state.abortController?.abort();
+      return { counts: { final: 0 } };
+    });
+    state.pollResponses = [{
+      result: "success",
+      events: topics.map((subject, index) => ({
+        id: index + 1, type: "message", message: { ...makeChannelMessage(95000 + index), subject },
+      })),
+    }];
+    await runMonitorOnce();
+
+    const contexts = state.core.channel.inbound.buildContext.mock.calls.map(([ctx]) => ctx);
+    expect(contexts).toHaveLength(4);
+    expect(new Set(contexts.map((ctx) => ctx.route.routeSessionKey)).size).toBe(4);
+    contexts.forEach((ctx, index) => {
+      expect(ctx.route.parentSessionKey).toBeUndefined();
+      expect(ctx.reply).toMatchObject({ to: `stream:4:${topics[index]}`, messageThreadId: topics[index] });
+      expect(ctx.route.routeSessionKey).toMatch(/^agent:debbie:zulip:channel:4:topic:v2:[0-9a-f]{64}$/);
+    });
+    const dispatched = state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mock.calls.map(([params]) => params.ctx);
+    expect(dispatched.map((ctx) => ctx.SessionKey)).toEqual(contexts.map((ctx) => ctx.route.routeSessionKey));
+    expect(dispatched.every((ctx) => ctx.ParentSessionKey === undefined)).toBe(true);
+  });
+
+  it.each([null, undefined])("rejects a missing observed topic (%j) before accepting or downloading", async (subject) => {
+    enableDurableInboundJournal();
+    state.extractedUploadUrls = ["https://zulip.example.test/user_uploads/file.txt"];
+    state.pollResponses = [{ result: "success", events: [{
+      id: 1, type: "message", message: { ...makeChannelMessage(95010), subject },
+    }] }];
+    await runMonitorOnce();
+    expect(downloadZulipUploadMock).not.toHaveBeenCalled();
+    expect(state.core.channel.inbound.buildContext).not.toHaveBeenCalled();
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+  });
+
+  it("coalesces commentary and narration chunks in the task-progress draft before the final reply", async () => {
+    vi.useFakeTimers();
+    state.autoAbort = false;
+    try {
+    state.account.config.streaming = {
+      mode: "progress",
+      progress: { commentary: true, narration: true, toolProgress: true },
+    };
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
+      async ({ dispatcherOptions, replyOptions }) => {
+        expect(replyOptions.reasoningPayloadsEnabled).toBe(true);
+        expect(replyOptions.commentaryPayloadsEnabled).toBeUndefined();
+        expect(replyOptions.shouldDeliverCommentaryPayloads).toBeUndefined();
+        expect(replyOptions.onVerboseProgressVisibility).toBeUndefined();
+        expect(replyOptions.progressPreambleEnabled).toBe(true);
+        expect(replyOptions.suppressDefaultToolProgressMessages).toBe(true);
+        await replyOptions.onPlanUpdate?.({
+          phase: "update",
+          explanation: "Preparing the change",
+          steps: [{ step: "Inspect source", status: "in_progress" }],
+        });
+        await replyOptions.onItemEvent?.({
+          itemId: "preamble-1",
+          kind: "preamble",
+          progressText: "Inspecting the source",
+        });
+        await replyOptions.onItemEvent?.({
+          itemId: "commentary-2",
+          kind: "commentary",
+          progressText: "Applying the change",
+        });
+        await replyOptions.onReasoningStream?.({ text: "Checking the implementation" });
+        await replyOptions.onNarrationUpdate?.({ text: "Reviewing the change" });
+        await replyOptions.onNarrationUpdate?.({ text: "Verifying the change" });
+        await replyOptions.onToolStart?.({ itemId: "tool-1", name: "exec", phase: "start" });
+        await replyOptions.onCommandOutput?.({
+          itemId: "tool-1",
+          phase: "end",
+          title: "Run verification",
+          output: "ok",
+        });
+        await replyOptions.onPatchSummary?.({
+          itemId: "patch-1",
+          phase: "end",
+          title: "Apply patch",
+          modified: ["src/a.ts"],
+        });
+        await replyOptions.onApprovalEvent?.({
+          approvalId: "approval-1",
+          phase: "requested",
+          title: "Approve change",
+        });
+        await replyOptions.onCompactionStart?.();
+        await replyOptions.onCompactionEnd?.();
+        await vi.advanceTimersByTimeAsync(1_000);
+        await dispatcherOptions.deliver({ text: "Final answer" });
+        state.abortController?.abort();
+        return { counts: { final: 1 } };
+      },
+    );
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 1, type: "message", message: makeChannelMessage(5002) }],
+    }];
+
+    await runMonitorOnce();
+
+    expect(state.editZulipMessage).toHaveBeenCalled();
+    expect(state.editZulipMessage).toHaveBeenLastCalledWith(
+      state.client,
+      expect.objectContaining({
+        messageId: "outbound-1",
+        content: [
+          "Verifying the change",
+          "",
+          "💬 Applying the change",
+          "Checking the implementation",
+          "Approval required: Approve change",
+          "In progress: Inspect source",
+        ].join("\n"),
+      }),
+    );
+    expect(state.deleteZulipMessage).toHaveBeenCalledWith(state.client, { messageId: "outbound-1" });
+    expect(state.sendMessageZulip).toHaveBeenLastCalledWith(
+      "stream:4:zulip-plugin-pr",
+      "Final answer",
+      expect.objectContaining({ topic: "zulip-plugin-pr" }),
+    );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("rotates a permanent task-progress edit failure at most once and removes every draft before the final reply", async () => {
+    vi.useFakeTimers();
+    state.autoAbort = false;
+    try {
+    state.account.config.streaming = {
+      mode: "progress",
+      progress: { commentary: true, narration: true },
+    };
+    state.editZulipMessage.mockRejectedValue(new Error("synthetic edit failure"));
+    state.sendMessageZulip
+      .mockResolvedValueOnce({ messageId: "progress-1", channelId: "debbie" })
+      .mockResolvedValueOnce({ messageId: "progress-2", channelId: "debbie" })
+      .mockResolvedValueOnce({ messageId: "final-1", channelId: "debbie" });
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
+      async ({ dispatcherOptions, replyOptions }) => {
+        await replyOptions.onPlanUpdate?.({
+          phase: "update",
+          explanation: "Inspecting the implementation",
+          steps: [{ step: "Inspect source", status: "in_progress" }],
+        });
+        await replyOptions.onNarrationUpdate?.({ text: "Applying the change" });
+        await vi.advanceTimersByTimeAsync(1_000);
+        await replyOptions.onNarrationUpdate?.({ text: "Verifying the change" });
+        await vi.advanceTimersByTimeAsync(1_000);
+        await dispatcherOptions.deliver({ text: "Final answer" });
+        state.abortController?.abort();
+        return { counts: { final: 1 } };
+      },
+    );
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 1, type: "message", message: makeChannelMessage(5003) }],
+    }];
+
+    await runMonitorOnce();
+
+    expect(state.editZulipMessage).toHaveBeenNthCalledWith(
+      1,
+      state.client,
+      expect.objectContaining({ messageId: "progress-1" }),
+    );
+    expect(state.editZulipMessage).toHaveBeenNthCalledWith(
+      2,
+      state.client,
+      expect.objectContaining({ messageId: "progress-2" }),
+    );
+    expect(state.sendMessageZulip).toHaveBeenCalledTimes(3);
+    expect(state.deleteZulipMessage).toHaveBeenCalledWith(state.client, { messageId: "progress-1" });
+    expect(state.deleteZulipMessage).toHaveBeenCalledWith(state.client, { messageId: "progress-2" });
+    expect(state.sendMessageZulip).toHaveBeenLastCalledWith(
+      "stream:4:zulip-plugin-pr",
+      "Final answer",
+      expect.objectContaining({ topic: "zulip-plugin-pr" }),
+    );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retains the existing draft on a 429 and retries only the latest progress text", async () => {
+    vi.useFakeTimers();
+    state.autoAbort = false;
+    try {
+      state.account.config.streaming = {
+        mode: "progress",
+        progress: { commentary: true, narration: true },
+      };
+      state.editZulipMessage
+        .mockRejectedValueOnce(Object.assign(new Error("rate limited"), { status: 429, retryAfterMs: 5_000 }))
+        .mockResolvedValueOnce(undefined);
+      state.sendMessageZulip
+        .mockResolvedValueOnce({ messageId: "progress-1", channelId: "debbie" })
+        .mockResolvedValueOnce({ messageId: "final-1", channelId: "debbie" });
+      state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
+        async ({ dispatcherOptions, replyOptions }) => {
+          await replyOptions.onPlanUpdate?.({
+            phase: "update",
+            explanation: "Initial progress",
+            steps: [{ step: "Inspect source", status: "in_progress" }],
+          });
+          await replyOptions.onNarrationUpdate?.({ text: "Stale progress" });
+          await vi.advanceTimersByTimeAsync(1_000);
+          await replyOptions.onNarrationUpdate?.({ text: "Latest progress" });
+          expect(state.deleteZulipMessage).not.toHaveBeenCalled();
+          expect(state.sendMessageZulip).toHaveBeenCalledTimes(1);
+          await vi.advanceTimersByTimeAsync(5_000);
+          expect(state.editZulipMessage).toHaveBeenCalledTimes(2);
+          expect(state.editZulipMessage).toHaveBeenLastCalledWith(
+            state.client,
+            expect.objectContaining({ messageId: "progress-1", content: expect.stringContaining("Latest progress") }),
+          );
+          expect(state.deleteZulipMessage).not.toHaveBeenCalled();
+          expect(state.sendMessageZulip).toHaveBeenCalledTimes(1);
+          await dispatcherOptions.deliver({ text: "Final answer" });
+          state.abortController?.abort();
+          return { counts: { final: 1 } };
+        },
+      );
+      state.pollResponses = [{
+        result: "success",
+        events: [{ id: 1, type: "message", message: makeChannelMessage(5004) }],
+      }];
+
+      await runMonitorOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("coalesces rapid progress updates so the latest render wins after one interval", async () => {
+    vi.useFakeTimers();
+    state.autoAbort = false;
+    try {
+      state.account.config.streaming = {
+        mode: "progress",
+        progress: { commentary: true, narration: true },
+      };
+      state.sendMessageZulip
+        .mockResolvedValueOnce({ messageId: "progress-1", channelId: "debbie" })
+        .mockResolvedValueOnce({ messageId: "final-1", channelId: "debbie" });
+      state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
+        async ({ dispatcherOptions, replyOptions }) => {
+          await replyOptions.onPlanUpdate?.({
+            phase: "update",
+            explanation: "Initial progress",
+            steps: [{ step: "Inspect source", status: "in_progress" }],
+          });
+          await replyOptions.onNarrationUpdate?.({ text: "First rapid update" });
+          await replyOptions.onNarrationUpdate?.({ text: "Latest rapid update" });
+          await vi.advanceTimersByTimeAsync(999);
+          expect(state.editZulipMessage).not.toHaveBeenCalled();
+          await vi.advanceTimersByTimeAsync(1);
+          expect(state.editZulipMessage).toHaveBeenCalledTimes(1);
+          expect(state.editZulipMessage).toHaveBeenLastCalledWith(
+            state.client,
+            expect.objectContaining({ content: expect.stringContaining("Latest rapid update") }),
+          );
+          await dispatcherOptions.deliver({ text: "Final answer" });
+          state.abortController?.abort();
+          return { counts: { final: 1 } };
+        },
+      );
+      state.pollResponses = [{
+        result: "success",
+        events: [{ id: 1, type: "message", message: makeChannelMessage(5005) }],
+      }];
+
+      await runMonitorOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not recreate a task-progress draft after cleanup begins during an in-flight edit", async () => {
+    vi.useFakeTimers();
+    state.autoAbort = false;
+    try {
+      state.account.config.streaming = {
+        mode: "progress",
+        progress: { commentary: true, narration: true },
+      };
+      let releaseEdit: (() => void) | undefined;
+      const editStarted = new Promise<void>((resolve) => {
+        state.editZulipMessage.mockImplementationOnce(async () => {
+          resolve();
+          await new Promise<void>((release) => {
+            releaseEdit = release;
+          });
+        });
+      });
+      state.sendMessageZulip
+        .mockResolvedValueOnce({ messageId: "progress-1", channelId: "debbie" })
+        .mockResolvedValueOnce({ messageId: "final-1", channelId: "debbie" });
+      state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
+        async ({ dispatcherOptions, replyOptions }) => {
+          await replyOptions.onPlanUpdate?.({
+            phase: "update",
+            explanation: "Initial progress",
+            steps: [{ step: "Inspect source", status: "in_progress" }],
+          });
+          await vi.advanceTimersByTimeAsync(1_000);
+          const update = replyOptions.onNarrationUpdate?.({ text: "In-flight progress" });
+          await editStarted;
+          const delivery = dispatcherOptions.deliver({ text: "Final answer" });
+          releaseEdit?.();
+          await update;
+          await delivery;
+          expect(state.editZulipMessage).toHaveBeenCalledTimes(1);
+          expect(state.sendMessageZulip).toHaveBeenCalledTimes(2);
+          state.abortController?.abort();
+          return { counts: { final: 1 } };
+        },
+      );
+      state.pollResponses = [{
+        result: "success",
+        events: [{ id: 1, type: "message", message: makeChannelMessage(5006) }],
+      }];
+
+      await runMonitorOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retries transient task-progress deletion a bounded number of times", async () => {
+    vi.useFakeTimers();
+    state.autoAbort = false;
+    try {
+      state.account.config.streaming = {
+        mode: "progress",
+        progress: { commentary: true },
+      };
+      state.deleteZulipMessage
+        .mockRejectedValueOnce(Object.assign(new Error("temporary delete failure"), { status: 503 }))
+        .mockRejectedValueOnce(Object.assign(new Error("temporary delete failure"), { status: 503 }))
+        .mockResolvedValueOnce(undefined);
+      state.sendMessageZulip
+        .mockResolvedValueOnce({ messageId: "progress-1", channelId: "debbie" })
+        .mockResolvedValueOnce({ messageId: "final-1", channelId: "debbie" });
+      state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
+        async ({ dispatcherOptions, replyOptions }) => {
+          await replyOptions.onApprovalEvent?.({
+            approvalId: "approval-1",
+            phase: "requested",
+            title: "Inspect source",
+          });
+          const delivery = dispatcherOptions.deliver({ text: "Final answer" });
+          await vi.advanceTimersByTimeAsync(0);
+          expect(state.deleteZulipMessage).toHaveBeenCalledTimes(1);
+          await vi.advanceTimersByTimeAsync(100);
+          expect(state.deleteZulipMessage).toHaveBeenCalledTimes(2);
+          await vi.advanceTimersByTimeAsync(200);
+          await delivery;
+          expect(state.deleteZulipMessage).toHaveBeenCalledTimes(3);
+          state.abortController?.abort();
+          return { counts: { final: 1 } };
+        },
+      );
+      state.pollResponses = [{
+        result: "success",
+        events: [{ id: 1, type: "message", message: makeChannelMessage(5007) }],
+      }];
+
+      await runMonitorOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("backs off repeated edit retries and resets the delay after a successful edit", async () => {
+    vi.useFakeTimers();
+    state.autoAbort = false;
+    try {
+      state.account.config.streaming = {
+        mode: "progress",
+        progress: { commentary: true, narration: true },
+      };
+      state.editZulipMessage
+        .mockRejectedValueOnce(Object.assign(new Error("temporary edit failure"), { status: 503 }))
+        .mockRejectedValueOnce(Object.assign(new Error("temporary edit failure"), { status: 503 }))
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(Object.assign(new Error("temporary edit failure"), { status: 503 }));
+      state.sendMessageZulip
+        .mockResolvedValueOnce({ messageId: "progress-1", channelId: "debbie" })
+        .mockResolvedValueOnce({ messageId: "final-1", channelId: "debbie" });
+      state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
+        async ({ dispatcherOptions, replyOptions }) => {
+          await replyOptions.onPlanUpdate?.({
+            phase: "update",
+            explanation: "Initial progress",
+            steps: [{ step: "Inspect source", status: "in_progress" }],
+          });
+          await vi.advanceTimersByTimeAsync(1_000);
+          await replyOptions.onNarrationUpdate?.({ text: "Retry one" });
+          expect(state.editZulipMessage).toHaveBeenCalledTimes(1);
+          await vi.advanceTimersByTimeAsync(999);
+          expect(state.editZulipMessage).toHaveBeenCalledTimes(1);
+          await vi.advanceTimersByTimeAsync(1);
+          expect(state.editZulipMessage).toHaveBeenCalledTimes(2);
+          await vi.advanceTimersByTimeAsync(1_999);
+          expect(state.editZulipMessage).toHaveBeenCalledTimes(2);
+          await vi.advanceTimersByTimeAsync(1);
+          expect(state.editZulipMessage).toHaveBeenCalledTimes(3);
+          await replyOptions.onNarrationUpdate?.({ text: "Retry after success" });
+          await vi.advanceTimersByTimeAsync(1_000);
+          expect(state.editZulipMessage).toHaveBeenCalledTimes(4);
+          await dispatcherOptions.deliver({ text: "Final answer" });
+          state.abortController?.abort();
+          return { counts: { final: 1 } };
+        },
+      );
+      state.pollResponses = [{
+        result: "success",
+        events: [{ id: 1, type: "message", message: makeChannelMessage(5008) }],
+      }];
+
+      await runMonitorOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("honors Retry-After before retrying task-progress deletion", async () => {
+    vi.useFakeTimers();
+    state.autoAbort = false;
+    try {
+      state.account.config.streaming = {
+        mode: "progress",
+        progress: { commentary: true },
+      };
+      state.deleteZulipMessage
+        .mockRejectedValueOnce(Object.assign(new Error("rate limited"), { status: 429, retryAfterMs: 500 }))
+        .mockResolvedValueOnce(undefined);
+      state.sendMessageZulip
+        .mockResolvedValueOnce({ messageId: "progress-1", channelId: "debbie" })
+        .mockResolvedValueOnce({ messageId: "final-1", channelId: "debbie" });
+      state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
+        async ({ dispatcherOptions, replyOptions }) => {
+          await replyOptions.onApprovalEvent?.({
+            approvalId: "approval-1",
+            phase: "requested",
+            title: "Inspect source",
+          });
+          const delivery = dispatcherOptions.deliver({ text: "Final answer" });
+          await vi.advanceTimersByTimeAsync(0);
+          expect(state.deleteZulipMessage).toHaveBeenCalledTimes(1);
+          await vi.advanceTimersByTimeAsync(499);
+          expect(state.deleteZulipMessage).toHaveBeenCalledTimes(1);
+          await vi.advanceTimersByTimeAsync(1);
+          await delivery;
+          expect(state.deleteZulipMessage).toHaveBeenCalledTimes(2);
+          state.abortController?.abort();
+          return { counts: { final: 1 } };
+        },
+      );
+      state.pollResponses = [{
+        result: "success",
+        events: [{ id: 1, type: "message", message: makeChannelMessage(5009) }],
+      }];
+
+      await runMonitorOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not retry a permanent task-progress delete failure", async () => {
+    vi.useFakeTimers();
+    state.autoAbort = false;
+    try {
+      state.account.config.streaming = {
+        mode: "progress",
+        progress: { commentary: true },
+      };
+      state.deleteZulipMessage.mockRejectedValueOnce(
+        Object.assign(new Error("not allowed"), { status: 403 }),
+      );
+      state.sendMessageZulip
+        .mockResolvedValueOnce({ messageId: "progress-1", channelId: "debbie" })
+        .mockResolvedValueOnce({ messageId: "final-1", channelId: "debbie" });
+      state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
+        async ({ dispatcherOptions, replyOptions }) => {
+          await replyOptions.onApprovalEvent?.({
+            approvalId: "approval-1",
+            phase: "requested",
+            title: "Inspect source",
+          });
+          await dispatcherOptions.deliver({ text: "Final answer" });
+          expect(state.deleteZulipMessage).toHaveBeenCalledTimes(1);
+          state.abortController?.abort();
+          return { counts: { final: 1 } };
+        },
+      );
+      state.pollResponses = [{
+        result: "success",
+        events: [{ id: 1, type: "message", message: makeChannelMessage(5010) }],
+      }];
+
+      await runMonitorOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    { name: "off", streaming: { mode: "off" }, legacy: false, progress: false },
+    { name: "options without mode", streaming: { progress: { narration: true } }, legacy: false, progress: false },
+    { name: "legacy only", streaming: { mode: "off" }, legacy: true, progress: false },
+    { name: "legacy with progress options but no mode", streaming: { progress: { narration: true } }, legacy: true, progress: false },
+    { name: "progress only", streaming: { mode: "progress" }, legacy: false, progress: true },
+    { name: "both enabled", streaming: { mode: "progress" }, legacy: true, progress: true },
+  ])("combined feedback precedence: $name", async ({ name, streaming, legacy, progress }) => {
+    state.account.config.streaming = streaming;
+    state.account.config.thinkingPlaceholder = { enabled: legacy, text: "Legacy draft" };
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
+      async ({ dispatcherOptions, replyOptions }) => {
+        expect(replyOptions.progressPreambleEnabled).toBe(progress ? true : undefined);
+        await replyOptions.onApprovalEvent?.({ approvalId: "combined", phase: "requested", title: "Inspect source" });
+        await dispatcherOptions.deliver({ text: "Final answer" });
+        state.abortController?.abort();
+        return { counts: { final: 1 } };
+      },
+    );
+    const ids = ["off", "options without mode", "legacy only", "legacy with progress options but no mode", "progress only", "both enabled"];
+    state.pollResponses = [{ result: "success", events: [{ id: 1, type: "message", message: makeChannelMessage(9410 + ids.indexOf(name)) }] }];
+    await runMonitorOnce();
+    const texts = state.sendMessageZulip.mock.calls.map((call) => call[1]);
+    expect(texts.includes("Legacy draft")).toBe(legacy && !progress);
+    expect(texts).toHaveLength(progress ? 2 : 1);
+    if (legacy && !progress) {
+      expect(state.editZulipMessage).toHaveBeenCalledWith(state.client, { messageId: "outbound-1", content: "Final answer" });
+    } else {
+      expect(texts.at(-1)).toBe("Final answer");
+    }
+    if (progress) {
+      expect(state.deleteZulipMessage).toHaveBeenCalledWith(state.client, { messageId: "outbound-1" });
+      expect(state.deleteZulipMessage.mock.invocationCallOrder[0]).toBeLessThan(state.sendMessageZulip.mock.invocationCallOrder[1]);
+    }
+  });
+
+  it.each(["error", "cancel", "silent"])("cleans progress with both configured on %s without legacy error feedback", async (outcome) => {
+    state.autoAbort = false;
+    state.account.config.streaming = { mode: "progress" };
+    state.account.config.thinkingPlaceholder = { enabled: true, text: "Legacy draft", errorText: "Legacy error" };
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
+      async ({ replyOptions }) => {
+        await replyOptions.onApprovalEvent?.({ approvalId: "combined", phase: "requested", title: "Inspect source" });
+        if (outcome === "cancel") state.abortController?.abort();
+        if (outcome === "error") throw new Error("synthetic combined dispatch failure");
+        return { counts: { final: 0 } };
+      },
+    );
+    state.pollResponses = [{ result: "success", events: [{ id: 1, type: "message", message: makeChannelMessage(9420 + ["error", "cancel", "silent"].indexOf(outcome)) }] }];
+    state.autoAbort = true;
+    await runMonitorOnce();
+    expect(state.sendMessageZulip).toHaveBeenCalledTimes(1);
+    expect(state.sendMessageZulip.mock.calls[0][1]).not.toMatch(/Legacy/);
+    expect(state.deleteZulipMessage).toHaveBeenCalledWith(state.client, { messageId: "outbound-1" });
+    expect(state.editZulipMessage).not.toHaveBeenCalled();
+  });
+
+  it("cleans progress before question delivery while preserving sender and inbound conversation context", async () => {
+    const { getZulipQuestionDeliveryContext } = await import("./question-zform.js");
+    state.autoAbort = true;
+    state.account.config.streaming = { mode: "progress" };
+    state.account.config.thinkingPlaceholder = { enabled: true };
+    const question = { text: "Choose one", channelData: { askUser: { questionId: "ask_0123456789abcdef0123456789abcdef" } } };
+    let deliveryContext: unknown;
+    let questionDelivered = false;
+    state.sendMessageZulip.mockImplementation(async (_to, _text, options) => {
+      if (options.channelData) {
+        deliveryContext = getZulipQuestionDeliveryContext();
+      }
+      return { messageId: options.channelData ? "question-1" : "progress-1", channelId: "debbie" };
+    });
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
+      async ({ dispatcherOptions, replyOptions }) => {
+        await replyOptions.onApprovalEvent?.({ approvalId: "combined", phase: "requested", title: "Inspect source" });
+        await dispatcherOptions.deliver(question);
+        questionDelivered = true;
+        await replyOptions.onToolStart?.({ name: "exec", phase: "end" });
+        state.abortController?.abort();
+        return { counts: { final: 1 } };
+      },
+    );
+    state.pollResponses = [{ result: "success", events: [{ id: 1, type: "message", message: makeChannelMessage(9403) }] }];
+    await runMonitorOnce();
+    expect(state.sendMessageZulip).toHaveBeenCalledTimes(2);
+    expect(state.deleteZulipMessage.mock.calls.every((call) => call[1].messageId === "progress-1")).toBe(true);
+    expect(questionDelivered).toBe(true);
+    expect(deliveryContext).toEqual({
+      authorizedSenderId: "user8@zlp.pubnerd.app",
+      conversation: { kind: "stream", stream: "4", topic: "zulip-plugin-pr" },
+    });
+    expect(state.deleteZulipMessage).toHaveBeenCalledWith(state.client, { messageId: "progress-1" });
+    expect(state.deleteZulipMessage.mock.invocationCallOrder[0]).toBeLessThan(state.sendMessageZulip.mock.invocationCallOrder[1]);
+    expect(getZulipQuestionDeliveryContext()).toBeUndefined();
+  });
+
+  it("keeps concurrent progress ownership separate when one run cancels and the other delivers a question", async () => {
+    state.autoAbort = false;
+    state.account.config.streaming = { mode: "progress" };
+    state.account.config.thinkingPlaceholder = { enabled: true };
+    let releaseBoth!: () => void;
+    const bothStarted = new Promise<void>((resolve) => { releaseBoth = resolve; });
+    let releaseCancelled!: () => void;
+    const cancelledCleanup = new Promise<void>((resolve) => { releaseCancelled = resolve; });
+    let started = 0;
+    let dispatches = 0;
+    let remainingRunDelivered = false;
+    let deletedAtCancellation: string[] = [];
+    state.sendMessageZulip.mockImplementation(async (_to, _text, options) => ({
+      messageId: options.channelData ? "question-b" : `progress-${options.topic}`,
+      channelId: "debbie",
+    }));
+    state.deleteZulipMessage.mockImplementation(async (_client, { messageId }) => {
+      if (messageId === "progress-owner-a") {
+        deletedAtCancellation = state.deleteZulipMessage.mock.calls.map((call) => call[1].messageId);
+        releaseCancelled();
+      }
+    });
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
+      async ({ dispatcherOptions, replyOptions }) => {
+        const ordinal = dispatches++;
+        await replyOptions.onApprovalEvent?.({ approvalId: `approval-${ordinal}`, phase: "requested", title: "Inspect source" });
+        if (++started === 2) releaseBoth();
+        await bothStarted;
+        if (ordinal === 0) throw Object.assign(new Error("cancel first run"), { name: "AbortError" });
+        await cancelledCleanup;
+        await dispatcherOptions.deliver({ text: "Choose one", channelData: { askUser: { questionId: "ask_0123456789abcdef0123456789abcdef" } } });
+        remainingRunDelivered = true;
+        state.abortController?.abort();
+        return { counts: { final: 1 } };
+      },
+    );
+    state.pollResponses = [{ result: "success", events: [
+      { id: 1, type: "message", message: { ...makeChannelMessage(9430), subject: "owner-a" } },
+      { id: 2, type: "message", message: { ...makeChannelMessage(9431), subject: "owner-b" } },
+    ] }];
+    await runMonitorOnce();
+    expect(dispatches).toBe(2);
+    expect(remainingRunDelivered).toBe(true);
+    expect(deletedAtCancellation).toEqual(["progress-owner-a"]);
+    expect(state.deleteZulipMessage.mock.calls.map((call) => call[1].messageId)).toEqual(["progress-owner-a", "progress-owner-b"]);
+    expect(state.sendMessageZulip).toHaveBeenCalledTimes(3);
+    expect(state.sendMessageZulip.mock.calls[2][2]).toMatchObject({ topic: "owner-b", channelData: { askUser: expect.anything() } });
   });
 
   it("wires typing idle cleanup into the reply dispatcher", async () => {
@@ -1063,9 +1895,9 @@ describe("monitorZulipProvider", () => {
 
     await runMonitorOnce();
 
-    expect(state.sendMessageZulip).toHaveBeenNthCalledWith(1, "stream:debbie:zulip-plugin-pr", "Thinking…", expect.objectContaining({ topic: "zulip-plugin-pr" }));
+    expect(state.sendMessageZulip).toHaveBeenNthCalledWith(1, "stream:4:zulip-plugin-pr", "Thinking…", expect.objectContaining({ topic: "zulip-plugin-pr" }));
     expect(state.editZulipMessage).toHaveBeenCalledWith(state.client, { messageId: "outbound-1", content: "first chunk" });
-    expect(state.sendMessageZulip).toHaveBeenNthCalledWith(2, "stream:debbie:zulip-plugin-pr", "second chunk", expect.any(Object));
+    expect(state.sendMessageZulip).toHaveBeenNthCalledWith(2, "stream:4:zulip-plugin-pr", "second chunk", expect.any(Object));
     expect(state.deleteZulipMessage).not.toHaveBeenCalled();
   });
 
@@ -1111,7 +1943,7 @@ describe("monitorZulipProvider", () => {
     await runMonitorOnce();
 
     expect(state.deleteZulipMessage).toHaveBeenCalledWith(state.client, { messageId: "outbound-1" });
-    expect(state.sendMessageZulip).toHaveBeenNthCalledWith(2, "stream:debbie:zulip-plugin-pr", "", expect.objectContaining({ presentation: expect.any(Object) }));
+    expect(state.sendMessageZulip).toHaveBeenNthCalledWith(2, "stream:4:zulip-plugin-pr", "", expect.objectContaining({ presentation: expect.any(Object) }));
   });
 
   it("removes the placeholder before a media-only reply", async () => {
@@ -1196,7 +2028,7 @@ describe("monitorZulipProvider", () => {
     expect(state.sendMessageZulip).toHaveBeenCalledTimes(3);
     expect(state.sendMessageZulip).toHaveBeenNthCalledWith(
       3,
-      "stream:debbie:zulip-plugin-pr",
+      "stream:4:zulip-plugin-pr",
       "Turn failed.",
       expect.objectContaining({ topic: "zulip-plugin-pr" }),
     );
@@ -1264,13 +2096,13 @@ describe("monitorZulipProvider", () => {
     });
     expect(state.sendMessageZulip).toHaveBeenNthCalledWith(
       2,
-      "stream:debbie:zulip-plugin-pr",
+      "stream:4:zulip-plugin-pr",
       expectedFirstReply,
       expect.objectContaining(expectedFirstReplyOptions),
     );
     expect(state.sendMessageZulip).toHaveBeenCalledTimes(3);
     expect(state.sendMessageZulip).not.toHaveBeenCalledWith(
-      "stream:debbie:zulip-plugin-pr",
+      "stream:4:zulip-plugin-pr",
       "Turn failed.",
       expect.any(Object),
     );
@@ -1302,7 +2134,7 @@ describe("monitorZulipProvider", () => {
     await runMonitorOnce();
 
     expect(state.sendMessageZulip).toHaveBeenCalledTimes(2);
-    expect(state.sendMessageZulip).toHaveBeenNthCalledWith(2, "stream:debbie:zulip-plugin-pr", "actual reply", expect.any(Object));
+    expect(state.sendMessageZulip).toHaveBeenNthCalledWith(2, "stream:4:zulip-plugin-pr", "actual reply", expect.any(Object));
     expect(state.editZulipMessage).not.toHaveBeenCalled();
     expect(state.deleteZulipMessage).not.toHaveBeenCalled();
   });
@@ -1318,7 +2150,7 @@ describe("monitorZulipProvider", () => {
     await runMonitorOnce();
 
     expect(state.deleteZulipMessage).toHaveBeenCalledWith(state.client, { messageId: "outbound-1" });
-    expect(state.sendMessageZulip).toHaveBeenNthCalledWith(2, "stream:debbie:zulip-plugin-pr", "actual reply", expect.any(Object));
+    expect(state.sendMessageZulip).toHaveBeenNthCalledWith(2, "stream:4:zulip-plugin-pr", "actual reply", expect.any(Object));
   });
 
   it("forwards presentation and channel data only with the first text chunk", async () => {
@@ -1338,11 +2170,11 @@ describe("monitorZulipProvider", () => {
     await runMonitorOnce();
 
     expect(sendMessageZulipMock).toHaveBeenCalledTimes(2);
-    expect(sendMessageZulipMock).toHaveBeenNthCalledWith(1, "stream:debbie:zulip-plugin-pr", "first chunk", expect.objectContaining({
+    expect(sendMessageZulipMock).toHaveBeenNthCalledWith(1, "stream:4:zulip-plugin-pr", "first chunk", expect.objectContaining({
       presentation: expect.any(Object),
       channelData: { zulip: { widgetContent: { widget_type: "zform" } } },
     }));
-    expect(sendMessageZulipMock).toHaveBeenNthCalledWith(2, "stream:debbie:zulip-plugin-pr", "second chunk", expect.objectContaining({
+    expect(sendMessageZulipMock).toHaveBeenNthCalledWith(2, "stream:4:zulip-plugin-pr", "second chunk", expect.objectContaining({
       presentation: undefined,
       channelData: undefined,
     }));
@@ -1365,12 +2197,12 @@ describe("monitorZulipProvider", () => {
     await runMonitorOnce();
 
     expect(sendMessageZulipMock).toHaveBeenCalledTimes(2);
-    expect(sendMessageZulipMock).toHaveBeenNthCalledWith(1, "stream:debbie:zulip-plugin-pr", "caption", expect.objectContaining({
+    expect(sendMessageZulipMock).toHaveBeenNthCalledWith(1, "stream:4:zulip-plugin-pr", "caption", expect.objectContaining({
       mediaUrl: "https://example.com/one.png",
       presentation: expect.any(Object),
       channelData: { zulip: { widgetContent: { widget_type: "zform" } } },
     }));
-    expect(sendMessageZulipMock).toHaveBeenNthCalledWith(2, "stream:debbie:zulip-plugin-pr", "", expect.objectContaining({
+    expect(sendMessageZulipMock).toHaveBeenNthCalledWith(2, "stream:4:zulip-plugin-pr", "", expect.objectContaining({
       mediaUrl: "https://example.com/two.png",
       presentation: undefined,
       channelData: undefined,
@@ -1391,7 +2223,7 @@ describe("monitorZulipProvider", () => {
     await runMonitorOnce();
 
     expect(sendMessageZulipMock).toHaveBeenCalledTimes(1);
-    expect(sendMessageZulipMock).toHaveBeenCalledWith("stream:debbie:zulip-plugin-pr", "", expect.objectContaining({
+    expect(sendMessageZulipMock).toHaveBeenCalledWith("stream:4:zulip-plugin-pr", "", expect.objectContaining({
       presentation: expect.any(Object),
     }));
   });
@@ -1411,7 +2243,7 @@ describe("monitorZulipProvider", () => {
     await runMonitorOnce();
 
     expect(sendMessageZulipMock).toHaveBeenCalledTimes(1);
-    expect(sendMessageZulipMock).toHaveBeenCalledWith("stream:debbie:zulip-plugin-pr", "", expect.objectContaining({
+    expect(sendMessageZulipMock).toHaveBeenCalledWith("stream:4:zulip-plugin-pr", "", expect.objectContaining({
       channelData: { execApproval: { approvalId: "approval-1" } },
     }));
   });
@@ -1429,6 +2261,339 @@ describe("monitorZulipProvider", () => {
     expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(1);
     expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
     expect(state.core.system.enqueueSystemEvent).not.toHaveBeenCalled();
+  });
+
+  it("passes the stripped Zulip bot mention to question-control interception and consumes it", async () => {
+    state.account.config.allowFrom = ["user8@zlp.pubnerd.app"];
+    const { zulipQuestionZformStore } = await import("./question-zform.js");
+    const intercept = vi
+      .spyOn(zulipQuestionZformStore, "intercept")
+      .mockResolvedValueOnce({ recognized: true, status: "answered", optionValue: "Staging" });
+    const originalBotName = state.botUser.full_name;
+    state.botUser.full_name = "Debbie-Main";
+    try {
+      state.pollResponses = [
+        {
+          result: "success",
+          events: [
+            {
+              id: 1,
+              type: "message",
+              message: {
+                ...makeChannelMessage(58252),
+                content: "@**Debbie-Main** ocq1:kDU1R53ZTUJxIiMrjEHqww:0",
+              },
+            },
+          ],
+        },
+      ];
+
+      await runMonitorOnce();
+
+      expect(intercept).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: expect.objectContaining({
+            text: "@Debbie-Main ocq1:kDU1R53ZTUJxIiMrjEHqww:0",
+            expectedBotMention: "Debbie-Main",
+          }),
+        }),
+      );
+      expect(state.core.channel.inbound.buildContext).not.toHaveBeenCalled();
+      expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+    } finally {
+      state.botUser.full_name = originalBotName;
+      intercept.mockRestore();
+    }
+  });
+
+  it("consumes an exact bare stale question control before ordinary inbound dispatch", async () => {
+    state.account.config.allowFrom = ["user8@zlp.pubnerd.app"];
+    const { zulipQuestionZformStore } = await import("./question-zform.js");
+    const { sendMessageZulip } = await import("./send.js");
+    const sendMessageZulipMock = vi.mocked(sendMessageZulip);
+    zulipQuestionZformStore.clear();
+    sendMessageZulipMock.mockClear();
+    state.pollResponses = [
+      {
+        result: "success",
+        events: [
+          {
+            id: 1,
+            type: "message",
+            message: {
+              ...makeChannelMessage(58253),
+              content: "ocq1:kDU1R53ZTUJxIiMrjEHqww:0",
+            },
+          },
+        ],
+      },
+    ];
+
+    await runMonitorOnce();
+
+    expect(sendMessageZulipMock).toHaveBeenCalledWith(
+      "stream:4:zulip-plugin-pr",
+      "That question is no longer active.",
+      expect.objectContaining({ accountId: "default", topic: "zulip-plugin-pr" }),
+    );
+    expect(state.core.channel.inbound.buildContext).not.toHaveBeenCalled();
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+  });
+
+  it("resolves a canonical ZulipFlutter ordered-list fallback before ordinary inbound dispatch", async () => {
+    state.account.config.allowFrom = ["user8@zlp.pubnerd.app"];
+    const { zulipQuestionZformStore } = await import("./question-zform.js");
+    const questionId = "ask_0123456789abcdef0123456789abcdef";
+    const preparation = zulipQuestionZformStore.prepare({
+      channelData: { askUser: { questionId, optionValues: ["Staging", "Production"] } },
+      presentation: {
+        blocks: [
+          {
+            type: "buttons",
+            buttons: [
+              { label: "Staging", action: { type: "question", questionId, optionValue: "Staging" } },
+              { label: "Production", action: { type: "question", questionId, optionValue: "Production" } },
+            ],
+          },
+        ],
+      },
+    })!;
+    zulipQuestionZformStore.clear();
+    questionRuntimeMocks.resolveOption.mockResolvedValueOnce({
+      status: "answered",
+      questionId,
+      optionValue: "Production",
+    });
+    expect(
+      zulipQuestionZformStore.register({
+        preparation,
+        accountId: "default",
+        conversation: { kind: "stream", stream: "4", topic: "zulip-plugin-pr" },
+        authorizedSenderId: "user8@zlp.pubnerd.app",
+        sourceMessageId: "58260",
+        sourceText: "Which option?",
+        client: state.client,
+      }),
+    ).toBe(true);
+    try {
+      state.pollResponses = [
+        {
+          result: "success",
+          events: [
+            {
+              id: 1,
+              type: "message",
+              message: {
+                ...makeChannelMessage(58261),
+                content: '<ol start="2"><li>Production</li></ol>',
+              },
+            },
+          ],
+        },
+      ];
+
+      await runMonitorOnce();
+
+      expect(questionRuntimeMocks.resolveOption).toHaveBeenCalledWith(
+        expect.objectContaining({ questionId, optionValue: "Production" }),
+      );
+      expect(state.core.channel.inbound.buildContext).not.toHaveBeenCalled();
+      expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+    } finally {
+      zulipQuestionZformStore.clear();
+    }
+  });
+
+  describe.each(["native", "mobile"] as const)("real outbound to inbound %s question controls", (form) => {
+    it.each([
+      { policy: "allowed stream", dm: false, allowed: true },
+      { policy: "allowed DM", dm: true, allowed: true },
+      { policy: "revoked group allowlist", dm: false, allowed: false },
+      { policy: "revoked pairing", dm: true, allowed: false },
+      { policy: "disabled group", dm: false, allowed: false },
+      { policy: "disabled DM", dm: true, allowed: false },
+      { policy: "revoked command access", dm: false, allowed: false },
+    ])("enforces $policy after delivery", async ({ policy, dm, allowed }) => {
+      const { sendMessageZulip } = await vi.importActual<typeof import("./send.js")>("./send.js");
+      const { runWithZulipQuestionDeliveryContext, zulipQuestionZformStore } = await import("./question-zform.js");
+      const questionId = "ask_0123456789abcdef0123456789abcdef";
+      const sender = "user8@zlp.pubnerd.app";
+      zulipQuestionZformStore.clear();
+      questionRuntimeMocks.resolveOption.mockReset().mockResolvedValue({ status: "answered", questionId, optionValue: "Production" });
+      questionRuntimeMocks.registerChannelDelivery.mockClear();
+      state.account.config.allowFrom = [sender];
+      state.account.config.groupAllowFrom = [sender];
+      state.account.config.dmPolicy = "pairing";
+      state.account.config.groupPolicy = "allowlist";
+      state.pairingAllowFrom = [sender];
+      state.client.request.mockReset().mockImplementation(async (path, options) => {
+        if (path === "/users/me/subscriptions?include_all_public_streams=true") {
+          return { result: "success", subscriptions: state.streamSubscriptions } as never;
+        }
+        if (path === "/messages" && options?.method === "POST") {
+          return { result: "success", id: 9100 } as never;
+        }
+        throw new Error(`Unexpected offline API request: ${path}`);
+      });
+      state.client.fetchImpl.mockImplementation(async (url, init) => {
+        const parsed = new URL(url);
+        const response = await state.client.request(parsed.pathname.replace(/^\/api\/v1/u, "") + parsed.search, {
+          method: init?.method,
+          body: typeof init?.body === "string" ? init.body : undefined,
+        });
+        return Response.json(response);
+      });
+      const register = vi.spyOn(zulipQuestionZformStore, "register");
+      try {
+        await runWithZulipQuestionDeliveryContext({
+          authorizedSenderId: sender,
+          conversation: { kind: "stream", stream: "999", topic: "wrong-context" },
+        }, () => sendMessageZulip(dm ? `user:${sender}` : "stream:debbie:zulip-plugin-pr", "Choose one", {
+          cfg: state.core.config,
+          channelData: { askUser: { questionId, optionValues: ["Staging", "Production"] } },
+          presentation: { blocks: [{ type: "buttons", buttons: [
+            { label: "Staging", action: { type: "question", questionId, optionValue: "Staging" } },
+            { label: "Production", action: { type: "question", questionId, optionValue: "Production" } },
+          ] }] },
+        }));
+        expect(register).toHaveBeenCalledWith(expect.objectContaining({
+          conversation: dm ? { kind: "dm", recipient: sender } : { kind: "stream", stream: "4", topic: "zulip-plugin-pr" },
+          deliveryConversation: dm ? { kind: "dm", recipient: sender } : { kind: "stream", stream: "debbie", topic: "zulip-plugin-pr" },
+        }));
+        const posted = state.client.request.mock.calls.find(([path]) => path === "/messages")!;
+        const body = new URLSearchParams(posted[1]!.body);
+        const widget = JSON.parse(body.get("widget_content")!);
+        const content = form === "native" ? widget.extra_data.choices[1].reply : '<ol start="2"><li>Production</li></ol>';
+
+        if (policy === "revoked group allowlist") state.account.config.groupAllowFrom = ["other@example.test"];
+        if (policy === "revoked pairing") {
+          state.account.config.allowFrom = [];
+          state.pairingAllowFrom = [];
+        }
+        if (policy === "disabled group") state.account.config.groupPolicy = "disabled";
+        if (policy === "disabled DM") state.account.config.dmPolicy = "disabled";
+        if (policy === "revoked command access") {
+          state.account.config.groupPolicy = "open";
+          state.account.config.allowFrom = ["other@example.test"];
+          state.account.config.groupAllowFrom = ["other@example.test"];
+          state.pairingAllowFrom = [];
+        }
+        state.sendMessageZulip.mockClear();
+        state.client.request.mockClear();
+        state.pollResponses = [{ result: "success", events: [1, 2].map((id) => ({
+          id, type: "message", message: { ...(dm ? makePrivateMessage(++state.nextQuestionMessageId) : makeChannelMessage(++state.nextQuestionMessageId)), content },
+        })) }];
+        await runMonitorOnce();
+        expect(questionRuntimeMocks.resolveOption).toHaveBeenCalledTimes(allowed ? 1 : 0);
+        expect(state.core.channel.inbound.buildContext).not.toHaveBeenCalled();
+        expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+        expect(state.upsertPairingRequest).not.toHaveBeenCalled();
+        if (!allowed) {
+          expect(state.sendMessageZulip).not.toHaveBeenCalled();
+          expect(state.client.request).not.toHaveBeenCalled();
+        } else {
+          await questionRuntimeMocks.registerChannelDelivery.mock.calls[0]![0].finalize("Answered: Production");
+          const replacement = new URLSearchParams(state.client.request.mock.calls.find(([path]) => path === "/messages")![1]!.body);
+          expect(replacement.get("to")).toBe(dm ? JSON.stringify([sender]) : "debbie");
+          if (!dm) expect(replacement.get("topic")).toBe("zulip-plugin-pr");
+          expect(state.deleteZulipMessage).toHaveBeenCalledWith(state.client, { messageId: "9100" });
+        }
+      } finally {
+        register.mockRestore();
+        zulipQuestionZformStore.clear();
+      }
+    });
+  });
+
+  it.each([
+    { dm: true, policy: "pairing" },
+    { dm: true, policy: "allowlist" },
+    { dm: true, policy: "disabled" },
+    { dm: false, policy: "allowlist" },
+    { dm: false, policy: "disabled" },
+    { dm: false, policy: "open" },
+  ])("silently drops unauthorized unknown and malformed controls: $dm/$policy", async ({ dm, policy }) => {
+    const { zulipQuestionZformStore } = await import("./question-zform.js");
+    zulipQuestionZformStore.clear();
+    questionRuntimeMocks.resolveOption.mockClear();
+    state.account.config[dm ? "dmPolicy" : "groupPolicy"] = policy;
+    state.account.config.allowFrom = ["other@example.test"];
+    state.account.config.groupAllowFrom = ["other@example.test"];
+    state.upsertPairingRequest.mockResolvedValue({ code: "123456", created: true });
+    const intercept = vi.spyOn(zulipQuestionZformStore, "intercept");
+    try {
+      state.pollResponses = [{ result: "success", events: [
+        "ocq1:kDU1R53ZTUJxIiMrjEHqww:0", "ocq1:malformed", "@**Debbie** ocq1:bad:9",
+      ].map((content, index) => ({ id: index + 1, type: "message", message: {
+        ...(dm ? makePrivateMessage(++state.nextQuestionMessageId) : makeChannelMessage(++state.nextQuestionMessageId)), content,
+      } })) }];
+      await runMonitorOnce();
+      expect(intercept).not.toHaveBeenCalled();
+      expect(questionRuntimeMocks.resolveOption).not.toHaveBeenCalled();
+      expect(state.sendMessageZulip).not.toHaveBeenCalled();
+      expect(state.upsertPairingRequest).not.toHaveBeenCalled();
+      expect(state.core.channel.inbound.buildContext).not.toHaveBeenCalled();
+      expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+    } finally {
+      intercept.mockRestore();
+    }
+  });
+
+  it("does not consume the unrelated single-item ordered-list content observed in message 58261", async () => {
+    const { zulipQuestionZformStore } = await import("./question-zform.js");
+    questionRuntimeMocks.resolveOption.mockClear();
+    const questionId = "ask_0123456789abcdef0123456789abcdef";
+    const preparation = zulipQuestionZformStore.prepare({
+      channelData: { askUser: { questionId, optionValues: ["Staging", "Production"] } },
+      presentation: {
+        blocks: [
+          {
+            type: "buttons",
+            buttons: [
+              { label: "Staging", action: { type: "question", questionId, optionValue: "Staging" } },
+              { label: "Production", action: { type: "question", questionId, optionValue: "Production" } },
+            ],
+          },
+        ],
+      },
+    })!;
+    zulipQuestionZformStore.clear();
+    expect(
+      zulipQuestionZformStore.register({
+        preparation,
+        accountId: "default",
+        conversation: { kind: "stream", stream: "4", topic: "zulip-plugin-pr" },
+        authorizedSenderId: "user8@zlp.pubnerd.app",
+        sourceMessageId: "58260",
+        sourceText: "Which option?",
+        client: state.client,
+      }),
+    ).toBe(true);
+    try {
+      state.pollResponses = [
+        {
+          result: "success",
+          events: [
+            {
+              id: 1,
+              type: "message",
+              message: {
+                ...makeChannelMessage(58262),
+                content: '<ol start="2"><li>It’s just text.</li></ol>',
+              },
+            },
+          ],
+        },
+      ];
+
+      await runMonitorOnce();
+
+      expect(questionRuntimeMocks.resolveOption).not.toHaveBeenCalled();
+      expect(state.core.channel.inbound.buildContext).toHaveBeenCalledOnce();
+      expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledOnce();
+    } finally {
+      zulipQuestionZformStore.clear();
+    }
   });
 
   it("surfaces private invite-only stream metadata while keeping ChatType channel", async () => {
@@ -1619,19 +2784,30 @@ describe("monitorZulipProvider", () => {
 
     await runMonitorOnce();
 
-    expect(state.core.agent.session.resolveStorePath).toHaveBeenCalledExactlyOnceWith(
-      "/configured/{agentId}/sessions.json",
-      { agentId: "debbie" },
-    );
-    expect(state.core.channel.session.updateLastRoute).toHaveBeenCalledWith({
-      storePath: "/resolved/debbie/session-store",
-      sessionKey: "agent:debbie:zulip:channel:4",
-      deliveryContext: {
-        channel: "zulip",
-        to: "stream:debbie:zulip-plugin-pr",
-        accountId: "default",
+    expect(state.core.agent.session.resolveStorePath).not.toHaveBeenCalled();
+    expect(state.core.channel.session.recordInboundSession).not.toHaveBeenCalled();
+    expect(state.core.channel.inbound.dispatch).toHaveBeenCalledWith(expect.objectContaining({
+      cfg: expect.objectContaining({
+        session: { store: "/configured/{agentId}/sessions.json" },
+      }),
+      route: {
+        agentId: "debbie",
+        sessionKey: expect.stringMatching(/^agent:debbie:zulip:channel:4:topic:v2:[0-9a-f]{64}$/),
       },
-    });
+      ctxPayload: expect.objectContaining({
+        SessionKey: expect.stringMatching(/^agent:debbie:zulip:channel:4:topic:v2:[0-9a-f]{64}$/),
+      }),
+      record: {
+        updateLastRoute: {
+          sessionKey: expect.stringMatching(/^agent:debbie:zulip:channel:4:topic:v2:[0-9a-f]{64}$/),
+          channel: "zulip",
+          to: "stream:4:zulip-plugin-pr",
+          accountId: "default",
+          threadId: "zulip-plugin-pr",
+        },
+        onRecordError: expect.any(Function),
+      },
+    }));
   });
 
   it("for private messages, stores user:<sender_email> in context and last-route when sender_email exists", async () => {
@@ -1650,17 +2826,30 @@ describe("monitorZulipProvider", () => {
         OriginatingTo: "user:user8@zlp.pubnerd.app",
       }),
     );
-    expect(state.core.channel.session.updateLastRoute).toHaveBeenCalledWith({
-      storePath: "/tmp/openclaw-session-store.json",
-      sessionKey: expect.stringMatching(
-        /^agent:debbie:zulip:default:direct:account-[0-9a-f]{64}:user8@zlp\.pubnerd\.app$/,
-      ),
-      deliveryContext: {
-        channel: "zulip",
-        to: "user:user8@zlp.pubnerd.app",
-        accountId: "default",
+    expect(state.core.channel.inbound.dispatch).toHaveBeenCalledWith(expect.objectContaining({
+      route: {
+        agentId: "debbie",
+        sessionKey: expect.stringMatching(
+          /^agent:debbie:zulip:default:direct:account-[0-9a-f]{64}:user8@zlp\.pubnerd\.app$/,
+        ),
       },
-    });
+      ctxPayload: expect.objectContaining({
+        SessionKey: expect.stringMatching(
+          /^agent:debbie:zulip:default:direct:account-[0-9a-f]{64}:user8@zlp\.pubnerd\.app$/,
+        ),
+      }),
+      record: {
+        updateLastRoute: {
+          sessionKey: expect.stringMatching(
+            /^agent:debbie:zulip:default:direct:account-[0-9a-f]{64}:user8@zlp\.pubnerd\.app$/,
+          ),
+          channel: "zulip",
+          to: "user:user8@zlp.pubnerd.app",
+          accountId: "default",
+        },
+        onRecordError: expect.any(Function),
+      },
+    }));
   });
 
   it("for private messages, falls back to sender_id when sender_email is missing", async () => {
@@ -1688,17 +2877,30 @@ describe("monitorZulipProvider", () => {
         OriginatingTo: "user:123",
       }),
     );
-    expect(state.core.channel.session.updateLastRoute).toHaveBeenCalledWith({
-      storePath: "/tmp/openclaw-session-store.json",
-      sessionKey: expect.stringMatching(
-        /^agent:debbie:zulip:default:direct:account-[0-9a-f]{64}:123$/,
-      ),
-      deliveryContext: {
-        channel: "zulip",
-        to: "user:123",
-        accountId: "default",
+    expect(state.core.channel.inbound.dispatch).toHaveBeenCalledWith(expect.objectContaining({
+      route: {
+        agentId: "debbie",
+        sessionKey: expect.stringMatching(
+          /^agent:debbie:zulip:default:direct:account-[0-9a-f]{64}:123$/,
+        ),
       },
-    });
+      ctxPayload: expect.objectContaining({
+        SessionKey: expect.stringMatching(
+          /^agent:debbie:zulip:default:direct:account-[0-9a-f]{64}:123$/,
+        ),
+      }),
+      record: {
+        updateLastRoute: {
+          sessionKey: expect.stringMatching(
+            /^agent:debbie:zulip:default:direct:account-[0-9a-f]{64}:123$/,
+          ),
+          channel: "zulip",
+          to: "user:123",
+          accountId: "default",
+        },
+        onRecordError: expect.any(Function),
+      },
+    }));
   });
 
   it("uses effective connection overrides to isolate private-message sessions", async () => {
@@ -1715,21 +2917,26 @@ describe("monitorZulipProvider", () => {
       email: "override-bot@example.test",
     });
 
-    expect(state.core.channel.session.updateLastRoute).toHaveBeenCalledWith({
-      storePath: "/tmp/openclaw-session-store.json",
-      sessionKey: buildZulipDirectSessionKey({
-        agentId: "debbie",
-        accountId: "default",
-        baseUrl: "https://override-realm.example.test",
-        botIdentity: "override-bot@example.test",
-        senderIdentity: "user8@zlp.pubnerd.app",
-      }),
-      deliveryContext: {
-        channel: "zulip",
-        to: "user:user8@zlp.pubnerd.app",
-        accountId: "default",
-      },
+    const expectedSessionKey = buildZulipDirectSessionKey({
+      agentId: "debbie",
+      accountId: "default",
+      baseUrl: "https://override-realm.example.test",
+      botIdentity: "override-bot@example.test",
+      senderIdentity: "user8@zlp.pubnerd.app",
     });
+    expect(state.core.channel.inbound.dispatch).toHaveBeenCalledWith(expect.objectContaining({
+      route: { agentId: "debbie", sessionKey: expectedSessionKey },
+      ctxPayload: expect.objectContaining({ SessionKey: expectedSessionKey }),
+      record: {
+        updateLastRoute: {
+          sessionKey: expectedSessionKey,
+          channel: "zulip",
+          to: "user:user8@zlp.pubnerd.app",
+          accountId: "default",
+        },
+        onRecordError: expect.any(Function),
+      },
+    }));
   });
 
   it("drops stream messages outside the configured global topic filter", async () => {
@@ -1898,7 +3105,7 @@ describe("monitorZulipProvider", () => {
     expect(state.core.channel.activity.record).not.toHaveBeenCalled();
     expect(state.core.channel.routing.resolveAgentRoute).not.toHaveBeenCalled();
     expect(state.core.channel.inbound.buildContext).not.toHaveBeenCalled();
-    expect(state.core.channel.session.updateLastRoute).not.toHaveBeenCalled();
+    expect(state.core.channel.session.recordInboundSession).not.toHaveBeenCalled();
     expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
     for (const store of state.durableStores.values()) {
       await expect(store.entries()).resolves.toEqual([]);
@@ -2773,25 +3980,47 @@ describe("monitorZulipProvider", () => {
       ],
     }];
 
+    vi.useFakeTimers();
+    const startedAt = Date.now();
     const monitorPromise = runMonitorOnce(controller);
-    await vi.waitFor(() => {
+    try {
+      await vi.advanceTimersByTimeAsync(0);
       const queue = state.durableQueues.get(state.account.accountId);
-      expect(queue?.release).toHaveBeenCalledWith(retryableDurableId, {
+      expect(queue?.release).toHaveBeenCalledExactlyOnceWith(retryableDurableId, {
         lastError: "Zulip stream metadata unavailable during durable replay",
       });
-      expect(queue?.complete).toHaveBeenCalledWith(readyDurableId, {
-        metadata: { queueEventId: 20 },
-        completedAt: expect.any(Number),
-      });
-    });
-    controller.abort();
-    await monitorPromise;
+      expect(queue?.complete).not.toHaveBeenCalled();
 
-    expect(
-      state.core.channel.inbound.buildContext.mock.calls.map(([input]) => input.messageId),
-    ).toEqual(["99205"]);
-    expect(state.durableQueues.get(state.account.accountId)?.release).toHaveBeenCalledTimes(1);
-    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(queue?.release).toHaveBeenCalledTimes(1);
+      expect(queue?.complete).toHaveBeenCalledExactlyOnceWith(readyDurableId, {
+        metadata: { queueEventId: 20 },
+        completedAt: startedAt + 200,
+      });
+      expect(
+        state.core.channel.inbound.buildContext.mock.calls.map(([input]) => input.messageId),
+      ).toEqual(["99205"]);
+      expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(49);
+      expect(queue?.release).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(queue?.release).toHaveBeenCalledTimes(2);
+      expect(queue?.release).toHaveBeenLastCalledWith(retryableDurableId, {
+        lastError: "Zulip stream metadata unavailable during durable replay",
+      });
+      expect(queue?.complete).toHaveBeenCalledTimes(1);
+      expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(1);
+      expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+    } finally {
+      controller.abort();
+      try {
+        await monitorPromise;
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    }
   });
 
   it("serializes deferred durable replay and queues one follow-up pass", async () => {
@@ -3092,7 +4321,7 @@ describe("monitorZulipProvider", () => {
     await expect(completedStore?.entries()).resolves.toEqual([]);
     expect(state.sendMessageZulip).toHaveBeenNthCalledWith(
       3,
-      "stream:debbie:zulip-plugin-pr",
+      "stream:4:zulip-plugin-pr",
       "Turn failed.",
       expect.objectContaining({ topic: "zulip-plugin-pr" }),
     );
@@ -3105,8 +4334,79 @@ describe("monitorZulipProvider", () => {
   });
 
   it.each([
+    {
+      settlement: "failed-after-send",
+      messageId: 2114,
+      receipt: {
+        anyVisibleDelivered: true,
+        hasPendingDelivery: true,
+        counts: {
+          tool: { delivered: 0, deliveredNotVisible: 0, cancelled: 0, failedBeforeSend: 0, failedAfterSend: 0 },
+          block: { delivered: 0, deliveredNotVisible: 0, cancelled: 0, failedBeforeSend: 0, failedAfterSend: 0 },
+          final: { delivered: 0, deliveredNotVisible: 0, cancelled: 0, failedBeforeSend: 0, failedAfterSend: 1 },
+        },
+      },
+    },
+    {
+      settlement: "pending",
+      messageId: 2115,
+      receipt: {
+        anyVisibleDelivered: false,
+        hasPendingDelivery: true,
+        counts: {
+          tool: { delivered: 0, deliveredNotVisible: 0, cancelled: 0, failedBeforeSend: 0, failedAfterSend: 0 },
+          block: { delivered: 0, deliveredNotVisible: 0, cancelled: 0, failedBeforeSend: 0, failedAfterSend: 0 },
+          final: { delivered: 0, deliveredNotVisible: 0, cancelled: 0, failedBeforeSend: 0, failedAfterSend: 0 },
+        },
+      },
+    },
+  ])("suppresses fallback error feedback for $settlement delivery", async ({ messageId, receipt }) => {
+    enableDurableInboundJournal();
+    state.account.config.markHandledRead = true;
+    state.account.config.thinkingPlaceholder = { enabled: true, errorText: "Turn failed." };
+    state.sendMessageZulip
+      .mockResolvedValueOnce({ messageId: "placeholder-1", channelId: "debbie" })
+      .mockRejectedValueOnce(new Error("ambiguous reply send failure"));
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementationOnce(
+      async ({ dispatcherOptions }) => {
+        try {
+          await dispatcherOptions.deliver({
+            presentation: {
+              blocks: [{ type: "buttons", buttons: [{ label: "Confirm", action: "confirm" }] }],
+            },
+          });
+        } catch (err) {
+          dispatcherOptions.onError(err);
+        }
+        return {
+          counts: { tool: 0, block: 0, final: 1 },
+          settledReceipt: receipt,
+        };
+      },
+    );
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 8, type: "message", message: makePrivateMessage(messageId) }],
+    }];
+
+    await runMonitorOnce();
+
+    const { createZulipDurableInboundReceiveJournal } = await import("./durable-receive.js");
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    await expect(journal.pending()).resolves.toEqual([]);
+    expect(state.sendMessageZulip).toHaveBeenCalledTimes(2);
+    expect(state.editZulipMessage).not.toHaveBeenCalled();
+    expect(state.updateZulipMessageFlags).not.toHaveBeenCalled();
+
+    await runMonitorOnce();
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+    expect(state.sendMessageZulip).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
     { failureMode: "dispatcher rejection", messageId: 2108 },
     { failureMode: "failed final result", messageId: 2109 },
+    { failureMode: "settled final failure", messageId: 2113 },
   ])(
     "keeps durable inbound retryable after $failureMode with no visible delivery",
     async ({ failureMode, messageId }) => {
@@ -3120,13 +4420,30 @@ describe("monitorZulipProvider", () => {
             throw new Error("synthetic durable dispatch failure");
           },
         );
-      } else {
+      } else if (failureMode === "failed final result") {
         state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementationOnce(
           async () => {
             dispatchAttempts += 1;
             return {
               counts: { tool: 0, block: 0, final: 0 },
               failedCounts: { tool: 0, block: 0, final: 1 },
+            };
+          },
+        );
+      } else {
+        state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementationOnce(
+          async () => {
+            dispatchAttempts += 1;
+            return {
+              counts: { tool: 0, block: 0, final: 1 },
+              settledReceipt: {
+                anyVisibleDelivered: false,
+                counts: {
+                  tool: { delivered: 0, deliveredNotVisible: 0, cancelled: 0, failedBeforeSend: 0, failedAfterSend: 0 },
+                  block: { delivered: 0, deliveredNotVisible: 0, cancelled: 0, failedBeforeSend: 0, failedAfterSend: 0 },
+                  final: { delivered: 0, deliveredNotVisible: 0, cancelled: 0, failedBeforeSend: 1, failedAfterSend: 0 },
+                },
+              },
             };
           },
         );
@@ -3158,9 +4475,20 @@ describe("monitorZulipProvider", () => {
 
       state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher
         .mockReset()
-        .mockImplementation(async () => {
+        .mockImplementation(async ({ dispatcherOptions }) => {
           dispatchAttempts += 1;
-          return { counts: { tool: 0, block: 0, final: 1 } };
+          await dispatcherOptions.deliver({ text: "replayed reply" });
+          return {
+            counts: { tool: 0, block: 0, final: 1 },
+            settledReceipt: {
+              anyVisibleDelivered: true,
+              counts: {
+                tool: { delivered: 0, deliveredNotVisible: 0, cancelled: 0, failedBeforeSend: 0, failedAfterSend: 0 },
+                block: { delivered: 0, deliveredNotVisible: 0, cancelled: 0, failedBeforeSend: 0, failedAfterSend: 0 },
+                final: { delivered: 1, deliveredNotVisible: 0, cancelled: 0, failedBeforeSend: 0, failedAfterSend: 0 },
+              },
+            },
+          };
         });
       await runMonitorOnce();
 
@@ -3436,13 +4764,9 @@ describe("monitorZulipProvider", () => {
   it("retries same-process durable replay after a handler failure despite volatile dedupe", async () => {
     enableDurableInboundJournal();
     const message = makeChannelMessage(2104);
-    let failedOnce = false;
-    state.core.channel.session.updateLastRoute.mockImplementation(async () => {
-      if (!failedOnce) {
-        failedOnce = true;
-        throw new Error("synthetic post-dedupe failure");
-      }
-    });
+    state.core.channel.inbound.dispatch.mockRejectedValueOnce(
+      new Error("synthetic post-dedupe failure"),
+    );
     state.pollResponses = [
       {
         result: "success",
@@ -3467,7 +4791,7 @@ describe("monitorZulipProvider", () => {
     await runMonitorOnce();
 
     await expect(journal.pending()).resolves.toEqual([]);
-    expect(state.core.channel.session.updateLastRoute).toHaveBeenCalledTimes(2);
+    expect(state.core.channel.inbound.dispatch).toHaveBeenCalledTimes(2);
     expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
     expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(2);
   });

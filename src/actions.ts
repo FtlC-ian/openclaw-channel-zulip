@@ -31,6 +31,8 @@ import {
   updateZulipStream,
 } from "./zulip/client.js";
 import { presentationToZulipWidgetContent } from "./zulip/send.js";
+import { isZulipSessionTarget } from "./zulip/destination.js";
+import { prependZulipRoutingNotice, resolveZulipSendDestination } from "./zulip/routing-fallback.js";
 
 const providerId = "zulip";
 const MAX_STRING_LENGTH = 10000;
@@ -150,10 +152,6 @@ type StreamTarget = {
   stream: string;
   topic?: string;
 };
-
-type SendTarget =
-  | { kind: "stream"; stream: string; topic: string }
-  | { kind: "user"; email: string };
 
 type ZulipReactionParams = {
   emojiName: string;
@@ -327,48 +325,7 @@ export function splitStreamTarget(raw: string): StreamTarget {
     assertStringLength(topic, "topic", MAX_STRING_LENGTH);
   }
 
-  return { stream, topic: topic || undefined };
-}
-
-function parseSendTarget(raw: string): SendTarget {
-  const trimmed = raw.trim();
-  if (!trimmed) {
-    throw new Error("Recipient is required for Zulip sends.");
-  }
-
-  const lower = trimmed.toLowerCase();
-  if (lower.startsWith("stream:")) {
-    const rest = trimmed.slice("stream:".length).trim();
-    if (!rest) {
-      throw new Error("Stream name is required for Zulip sends.");
-    }
-    const sepIndex = rest.indexOf(":");
-    if (sepIndex === -1) {
-      throw new Error("Topic is required for Zulip stream sends.");
-    }
-    const stream = rest.slice(0, sepIndex).trim();
-    const topic = rest.slice(sepIndex + 1).trim();
-    if (!stream) {
-      throw new Error("Stream name is required for Zulip sends.");
-    }
-    if (!topic) {
-      throw new Error("Topic is required for Zulip stream sends.");
-    }
-    assertStringLength(stream, "stream", MAX_STRING_LENGTH);
-    assertStringLength(topic, "topic", MAX_STRING_LENGTH);
-    return { kind: "stream", stream, topic };
-  }
-
-  if (lower.startsWith("user:")) {
-    const email = trimmed.slice("user:".length).trim();
-    if (!email) {
-      throw new Error("Email is required for Zulip direct messages.");
-    }
-    assertStringLength(email, "email", MAX_STRING_LENGTH);
-    return { kind: "user", email };
-  }
-
-  throw new Error("Invalid Zulip send target; use stream:{stream}:{topic} or user:{email}.");
+  return { stream, topic };
 }
 
 function assertStringLength(value: string, field: string, max = MAX_STRING_LENGTH): void {
@@ -546,12 +503,27 @@ export const zulipMessageActions: ChannelMessageActionAdapter = {
     if (!ZULIP_HANDLED_ACTIONS.has(action)) {
       throw new Error(`Action ${action} is not supported for provider ${providerId}.`);
     }
-    const { client } = await resolveZulipClient(cfg, accountId ?? undefined);
+    const { client, account } = await resolveZulipClient(cfg, accountId ?? undefined);
 
     if (action === "send") {
-      const to = readStringParam(params, "to", { required: true });
-      const content = readSendMessageContent(params);
-      const target = parseSendTarget(to);
+      const to = readStringParam(params, "to", { required: true, trim: false });
+      let content = readSendMessageContent(params);
+      const threadId = typeof params.threadId === "string" || typeof params.threadId === "number"
+        ? params.threadId
+        : undefined;
+      if (dryRun && isZulipSessionTarget(to)) {
+        return jsonResult({ ok: true, dryRun: true, action, routingFallback: "bot-owner-lookup", requestedTarget: to });
+      }
+      const { target, fallback } = await resolveZulipSendDestination({
+        client, to, topic: threadId, accountId: account.accountId, config: account.config,
+      });
+      content = prependZulipRoutingNotice(content, fallback);
+      if (target.kind === "stream") {
+        assertStringLength(target.stream, "stream", MAX_STRING_LENGTH);
+        assertStringLength(target.topic, "topic", MAX_STRING_LENGTH);
+      } else {
+        assertStringLength(target.email, "email", MAX_STRING_LENGTH);
+      }
       const widgetContent = presentationToZulipWidgetContent(
         normalizeMessagePresentation(params.presentation),
       );
@@ -573,7 +545,7 @@ export const zulipMessageActions: ChannelMessageActionAdapter = {
           content,
           widgetContent,
         });
-        return jsonResult({ success: true, messageId: result.id });
+        return jsonResult({ success: true, messageId: result.id, ...(fallback ? { to: fallback.destination, routingFallback: fallback } : {}) });
       }
 
       const result = await sendZulipPrivateMessage(client, {
@@ -581,7 +553,7 @@ export const zulipMessageActions: ChannelMessageActionAdapter = {
         content,
         widgetContent,
       });
-      return jsonResult({ success: true, messageId: result.id });
+      return jsonResult({ success: true, messageId: result.id, ...(fallback ? { to: fallback.destination, routingFallback: fallback } : {}) });
     }
 
     if (action === "channel-list") {
@@ -747,7 +719,7 @@ export const zulipMessageActions: ChannelMessageActionAdapter = {
         readStringParam(params, "to", { required: true });
       const target = splitStreamTarget(raw);
       const limit = readNumberParam(params, "limit", { integer: true });
-      const explicitTopic = readStringParam(params, "topic");
+      const explicitTopic = typeof params.topic === "string" ? params.topic.trim() : undefined;
       const messages = await fetchZulipMessages(client, {
         stream: target.stream,
         topic: explicitTopic ?? target.topic,
@@ -756,7 +728,7 @@ export const zulipMessageActions: ChannelMessageActionAdapter = {
       return jsonResult({
         ok: true,
         stream: target.stream,
-        ...(explicitTopic || target.topic ? { topic: explicitTopic ?? target.topic } : {}),
+        ...(explicitTopic !== undefined || target.topic !== undefined ? { topic: explicitTopic ?? target.topic } : {}),
         messages,
       });
     }
@@ -882,7 +854,7 @@ export const zulipMessageActions: ChannelMessageActionAdapter = {
         readStringParam(params, "stream") ??
         readStringParam(params, "channelId") ??
         readStringParam(params, "to");
-      const explicitTopic = readStringParam(params, "topic");
+      const explicitTopic = typeof params.topic === "string" ? params.topic.trim() : undefined;
       const limit = readNumberParam(params, "limit", { integer: true });
       const target = rawStream ? splitStreamTarget(rawStream) : undefined;
       const messages = await searchZulipMessages(client, {
@@ -895,7 +867,7 @@ export const zulipMessageActions: ChannelMessageActionAdapter = {
         ok: true,
         query,
         ...(target?.stream ? { stream: target.stream } : {}),
-        ...(explicitTopic || target?.topic ? { topic: explicitTopic ?? target?.topic } : {}),
+        ...(explicitTopic !== undefined || target?.topic !== undefined ? { topic: explicitTopic ?? target?.topic } : {}),
         messages,
       });
     }

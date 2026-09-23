@@ -3,8 +3,11 @@ import {
   addZulipReaction,
   createZulipClient,
   createZulipReadBatcher,
+  fetchZulipMessages,
   registerZulipQueue,
   removeZulipReaction,
+  searchZulipMessages,
+  sendZulipStreamMessage,
   updateZulipMessageFlag,
   updateZulipMessageFlags,
   zulipRequestWithRetry,
@@ -46,7 +49,101 @@ describe("registerZulipQueue", () => {
     expect(url).toBe("https://zulip.example.test/api/v1/register");
     expect(body.get("event_types")).toBe('["message"]');
     expect(body.get("all_public_streams")).toBe("true");
+    expect(JSON.parse(body.get("client_capabilities")!)).toEqual({
+      notification_settings_null: false,
+      empty_topic_name: true,
+    });
     expect(body.has("narrow")).toBe(false);
+  });
+
+  it("satisfies Zulip 12.2's required client capability while opting into empty topics", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (_url, init) => {
+      const body = new URLSearchParams(String(init?.body));
+      const capabilities = JSON.parse(body.get("client_capabilities") ?? "{}");
+      // Zulip 12.2's ClientCapabilities schema requires this boolean even when false.
+      if (typeof capabilities.notification_settings_null !== "boolean") {
+        return jsonResponse(
+          { result: "error", msg: "client_capabilities[notification_settings_null] is missing" },
+          { status: 400 },
+        );
+      }
+      return jsonResponse({ result: "success", queue_id: "queue-12.2", last_event_id: -1 });
+    });
+    const client = createZulipClient({
+      baseUrl: "https://zulip.example.test",
+      email: "bot@example.test",
+      apiKey: "synthetic",
+      fetchImpl,
+    });
+
+    await expect(registerZulipQueue(client, {})).resolves.toEqual({
+      queueId: "queue-12.2",
+      lastEventId: -1,
+    });
+
+    const body = new URLSearchParams(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(JSON.parse(body.get("client_capabilities")!)).toEqual({
+      notification_settings_null: false,
+      empty_topic_name: true,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("empty-topic history", () => {
+  it.each(["read", "search"])("keeps the empty-topic narrow on %s", async (action) => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({ result: "success", messages: [] }));
+    const client = createZulipClient({ baseUrl: "https://zulip.example.test", email: "bot@example.test", apiKey: "synthetic", fetchImpl });
+    if (action === "read") await fetchZulipMessages(client, { stream: "42", topic: "" });
+    else await searchZulipMessages(client, { query: "release", stream: "42", topic: "" });
+    const url = new URL(String(fetchImpl.mock.calls[0]?.[0]));
+    expect(JSON.parse(url.searchParams.get("narrow")!)).toContainEqual({ operator: "topic", operand: "" });
+    expect(url.searchParams.get("allow_empty_topic_name")).toBe("true");
+  });
+});
+
+describe("sendZulipStreamMessage", () => {
+  it.each([
+    { topic: "", allowEmptyTopicName: "true" },
+    { topic: "release", allowEmptyTopicName: null },
+  ])("sets the empty-topic opt-in only for an empty topic", async ({ topic, allowEmptyTopicName }) => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({ result: "success", id: 42 }),
+    );
+    const client = createZulipClient({
+      baseUrl: "https://zulip.example.test",
+      email: "bot@example.test",
+      apiKey: "synthetic",
+      fetchImpl,
+    });
+
+    await sendZulipStreamMessage(client, { stream: "general", topic, content: "hello" });
+
+    const body = new URLSearchParams(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(body.get("topic")).toBe(topic);
+    expect(body.get("allow_empty_topic_name")).toBe(allowEmptyTopicName);
+  });
+});
+
+describe("createZulipClient", () => {
+  it("preserves Retry-After metadata on direct request errors", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse(
+        { result: "error", msg: "rate limited" },
+        { status: 429, statusText: "Too Many Requests", headers: { "retry-after": "5" } },
+      ),
+    );
+    const client = createZulipClient({
+      baseUrl: "https://zulip.example.test",
+      email: "bot@example.test",
+      apiKey: "***",
+      fetchImpl,
+    });
+
+    await expect(client.request("/messages/1", { method: "PATCH" })).rejects.toMatchObject({
+      status: 429,
+      retryAfterMs: 5_000,
+    });
   });
 });
 

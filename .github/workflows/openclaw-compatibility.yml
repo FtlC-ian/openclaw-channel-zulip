@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   compatibility:
-    name: Latest eligible OpenClaw (Node 24)
+    name: Latest eligible OpenClaw (Node 24.16)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,7 +25,7 @@ jobs:
           version: 10.23.0
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 24.16.0
           cache: pnpm
       - name: Select newest OpenClaw release at least 24 hours old
         id: openclaw

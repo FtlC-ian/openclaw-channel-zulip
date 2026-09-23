@@ -1,5 +1,6 @@
 import type { ChannelSetupInput, DmPolicy, GroupPolicy } from "./sdk.js";
 import type { SecretInput } from "openclaw/plugin-sdk/secret-input";
+import type { ChannelPreviewStreamingConfig } from "openclaw/plugin-sdk/channel-outbound";
 import type {
   StatusReactionEmojis,
   StatusReactionTiming,
@@ -55,6 +56,8 @@ export type ZulipAccountConfig = {
   apiKey?: SecretInput;
   /** Default topic for messages without a topic. Empty string = Zulip's "general chat". */
   defaultTopic?: string;
+  /** Explicit stream/topic used if an unroutable message's bot owner cannot be resolved. */
+  routingDiagnosticsTarget?: string;
   /** Restrict monitored streams ("*" = all streams). */
   streams?: string[];
   /** Restrict monitored stream topics globally ("*" or empty = all topics). Case-insensitive after trimming. */
@@ -119,6 +122,8 @@ export type ZulipAccountConfig = {
   chunkMode?: "length" | "newline";
   /** Disable block streaming for this account. */
   blockStreaming?: boolean;
+  /** Opt-in task-progress draft; explicit progress mode takes precedence over thinkingPlaceholder. */
+  streaming?: ChannelPreviewStreamingConfig;
   /** Merge streamed block replies before sending. */
   blockStreamingCoalesce?: BlockStreamingCoalesceConfig;
   /** Outbound response prefix override for this channel/account. */

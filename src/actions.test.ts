@@ -273,6 +273,21 @@ describe("action capability consistency", () => {
 
 describe("reachable action routes", () => {
   it.each([
+    { to: "stream:42", threadId: undefined, expected: "Bot replies" },
+    { to: "stream:42", threadId: "", expected: "" },
+    { to: "stream:42", threadId: 123, expected: "123" },
+    { to: "stream: 42 :  Explicit  ", threadId: "inherited", expected: "  Explicit  " },
+    { to: "stream:42:", threadId: "inherited", expected: "" },
+    { to: "stream:42:Explicit", threadId: "inherited", expected: "Explicit" },
+  ])("uses shared topic precedence for sends: $to / $threadId", async ({ to, threadId, expected }) => {
+    const sendCfg = { channels: { zulip: { ...cfg.channels!.zulip, defaultTopic: "Bot replies" } } } as OpenClawConfig;
+    const { fetchImpl } = await runAction("send", { to, threadId, message: "hello" }, { cfg: sendCfg });
+    const body = new URLSearchParams(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(body.get("to")).toBe("42");
+    expect(body.get("topic")).toBe(expected);
+  });
+
+  it.each([
     ["send", { to: "user:person@example.test", message: "hello" }],
     ["channel-create", { name: "new-stream", description: "description" }],
     ["channel-edit", { channelId: "7", newName: "renamed" }],

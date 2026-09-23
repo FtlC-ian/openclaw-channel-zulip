@@ -2,10 +2,11 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { verifyChannelMessageAdapterCapabilityProofs } from "./sdk.js";
 import { zulipMessageAdapter, zulipOutboundAdapter, zulipPlugin } from "./channel.js";
+import type { ZulipSendResult } from "./zulip/send.js";
 
 const adapterState = vi.hoisted(() => ({
-  sendMessageZulip: vi.fn(async () => ({ messageId: "msg-1", channelId: "stream" })),
-  sendPollZulip: vi.fn(async () => ({ messageId: "poll-1", channelId: "stream" })),
+  sendMessageZulip: vi.fn(async (): Promise<ZulipSendResult> => ({ messageId: "msg-1", channelId: "stream", target: { kind: "channel", id: "stream" } })),
+  sendPollZulip: vi.fn(async (): Promise<ZulipSendResult> => ({ messageId: "poll-1", channelId: "stream", target: { kind: "channel", id: "stream" } })),
   runtime: {
     logging: {
       getChildLogger: () => ({ debug: vi.fn(), warn: vi.fn(), error: vi.fn() }),
@@ -165,8 +166,8 @@ describe("zulip message adapter", () => {
   it("returns multipart receipts for multi-media payloads", async () => {
     const cfg = { channels: { zulip: {} } } as OpenClawConfig;
     adapterState.sendMessageZulip
-      .mockResolvedValueOnce({ messageId: "msg-1", channelId: "stream" })
-      .mockResolvedValueOnce({ messageId: "msg-2", channelId: "stream" });
+      .mockResolvedValueOnce({ messageId: "msg-1", channelId: "stream", target: { kind: "channel", id: "stream" }, threadId: "topic-1" })
+      .mockResolvedValueOnce({ messageId: "msg-2", channelId: "stream", target: { kind: "channel", id: "stream" }, threadId: "topic-1" });
 
     const result = await zulipMessageAdapter.send!.payload!({
       cfg,
@@ -184,5 +185,62 @@ describe("zulip message adapter", () => {
       { platformMessageId: "msg-1", kind: "media", threadId: "topic-1" },
       { platformMessageId: "msg-2", kind: "media", threadId: "topic-1" },
     ]);
+  });
+
+  it.each([
+    {
+      name: "text",
+      send: () => zulipMessageAdapter.send!.text!({
+        cfg: { channels: { zulip: {} } } as OpenClawConfig,
+        to: "stream:synthetic-stream:Canonical Topic",
+        text: "text",
+        accountId: "default",
+        threadId: "Different Session Topic",
+      }),
+    },
+    {
+      name: "media",
+      send: () => zulipMessageAdapter.send!.media!({
+        cfg: { channels: { zulip: {} } } as OpenClawConfig,
+        to: "stream:synthetic-stream:Canonical Topic",
+        text: "media",
+        mediaUrl: "https://example.test/synthetic.png",
+        accountId: "default",
+        threadId: "Different Session Topic",
+      }),
+    },
+  ])("reports the actual explicit target topic for $name sends", async ({ send }) => {
+    adapterState.sendMessageZulip.mockResolvedValueOnce({ messageId: "msg-1", channelId: "synthetic-stream", target: { kind: "channel", id: "synthetic-stream" }, threadId: "Canonical Topic" });
+    const result = await send();
+
+    expect(result.receipt.threadId).toBe("Canonical Topic");
+  });
+
+  it("reports the actual explicit target topic for every multipart receipt part", async () => {
+    adapterState.sendMessageZulip
+      .mockResolvedValueOnce({ messageId: "part-1", channelId: "synthetic-stream", target: { kind: "channel", id: "synthetic-stream" }, threadId: "Canonical Topic" })
+      .mockResolvedValueOnce({ messageId: "part-2", channelId: "synthetic-stream", target: { kind: "channel", id: "synthetic-stream" }, threadId: "Canonical Topic" });
+
+    const result = await zulipMessageAdapter.send!.payload!({
+      cfg: { channels: { zulip: {} } } as OpenClawConfig,
+      to: "stream:synthetic-stream:Canonical Topic",
+      payload: {
+        text: "gallery",
+        mediaUrls: [
+          "https://example.test/synthetic-1.png",
+          "https://example.test/synthetic-2.png",
+        ],
+      },
+      accountId: "default",
+      threadId: "Different Session Topic",
+    });
+
+    expect({
+      threadId: result.receipt.threadId,
+      partThreadIds: result.receipt.parts.map((part) => part.threadId),
+    }).toEqual({
+      threadId: "Canonical Topic",
+      partThreadIds: ["Canonical Topic", "Canonical Topic"],
+    });
   });
 });

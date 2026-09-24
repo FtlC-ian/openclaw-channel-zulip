@@ -36,6 +36,10 @@ type BindingLifecycleRecord = {
 };
 
 type SessionBindingService = ReturnType<typeof getSessionBindingService>;
+const DEFAULT_IDLE_TIMEOUT_MS = 24 * 60 * 60 * 1000;
+const LIFECYCLE_UPDATE_ATTEMPTS = 3;
+
+class BindingActivityChangedError extends Error {}
 
 function sameConversation(
   left: SessionBindingRecord["conversation"],
@@ -58,8 +62,20 @@ function sameBindingGeneration(
     left.status === right.status &&
     left.boundAt === right.boundAt &&
     left.expiresAt === right.expiresAt &&
-    sameConversation(left.conversation, right.conversation) &&
-    isDeepStrictEqual(left.metadata ?? {}, right.metadata ?? {});
+    sameConversation(left.conversation, right.conversation);
+}
+
+function metadataWithoutActivity(record: SessionBindingRecord): Record<string, unknown> {
+  const metadata = { ...record.metadata };
+  delete metadata.lastActivityAt;
+  return metadata;
+}
+
+function sameLifecycleMetadata(
+  left: SessionBindingRecord,
+  right: SessionBindingRecord,
+): boolean {
+  return isDeepStrictEqual(metadataWithoutActivity(left), metadataWithoutActivity(right));
 }
 
 function finiteMetadataNumber(record: SessionBindingRecord, key: string): number | undefined {
@@ -71,12 +87,18 @@ function lifecycleRecord(record: SessionBindingRecord): BindingLifecycleRecord {
   return {
     boundAt: finiteMetadataNumber(record, "boundAt") ?? record.boundAt,
     lastActivityAt: finiteMetadataNumber(record, "lastActivityAt") ?? record.boundAt,
-    ...(finiteMetadataNumber(record, "idleTimeoutMs") === undefined
+    idleTimeoutMs:
+      finiteMetadataNumber(record, "zulipIdleTimeoutMs") ??
+      finiteMetadataNumber(record, "idleTimeoutMs") ??
+      DEFAULT_IDLE_TIMEOUT_MS,
+    ...(finiteMetadataNumber(record, "zulipMaxAgeMs") === undefined &&
+      finiteMetadataNumber(record, "maxAgeMs") === undefined
       ? {}
-      : { idleTimeoutMs: finiteMetadataNumber(record, "idleTimeoutMs") }),
-    ...(finiteMetadataNumber(record, "maxAgeMs") === undefined
-      ? {}
-      : { maxAgeMs: finiteMetadataNumber(record, "maxAgeMs") }),
+      : {
+          maxAgeMs:
+            finiteMetadataNumber(record, "zulipMaxAgeMs") ??
+            finiteMetadataNumber(record, "maxAgeMs"),
+        }),
   };
 }
 
@@ -96,24 +118,61 @@ async function updateZulipBindingLifecycleRecord(
   patch: Pick<BindingLifecycleRecord, "idleTimeoutMs" | "maxAgeMs">,
   service: SessionBindingService,
 ): Promise<BindingLifecycleRecord> {
-  const next = { ...lifecycleRecord(record), ...patch };
-  const ttlMs = lifecycleTtlMs(next, Date.now());
-  const rebound = await service.bind({
-    targetSessionKey: record.targetSessionKey,
-    targetKind: record.targetKind,
-    conversation: record.conversation,
-    placement: "current",
-    metadata: { ...record.metadata, ...next },
-    ...(ttlMs === undefined ? {} : { ttlMs }),
-    assertCurrent: () => {
-      const current = service.resolveByConversation(record.conversation);
-      if (!sameBindingGeneration(current, record)) {
+  let candidate = record;
+  for (let attempt = 0; attempt < LIFECYCLE_UPDATE_ATTEMPTS; attempt += 1) {
+    const next = { ...lifecycleRecord(candidate), ...patch };
+    const now = Date.now();
+    const ttlMs = lifecycleTtlMs(next, now);
+    try {
+      const rebound = await service.bind({
+        targetSessionKey: candidate.targetSessionKey,
+        targetKind: candidate.targetKind,
+        conversation: candidate.conversation,
+        placement: "current",
+        metadata: {
+          ...candidate.metadata,
+          ...next,
+          idleTimeoutMs: next.idleTimeoutMs && next.idleTimeoutMs > 0
+            ? Math.max(0, next.lastActivityAt + next.idleTimeoutMs - now)
+            : 0,
+          zulipIdleTimeoutMs: next.idleTimeoutMs,
+          ...(next.maxAgeMs === undefined
+            ? {}
+            : {
+                maxAgeMs: next.maxAgeMs > 0
+                  ? Math.max(0, next.boundAt + next.maxAgeMs - now)
+                  : 0,
+                zulipMaxAgeMs: next.maxAgeMs,
+              }),
+        },
+        ...(ttlMs === undefined ? {} : { ttlMs }),
+        assertCurrent: () => {
+          const current = service.resolveByConversation(candidate.conversation);
+          if (!sameBindingGeneration(current, candidate) || !current) {
+            throw new Error("Zulip conversation binding changed during lifecycle update");
+          }
+          if (!sameLifecycleMetadata(current, candidate)) {
+            throw new Error("Zulip conversation binding changed during lifecycle update");
+          }
+          if (finiteMetadataNumber(current, "lastActivityAt") !==
+              finiteMetadataNumber(candidate, "lastActivityAt")) {
+            throw new BindingActivityChangedError();
+          }
+        },
+      });
+      await service.touchAsync(rebound.bindingId, next.lastActivityAt, rebound.conversation);
+      return next;
+    } catch (error) {
+      if (!(error instanceof BindingActivityChangedError)) throw error;
+      const current = service.resolveByConversation(candidate.conversation);
+      if (!sameBindingGeneration(current, candidate) || !current ||
+          !sameLifecycleMetadata(current, candidate)) {
         throw new Error("Zulip conversation binding changed during lifecycle update");
       }
-    },
-  });
-  await service.touchAsync(rebound.bindingId, next.lastActivityAt, rebound.conversation);
-  return next;
+      candidate = current;
+    }
+  }
+  throw new Error("Zulip conversation binding activity changed repeatedly during lifecycle update");
 }
 
 async function setZulipBindingLifecycleBySessionKey(
@@ -178,11 +237,7 @@ export async function resolveZulipInboundBindingRoute(
     route: configured.route,
     conversation: params.conversation,
   });
-  if (
-    runtime.bindingRecord &&
-    (finiteMetadataNumber(runtime.bindingRecord, "idleTimeoutMs") !== undefined ||
-      finiteMetadataNumber(runtime.bindingRecord, "maxAgeMs") !== undefined)
-  ) {
+  if (runtime.bindingRecord?.bindingId.startsWith("generic:")) {
     await updateZulipBindingLifecycleRecord(
       runtime.bindingRecord,
       {},

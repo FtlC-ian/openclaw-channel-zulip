@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Compatibility
+- **OpenClaw SDK baseline**: Pin development and lockfile resolution to OpenClaw 2026.9.6. The minimum supported host remains 2026.9.3 because all SDK subpaths used by the plugin are public in both versions.
+
 ## 2026.9.18
 
 ### Features

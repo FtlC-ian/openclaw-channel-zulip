@@ -2,12 +2,12 @@
 
 ## 2026.9.18 stable release gate
 
-This release requires **OpenClaw >=2026.9.3** and **Node.js >=24.16.0 <25 or
+This release requires **OpenClaw >=2026.9.6** and **Node.js >=24.16.0 <25 or
 >=26.1.0**. Verify public question runtime exports, build/typecheck, all
 unit/offline tests, packaged schema parity, and clean plugin/setup imports on both
 supported Node lines. The lockfile and package metadata must remain pinned to the
-reviewed OpenClaw 2026.9.6 SDK baseline. The minimum host remains 2026.9.3 because
-all SDK subpaths used by the plugin are public in both 2026.9.3 and 2026.9.6.
+reviewed OpenClaw 2026.9.6 SDK baseline. Conversation bindings require the public
+2026.9.6 channel contract and awaited generic binding route API.
 
 Before publishing, obtain independent review of the exact frozen commit. The
 release owner must separately authorize live acceptance: desktop and real mobile
@@ -21,6 +21,9 @@ production config changes, or soak.
 
 Before publishing the stable release:
 
+- Verify topic and DM `/acp spawn --bind here`, restart recovery, `/session idle`,
+  `/session max-age`, `/session unbind`, `/acp close`, substantive topic rename
+  isolation, and ordinary unbound fallback against the exact 2026.9.6 host.
 - Confirm CI passed for the exact commit being released.
 - From the `main` branch, dispatch **Zulip live smoke (protected)** with the
   candidate's full commit SHA. For a release, leave `candidate_ref` empty so the

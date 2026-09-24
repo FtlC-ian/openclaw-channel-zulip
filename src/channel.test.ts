@@ -12,6 +12,16 @@ import { resolveZulipAccount } from "./zulip/accounts.js";
 
 describe("zulipPlugin", () => {
   describe("messaging", () => {
+    it("declares generic current-conversation bindings without a plugin-owned store", () => {
+      expect(zulipPlugin.conversationBindings).toMatchObject({
+        supportsCurrentConversationBinding: true,
+        defaultTopLevelPlacement: "current",
+      });
+      expect(zulipPlugin.conversationBindings?.bindingStore).toBeUndefined();
+      expect(zulipPlugin.conversationBindings?.setIdleTimeoutBySessionKeyAsync).toBeUndefined();
+      expect(zulipPlugin.conversationBindings?.setMaxAgeBySessionKeyAsync).toBeUndefined();
+      expect(zulipPlugin.bindings).toBeDefined();
+    });
     it("preserves opaque session identities for routing fallback without inventing a stream", () => {
       const normalize = zulipPlugin.messaging!.normalizeTarget!;
       const id = `42:topic:v2:${"a".repeat(64)}`;

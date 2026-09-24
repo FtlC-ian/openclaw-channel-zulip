@@ -7,7 +7,10 @@ import type {
   ReplyPayload,
   RuntimeEnv,
 } from "../sdk.js";
-import { createChannelPairingController } from "../sdk.js";
+import {
+  createChannelPairingController,
+} from "../sdk.js";
+import { resolveZulipInboundBindingRoute } from "../conversation-bindings.js";
 import { resolveControlCommandGate } from "openclaw/plugin-sdk/command-auth-native";
 import {
   createStatusReactionController,
@@ -59,6 +62,7 @@ import {
   type ZulipDurableInboundPayload,
 } from "./durable-receive.js";
 import {
+  buildZulipDirectPeerId,
   buildZulipDirectSessionKey,
   buildZulipStreamConversation,
   buildZulipStreamSessionKey,
@@ -1154,14 +1158,27 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
           });
     const channelPrivacy = kind === "dm" ? undefined : resolveZulipStreamPrivacy(streamMetadata);
 
-    const route = core.channel.routing.resolveAgentRoute({
+    const dmConversationId = isDM
+      ? buildZulipDirectPeerId({
+          baseUrl,
+          botIdentity: email,
+          senderIdentity: dmTargetIdentity,
+        })
+      : undefined;
+    const conversation = {
+      channel: "zulip",
+      accountId: account.accountId,
+      conversationId: dmConversationId ?? streamConversation!.conversationId,
+      ...(isDM ? {} : { parentConversationId: String(Number(streamId)) }),
+    };
+    const ordinaryRoute = core.channel.routing.resolveAgentRoute({
       cfg,
       channel: "zulip",
       accountId: account.accountId,
       teamId: undefined,
       peer: {
         kind: chatType,
-        id: isDM ? dmTargetIdentity : (streamConversation?.conversationId ?? channelId),
+        id: conversation.conversationId,
       },
       parentPeer:
         !isDM
@@ -1172,7 +1189,13 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
           : undefined,
     });
 
-    const sessionKey = isDM
+    const bindingRoute = await resolveZulipInboundBindingRoute({
+      cfg,
+      route: ordinaryRoute,
+      conversation,
+    });
+    const route = bindingRoute.route;
+    const sessionKey = bindingRoute.boundSessionKey ?? (isDM
       ? buildZulipDirectSessionKey({
           agentId: route.agentId,
           accountId: route.accountId,
@@ -1183,7 +1206,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       : buildZulipStreamSessionKey({
           agentId: route.agentId,
           conversationId: streamConversation!.conversationId,
-        });
+        }));
 
     const timestamp = message.timestamp ? message.timestamp * 1000 : undefined;
     const textWithId = `${bodyText}\n[zulip message id: ${messageId}]`;
@@ -1207,7 +1230,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       sender: { name: senderName, id: senderIdentity },
       conversation: {
         kind: chatType,
-        id: isDM ? dmTargetIdentity : (streamConversation?.conversationId ?? channelId),
+        id: conversation.conversationId,
         label: fromLabel,
         threadId: isDM ? undefined : topic,
       },

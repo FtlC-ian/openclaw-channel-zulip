@@ -351,9 +351,10 @@ OpenClaw 2026.9.6 or newer can bind the current Zulip topic or one-to-one DM to
 an ACP/session target. Use `/acp spawn --bind here` in the conversation; ordinary
 messages then route to the bound session while replies keep the original
 `stream:<numeric-id>:<raw-topic>` or `user:<email>` delivery target. Core owns the
-durable record, restart recovery, `/acp close`, `/session unbind`, `/session idle`,
-`/session max-age`, `/new`, `/reset`, and `/agents`; this plugin does not maintain
-a second binding database.
+durable record and lifecycle operations; this plugin does not maintain a second
+binding database. Release acceptance must live-test restart recovery, `/acp close`,
+`/session unbind`, `/session idle`, `/session max-age`, `/new`, `/reset`, and
+`/agents` against the declared minimum OpenClaw host.
 
 Topic identities are the existing opaque v2 IDs. They include normalized account,
 realm, bot, numeric stream, and Unicode-canonical topic identity, while the raw

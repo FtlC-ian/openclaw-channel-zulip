@@ -1235,8 +1235,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         threadId: isDM ? undefined : topic,
       },
       route: {
-        agentId: route.agentId,
-        accountId: route.accountId,
+        ...route,
         routeSessionKey: sessionKey,
       },
       reply: {
@@ -1928,7 +1927,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
           cfg,
           channel: "zulip",
           accountId: route.accountId,
-          route: { agentId: route.agentId, sessionKey },
+          route: { ...route, sessionKey },
           ctxPayload,
           record: {
             updateLastRoute: {

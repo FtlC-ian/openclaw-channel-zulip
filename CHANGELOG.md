@@ -6,7 +6,7 @@
 - **Durable conversation bindings**: Add canonical topic and DM conversation references, current-conversation ACP binding support, configured ACP matching, and awaited inbound binding routing through OpenClaw-owned persistence. Bound replies preserve raw Zulip delivery destinations, ordinary routing remains unchanged when unbound, and substantive topic renames require explicit rebind.
 
 ### Tests
-- **Binding lifecycle coverage**: Cover canonical topic/DM identities, account/realm/bot isolation, case-only aliases, configured matching, command resolution, generic-store ownership, ordinary fallback, rename behavior, and delivery-route preservation. `/session idle` and `/session max-age` remain core generic-store operations; the plugin intentionally exposes no adapter-local lifecycle callbacks.
+- **Binding contract coverage**: Cover canonical topic/DM identities, account/realm/bot isolation, case-only aliases, configured/runtime precedence, real inbound bound routing, ownership-fact preservation, concurrent replacement handling, ordinary fallback, rename behavior, and Zulip delivery-route preservation. Restart recovery and lifecycle commands remain explicit live release checks against the supported OpenClaw host.
 
 ### Compatibility
 - **OpenClaw SDK baseline**: Pin development and lockfile resolution and raise the minimum supported host to OpenClaw 2026.9.6 for the public conversation-binding contract and awaited generic binding route API.

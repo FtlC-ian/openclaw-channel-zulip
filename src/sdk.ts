@@ -66,7 +66,6 @@ export {
   ensureConfiguredBindingRouteReady,
   resolveConfiguredBindingRoute,
 } from "openclaw/plugin-sdk/conversation-runtime";
-export { resolveRuntimeConversationBindingRouteAsync } from "openclaw/plugin-sdk/conversation-binding-runtime";
 
 export { jsonResult } from "openclaw/plugin-sdk/core";
 export { readNumberParam, readStringParam } from "openclaw/plugin-sdk/param-readers";

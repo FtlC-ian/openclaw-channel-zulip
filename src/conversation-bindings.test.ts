@@ -1,4 +1,12 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  registerSessionBindingAdapter,
+  unregisterSessionBindingAdapter,
+} from "openclaw/plugin-sdk/conversation-runtime";
+import type {
+  SessionBindingAdapter,
+  SessionBindingRecord,
+} from "openclaw/plugin-sdk/conversation-runtime";
 import { resolveZulipInboundBindingRoute } from "./conversation-bindings.js";
 import type { OpenClawConfig } from "./sdk.js";
 
@@ -16,6 +24,17 @@ const ordinaryRoute = {
   matchedBy: "default" as const,
 };
 
+function bindingRecord(bindingId: string, targetSessionKey: string, boundAt: number): SessionBindingRecord {
+  return {
+    bindingId,
+    targetSessionKey,
+    targetKind: "session",
+    conversation,
+    status: "active",
+    boundAt,
+  };
+}
+
 describe("resolveZulipInboundBindingRoute", () => {
   it("preserves ordinary routing when neither configured nor runtime bindings match", async () => {
     const runtime = vi.fn(async ({ route }) => ({ bindingRecord: null, route }));
@@ -31,7 +50,7 @@ describe("resolveZulipInboundBindingRoute", () => {
     expect(runtime).toHaveBeenCalledWith({ route: ordinaryRoute, conversation });
   });
 
-  it("awaits configured readiness before runtime binding resolution and lets the live record replace it", async () => {
+  it("lets a runtime binding replace a configured route without preparing the configured target", async () => {
     const calls: string[] = [];
     const configuredRoute = { ...ordinaryRoute, sessionKey: "agent:main:acp:configured" };
     const runtimeRoute = { ...ordinaryRoute, sessionKey: "agent:main:acp:live" };
@@ -54,7 +73,7 @@ describe("resolveZulipInboundBindingRoute", () => {
         }),
       } as never,
     );
-    expect(calls).toEqual(["ready", "runtime"]);
+    expect(calls).toEqual(["runtime"]);
     expect(result.route).toBe(runtimeRoute);
     expect(result.boundSessionKey).toBe(runtimeRoute.sessionKey);
   });
@@ -65,8 +84,104 @@ describe("resolveZulipInboundBindingRoute", () => {
       {
         resolveConfiguredBindingRoute: vi.fn(() => ({ bindingResolution: { record: {} }, route: ordinaryRoute })),
         ensureConfiguredBindingRouteReady: vi.fn(async () => ({ ok: false as const, error: "backend offline" })),
-        resolveRuntimeConversationBindingRouteAsync: vi.fn(),
+        resolveRuntimeConversationBindingRouteAsync: vi.fn(async ({ route }) => ({
+          bindingOwnerAvailable: true,
+          bindingRecord: null,
+          route,
+        })),
       } as never,
     )).rejects.toThrow("Configured Zulip conversation binding unavailable: backend offline");
+  });
+
+  it("does not prepare or reuse a configured target while runtime ownership is unavailable", async () => {
+    const ensureReady = vi.fn();
+    const configuredRoute = { ...ordinaryRoute, sessionKey: "agent:main:acp:configured" };
+    const result = await resolveZulipInboundBindingRoute(
+      { cfg: {} as OpenClawConfig, route: ordinaryRoute, conversation },
+      {
+        resolveConfiguredBindingRoute: vi.fn(() => ({
+          bindingResolution: { record: {} },
+          route: configuredRoute,
+          boundSessionKey: configuredRoute.sessionKey,
+        })),
+        ensureConfiguredBindingRouteReady: ensureReady,
+        resolveRuntimeConversationBindingRouteAsync: vi.fn(async ({ route }) => ({
+          bindingOwnerAvailable: false,
+          bindingRecord: null,
+          route,
+        })),
+      } as never,
+    );
+
+    expect(ensureReady).not.toHaveBeenCalled();
+    expect(result.boundSessionKey).toBeUndefined();
+  });
+});
+
+describe("OpenClaw runtime binding contract", () => {
+  let adapter: SessionBindingAdapter | undefined;
+
+  afterEach(() => {
+    if (adapter) {
+      unregisterSessionBindingAdapter({ channel: "zulip", accountId: "default", adapter });
+      adapter = undefined;
+    }
+  });
+
+  it("adopts a replacement that settles during the awaited activity update", async () => {
+    const initial = bindingRecord("initial", "agent:main:acp:initial", 100);
+    const replacement = bindingRecord("replacement", "agent:main:acp:replacement", 200);
+    let current = initial;
+    adapter = {
+      channel: "zulip",
+      accountId: "default",
+      listBySession: () => [],
+      resolveByConversation: () => current,
+      inspectByConversationAsync: async () => current,
+      touchAsync: async (bindingId) => {
+        if (bindingId === initial.bindingId) current = replacement;
+      },
+    };
+    registerSessionBindingAdapter(adapter);
+
+    const result = await resolveZulipInboundBindingRoute({
+      cfg: {} as OpenClawConfig,
+      route: ordinaryRoute,
+      conversation,
+    });
+
+    expect(result.bindingRecord).toEqual(replacement);
+    expect(result.boundSessionKey).toBe(replacement.targetSessionKey);
+    expect(result.route).toMatchObject({
+      agentId: "main",
+      sessionKey: replacement.targetSessionKey,
+      matchedBy: "binding.channel",
+    });
+  });
+
+  it("fails closed when ownership is replaced repeatedly during activity recording", async () => {
+    const records = [
+      bindingRecord("first", "agent:main:acp:first", 100),
+      bindingRecord("second", "agent:main:acp:second", 200),
+      bindingRecord("third", "agent:main:acp:third", 300),
+    ];
+    let index = 0;
+    adapter = {
+      channel: "zulip",
+      accountId: "default",
+      listBySession: () => [],
+      resolveByConversation: () => records[index],
+      inspectByConversationAsync: async () => records[index],
+      touchAsync: async () => {
+        index += 1;
+      },
+    };
+    registerSessionBindingAdapter(adapter);
+
+    await expect(resolveZulipInboundBindingRoute({
+      cfg: {} as OpenClawConfig,
+      route: ordinaryRoute,
+      conversation,
+    })).rejects.toThrow("Conversation binding changed repeatedly while recording activity");
   });
 });

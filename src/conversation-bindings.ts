@@ -2,8 +2,9 @@ import type { OpenClawConfig } from "./sdk.js";
 import {
   ensureConfiguredBindingRouteReady,
   resolveConfiguredBindingRoute,
-  resolveRuntimeConversationBindingRouteAsync,
 } from "./sdk.js";
+import { resolveRuntimeConversationBindingRouteAsync } from "openclaw/plugin-sdk/conversation-binding-runtime";
+import type { resolveRuntimeConversationBindingRoute } from "openclaw/plugin-sdk/conversation-runtime";
 
 type AgentRoute = Parameters<typeof resolveConfiguredBindingRoute>[0]["route"];
 type Conversation = {
@@ -12,6 +13,14 @@ type Conversation = {
   conversationId: string;
   parentConversationId?: string;
 };
+type RuntimeBindingRouteResolver = (
+  params: Parameters<typeof resolveRuntimeConversationBindingRoute>[0],
+) => Promise<ReturnType<typeof resolveRuntimeConversationBindingRoute>>;
+type BindingDependencies = {
+  resolveConfiguredBindingRoute: typeof resolveConfiguredBindingRoute;
+  ensureConfiguredBindingRouteReady: typeof ensureConfiguredBindingRouteReady;
+  resolveRuntimeConversationBindingRouteAsync: RuntimeBindingRouteResolver;
+};
 
 export async function resolveZulipInboundBindingRoute(
   params: {
@@ -19,14 +28,22 @@ export async function resolveZulipInboundBindingRoute(
     route: AgentRoute;
     conversation: Conversation;
   },
-  dependencies = {
+  dependencies: BindingDependencies = {
     resolveConfiguredBindingRoute,
     ensureConfiguredBindingRouteReady,
     resolveRuntimeConversationBindingRouteAsync,
   },
 ) {
   const configured = dependencies.resolveConfiguredBindingRoute(params);
-  if (configured.bindingResolution) {
+  const runtime = await dependencies.resolveRuntimeConversationBindingRouteAsync({
+    route: configured.route,
+    conversation: params.conversation,
+  });
+  const configuredSelected =
+    configured.bindingResolution !== null &&
+    runtime.bindingOwnerAvailable !== false &&
+    runtime.bindingRecord === null;
+  if (configuredSelected) {
     const ready = await dependencies.ensureConfiguredBindingRouteReady({
       cfg: params.cfg,
       bindingResolution: configured.bindingResolution,
@@ -35,12 +52,9 @@ export async function resolveZulipInboundBindingRoute(
       throw new Error(`Configured Zulip conversation binding unavailable: ${ready.error}`);
     }
   }
-  const runtime = await dependencies.resolveRuntimeConversationBindingRouteAsync({
-    route: configured.route,
-    conversation: params.conversation,
-  });
   return {
     ...runtime,
-    boundSessionKey: runtime.boundSessionKey ?? configured.boundSessionKey,
+    boundSessionKey:
+      runtime.boundSessionKey ?? (configuredSelected ? configured.boundSessionKey : undefined),
   };
 }

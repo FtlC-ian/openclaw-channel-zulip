@@ -6,7 +6,8 @@ This release requires **OpenClaw >=2026.9.3** and **Node.js >=24.16.0 <25 or
 >=26.1.0**. Verify public question runtime exports, build/typecheck, all
 unit/offline tests, packaged schema parity, and clean plugin/setup imports on both
 supported Node lines. The lockfile and package metadata must remain pinned to the
-reviewed OpenClaw 2026.9.3 SDK baseline.
+reviewed OpenClaw 2026.9.6 SDK baseline. The minimum host remains 2026.9.3 because
+all SDK subpaths used by the plugin are public in both 2026.9.3 and 2026.9.6.
 
 Before publishing, obtain independent review of the exact frozen commit. The
 release owner must separately authorize live acceptance: desktop and real mobile

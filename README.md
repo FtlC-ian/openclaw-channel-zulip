@@ -55,9 +55,11 @@ harness does not claim combined live acceptance or soak coverage.
 ## Installation
 
 This release requires **OpenClaw >=2026.9.3** and **Node.js >=24.16.0 <25 or
->=26.1.0**. The development SDK and lockfile are pinned to OpenClaw 2026.9.3,
-including its asynchronous outbound session-routing hook. Protected live
-acceptance for the exact release commit remains a release gate.
+>=26.1.0**. The development SDK and lockfile are pinned to OpenClaw 2026.9.6.
+The minimum host remains 2026.9.3 because every SDK subpath used by the plugin,
+including its asynchronous outbound session-routing hook, is public in that
+version. Protected live acceptance for the exact release commit remains a release
+gate.
 
 Durable inbound handling uses the shared ingress queue API. When upgrading an existing installation,
 pending records and

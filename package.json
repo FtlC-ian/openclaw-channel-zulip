@@ -52,7 +52,7 @@
   },
   "devDependencies": {
     "@types/ws": "^8.18.1",
-    "openclaw": "2026.9.3",
+    "openclaw": "2026.9.6",
     "typescript": "^5.7.0",
     "vitest": "^3.2.4"
   },

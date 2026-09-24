@@ -1195,18 +1195,19 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       conversation,
     });
     const route = bindingRoute.route;
-    const sessionKey = bindingRoute.boundSessionKey ?? (isDM
+    const ordinarySessionKey = isDM
       ? buildZulipDirectSessionKey({
-          agentId: route.agentId,
-          accountId: route.accountId,
+          agentId: ordinaryRoute.agentId,
+          accountId: ordinaryRoute.accountId,
           baseUrl,
           botIdentity: email,
           senderIdentity: dmTargetIdentity,
         })
       : buildZulipStreamSessionKey({
-          agentId: route.agentId,
+          agentId: ordinaryRoute.agentId,
           conversationId: streamConversation!.conversationId,
-        }));
+        });
+    const sessionKey = bindingRoute.boundSessionKey ?? ordinarySessionKey;
 
     const timestamp = message.timestamp ? message.timestamp * 1000 : undefined;
     const textWithId = `${bodyText}\n[zulip message id: ${messageId}]`;
@@ -1237,6 +1238,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       route: {
         ...route,
         routeSessionKey: sessionKey,
+        ...(bindingRoute.boundSessionKey ? { parentSessionKey: ordinarySessionKey } : {}),
       },
       reply: {
         to,

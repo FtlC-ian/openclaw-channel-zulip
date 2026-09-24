@@ -4,7 +4,11 @@ import {
   resolveConfiguredBindingRoute,
 } from "./sdk.js";
 import { resolveRuntimeConversationBindingRouteAsync } from "openclaw/plugin-sdk/conversation-binding-runtime";
-import type { resolveRuntimeConversationBindingRoute } from "openclaw/plugin-sdk/conversation-runtime";
+import {
+  getSessionBindingService,
+  type SessionBindingRecord,
+  type resolveRuntimeConversationBindingRoute,
+} from "openclaw/plugin-sdk/conversation-runtime";
 
 type AgentRoute = Parameters<typeof resolveConfiguredBindingRoute>[0]["route"];
 type Conversation = {
@@ -21,6 +25,113 @@ type BindingDependencies = {
   ensureConfiguredBindingRouteReady: typeof ensureConfiguredBindingRouteReady;
   resolveRuntimeConversationBindingRouteAsync: RuntimeBindingRouteResolver;
 };
+
+type BindingLifecycleRecord = {
+  boundAt: number;
+  lastActivityAt: number;
+  idleTimeoutMs?: number;
+  maxAgeMs?: number;
+};
+
+type SessionBindingService = ReturnType<typeof getSessionBindingService>;
+
+function finiteMetadataNumber(record: SessionBindingRecord, key: string): number | undefined {
+  const value = record.metadata?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function lifecycleRecord(record: SessionBindingRecord): BindingLifecycleRecord {
+  return {
+    boundAt: finiteMetadataNumber(record, "boundAt") ?? record.boundAt,
+    lastActivityAt: finiteMetadataNumber(record, "lastActivityAt") ?? record.boundAt,
+    ...(finiteMetadataNumber(record, "idleTimeoutMs") === undefined
+      ? {}
+      : { idleTimeoutMs: finiteMetadataNumber(record, "idleTimeoutMs") }),
+    ...(finiteMetadataNumber(record, "maxAgeMs") === undefined
+      ? {}
+      : { maxAgeMs: finiteMetadataNumber(record, "maxAgeMs") }),
+  };
+}
+
+function lifecycleTtlMs(record: BindingLifecycleRecord, now: number): number | undefined {
+  const expirations = [
+    record.idleTimeoutMs && record.idleTimeoutMs > 0
+      ? record.lastActivityAt + record.idleTimeoutMs
+      : undefined,
+    record.maxAgeMs && record.maxAgeMs > 0 ? record.boundAt + record.maxAgeMs : undefined,
+  ].filter((value): value is number => value !== undefined);
+  if (expirations.length === 0) return undefined;
+  return Math.max(0, Math.min(...expirations) - now);
+}
+
+async function updateZulipBindingLifecycleRecord(
+  record: SessionBindingRecord,
+  patch: Pick<BindingLifecycleRecord, "idleTimeoutMs" | "maxAgeMs">,
+  service: SessionBindingService,
+): Promise<BindingLifecycleRecord> {
+  const next = { ...lifecycleRecord(record), ...patch };
+  const ttlMs = lifecycleTtlMs(next, Date.now());
+  const rebound = await service.bind({
+    targetSessionKey: record.targetSessionKey,
+    targetKind: record.targetKind,
+    conversation: record.conversation,
+    placement: "current",
+    metadata: { ...record.metadata, ...next },
+    ...(ttlMs === undefined ? {} : { ttlMs }),
+    assertCurrent: () => {
+      const current = service.resolveByConversation(record.conversation);
+      if (current?.bindingId !== record.bindingId || current.targetSessionKey !== record.targetSessionKey) {
+        throw new Error("Zulip conversation binding changed during lifecycle update");
+      }
+    },
+  });
+  await service.touchAsync(rebound.bindingId, next.lastActivityAt, rebound.conversation);
+  return next;
+}
+
+async function setZulipBindingLifecycleBySessionKey(
+  params: {
+    targetSessionKey: string;
+    accountId?: string | null;
+    idleTimeoutMs?: number;
+    maxAgeMs?: number;
+  },
+  service: SessionBindingService = getSessionBindingService(),
+): Promise<BindingLifecycleRecord[]> {
+  const targetSessionKey = params.targetSessionKey.trim();
+  const accountId = params.accountId?.trim();
+  if (!targetSessionKey) return [];
+  const records = service.listBySession(targetSessionKey).filter((record) =>
+    record.conversation.channel === "zulip" &&
+    (!accountId || record.conversation.accountId === accountId)
+  );
+  const updated: BindingLifecycleRecord[] = [];
+  for (const record of records) {
+    updated.push(await updateZulipBindingLifecycleRecord(record, {
+      ...(params.idleTimeoutMs === undefined
+        ? {}
+        : { idleTimeoutMs: Math.max(0, Math.floor(params.idleTimeoutMs)) }),
+      ...(params.maxAgeMs === undefined
+        ? {}
+        : { maxAgeMs: Math.max(0, Math.floor(params.maxAgeMs)) }),
+    }, service));
+  }
+  return updated;
+}
+
+export async function setZulipBindingIdleTimeoutBySessionKey(
+  params: { targetSessionKey: string; accountId?: string | null; idleTimeoutMs: number },
+  service?: SessionBindingService,
+) {
+  return setZulipBindingLifecycleBySessionKey(params, service);
+}
+
+export async function setZulipBindingMaxAgeBySessionKey(
+  params: { targetSessionKey: string; accountId?: string | null; maxAgeMs: number },
+  service?: SessionBindingService,
+) {
+  return setZulipBindingLifecycleBySessionKey(params, service);
+}
 
 export async function resolveZulipInboundBindingRoute(
   params: {
@@ -39,6 +150,13 @@ export async function resolveZulipInboundBindingRoute(
     route: configured.route,
     conversation: params.conversation,
   });
+  if (
+    runtime.bindingRecord &&
+    (finiteMetadataNumber(runtime.bindingRecord, "idleTimeoutMs") !== undefined ||
+      finiteMetadataNumber(runtime.bindingRecord, "maxAgeMs") !== undefined)
+  ) {
+    await updateZulipBindingLifecycleRecord(runtime.bindingRecord, {}, getSessionBindingService());
+  }
   const configuredSelected =
     configured.bindingResolution !== null &&
     runtime.bindingOwnerAvailable !== false &&

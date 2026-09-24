@@ -151,6 +151,14 @@ describe("Zulip conversation binding identities", () => {
     expect(resolveZulipCommandConversation({
       sessionKey: `agent:main:zulip:default:direct:${direct}`,
     })).toEqual({ conversationId: direct });
+    expect(resolveZulipCommandConversation({
+      sessionKey: "agent:bound:acp:topic-session",
+      parentSessionKey: `agent:main:zulip:channel:${topic}`,
+    })).toEqual({ conversationId: topic, parentConversationId: "42" });
+    expect(resolveZulipCommandConversation({
+      sessionKey: "agent:bound:acp:dm-session",
+      parentSessionKey: `agent:main:zulip:default:direct:${direct}`,
+    })).toEqual({ conversationId: direct });
   });
 
   it("matches only the exact canonical identity, so substantive topic renames require rebind", () => {

@@ -22,8 +22,9 @@ production config changes, or soak.
 Before publishing the stable release:
 
 - Verify topic and DM `/acp spawn --bind here`, restart recovery, `/session idle`,
-  `/session max-age`, `/session unbind`, `/acp close`, substantive topic rename
-  isolation, and ordinary unbound fallback against the exact 2026.9.6 host.
+  `/session max-age`, `/session unbind`, `/acp close`, `/new`, `/reset`, and
+  `/agents`, plus substantive topic rename isolation and ordinary unbound fallback,
+  against the exact 2026.9.6 host.
 - Confirm CI passed for the exact commit being released.
 - From the `main` branch, dispatch **Zulip live smoke (protected)** with the
   candidate's full commit SHA. For a release, leave `candidate_ref` empty so the

@@ -18,8 +18,8 @@ describe("zulipPlugin", () => {
         defaultTopLevelPlacement: "current",
       });
       expect(zulipPlugin.conversationBindings?.bindingStore).toBeUndefined();
-      expect(zulipPlugin.conversationBindings?.setIdleTimeoutBySessionKeyAsync).toBeUndefined();
-      expect(zulipPlugin.conversationBindings?.setMaxAgeBySessionKeyAsync).toBeUndefined();
+      expect(zulipPlugin.conversationBindings?.setIdleTimeoutBySessionKeyAsync).toBeTypeOf("function");
+      expect(zulipPlugin.conversationBindings?.setMaxAgeBySessionKeyAsync).toBeTypeOf("function");
       expect(zulipPlugin.bindings).toBeDefined();
     });
     it("preserves opaque session identities for routing fallback without inventing a stream", () => {

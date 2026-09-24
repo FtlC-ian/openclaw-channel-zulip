@@ -7,7 +7,11 @@ import type {
   SessionBindingAdapter,
   SessionBindingRecord,
 } from "openclaw/plugin-sdk/conversation-runtime";
-import { resolveZulipInboundBindingRoute } from "./conversation-bindings.js";
+import {
+  resolveZulipInboundBindingRoute,
+  setZulipBindingIdleTimeoutBySessionKey,
+  setZulipBindingMaxAgeBySessionKey,
+} from "./conversation-bindings.js";
 import type { OpenClawConfig } from "./sdk.js";
 
 const conversation = {
@@ -183,5 +187,127 @@ describe("OpenClaw runtime binding contract", () => {
       route: ordinaryRoute,
       conversation,
     })).rejects.toThrow("Conversation binding changed repeatedly while recording activity");
+  });
+});
+
+describe("Zulip generic binding lifecycle updates", () => {
+  function createService(records: SessionBindingRecord[]) {
+    let current = records;
+    const service = {
+      listBySession: vi.fn((targetSessionKey: string) =>
+        current.filter((record) => record.targetSessionKey === targetSessionKey),
+      ),
+      resolveByConversation: vi.fn((ref: SessionBindingRecord["conversation"]) =>
+        current.find((record) =>
+          record.conversation.channel === ref.channel &&
+          record.conversation.accountId === ref.accountId &&
+          record.conversation.conversationId === ref.conversationId
+        ) ?? null,
+      ),
+      bind: vi.fn(async (input: {
+        targetSessionKey: string;
+        targetKind: SessionBindingRecord["targetKind"];
+        conversation: SessionBindingRecord["conversation"];
+        metadata?: Record<string, unknown>;
+        ttlMs?: number;
+        assertCurrent?: () => void;
+      }) => {
+        input.assertCurrent?.();
+        const previous = service.resolveByConversation(input.conversation)!;
+        const rebound: SessionBindingRecord = {
+          ...previous,
+          targetSessionKey: input.targetSessionKey,
+          targetKind: input.targetKind,
+          boundAt: 999,
+          metadata: { ...input.metadata, lastActivityAt: 999 },
+          ...(input.ttlMs === undefined ? {} : { expiresAt: 999 + input.ttlMs }),
+        };
+        current = current.map((record) => record === previous ? rebound : record);
+        return rebound;
+      }),
+      touchAsync: vi.fn(async (bindingId: string, at?: number) => {
+        current = current.map((record) => record.bindingId === bindingId
+          ? { ...record, metadata: { ...record.metadata, lastActivityAt: at } }
+          : record);
+      }),
+    };
+    return service;
+  }
+
+  it("mutates only the requested account and returns the persisted lifecycle record", async () => {
+    const targetSessionKey = "agent:bound:acp:shared";
+    const defaultRecord = {
+      ...bindingRecord("default-binding", targetSessionKey, 100),
+      metadata: { lastActivityAt: 150, maxAgeMs: 1_000 },
+    };
+    const otherRecord = {
+      ...bindingRecord("other-binding", targetSessionKey, 200),
+      conversation: { ...conversation, accountId: "other", conversationId: `43:topic:v2:${"b".repeat(64)}` },
+      metadata: { lastActivityAt: 250 },
+    };
+    const service = createService([defaultRecord, otherRecord]);
+
+    const result = await setZulipBindingIdleTimeoutBySessionKey({
+      targetSessionKey,
+      accountId: "default",
+      idleTimeoutMs: 500,
+    }, service as never);
+
+    expect(result).toEqual([{
+      boundAt: 100,
+      lastActivityAt: 150,
+      idleTimeoutMs: 500,
+      maxAgeMs: 1_000,
+    }]);
+    expect(service.bind).toHaveBeenCalledTimes(1);
+    expect(service.bind).toHaveBeenCalledWith(expect.objectContaining({
+      conversation: defaultRecord.conversation,
+      metadata: expect.objectContaining({
+        boundAt: 100,
+        lastActivityAt: 150,
+        idleTimeoutMs: 500,
+        maxAgeMs: 1_000,
+      }),
+    }));
+    expect(service.touchAsync).toHaveBeenCalledWith("default-binding", 150, defaultRecord.conversation);
+  });
+
+  it("updates max age, preserves idle state, and returns no records for a missing binding", async () => {
+    const targetSessionKey = "agent:bound:acp:topic";
+    const record = {
+      ...bindingRecord("topic-binding", targetSessionKey, 100),
+      metadata: { boundAt: 80, lastActivityAt: 120, idleTimeoutMs: 600 },
+    };
+    const service = createService([record]);
+
+    await expect(setZulipBindingMaxAgeBySessionKey({
+      targetSessionKey,
+      accountId: "default",
+      maxAgeMs: 2_000,
+    }, service as never)).resolves.toEqual([{
+      boundAt: 80,
+      lastActivityAt: 120,
+      idleTimeoutMs: 600,
+      maxAgeMs: 2_000,
+    }]);
+    await expect(setZulipBindingMaxAgeBySessionKey({
+      targetSessionKey: "agent:bound:acp:missing",
+      accountId: "default",
+      maxAgeMs: 2_000,
+    }, service as never)).resolves.toEqual([]);
+  });
+
+  it("rejects a concurrent replacement instead of overwriting the new owner", async () => {
+    const targetSessionKey = "agent:bound:acp:topic";
+    const record = bindingRecord("topic-binding", targetSessionKey, 100);
+    const service = createService([record]);
+    service.resolveByConversation.mockReturnValueOnce({ ...record, bindingId: "replacement" });
+
+    await expect(setZulipBindingIdleTimeoutBySessionKey({
+      targetSessionKey,
+      accountId: "default",
+      idleTimeoutMs: 500,
+    }, service as never)).rejects.toThrow("changed during lifecycle update");
+    expect(service.touchAsync).not.toHaveBeenCalled();
   });
 });

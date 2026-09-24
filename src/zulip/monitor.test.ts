@@ -2871,6 +2871,7 @@ describe("monitorZulipProvider", () => {
       ctxPayload: {
         AgentId: "bound",
         SessionKey: targetSessionKey,
+        ParentSessionKey: expect.stringMatching(/^agent:debbie:zulip:channel:4:topic:v2:[0-9a-f]{64}$/),
         To: "stream:4:zulip-plugin-pr",
         MessageThreadId: "zulip-plugin-pr",
       },
@@ -2923,6 +2924,9 @@ describe("monitorZulipProvider", () => {
       ctxPayload: expect.objectContaining({
         AgentId: "bound",
         SessionKey: targetSessionKey,
+        ParentSessionKey: expect.stringMatching(
+          /^agent:debbie:zulip:default:direct:account-[0-9a-f]{64}:user8@zlp\.pubnerd\.app$/,
+        ),
         To: "user:user8@zlp.pubnerd.app",
         OriginatingTo: "user:user8@zlp.pubnerd.app",
       }),

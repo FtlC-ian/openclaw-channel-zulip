@@ -32,6 +32,10 @@ import { normalizeZulipBaseUrl } from "./zulip/client.js";
 import { sendMessageZulip, sendPollZulip, type ZulipSendResult } from "./zulip/send.js";
 import type { ZulipRoutingFallback } from "./zulip/routing-fallback.js";
 import {
+  setZulipBindingIdleTimeoutBySessionKey,
+  setZulipBindingMaxAgeBySessionKey,
+} from "./conversation-bindings.js";
+import {
   matchZulipConfiguredConversation,
   resolveZulipCommandConversation,
   resolveZulipConversationRef,
@@ -336,6 +340,8 @@ export const zulipPlugin = {
     defaultTopLevelPlacement: "current",
     resolveConversationRef: ({ conversationId, parentConversationId }) =>
       resolveZulipConversationRef({ conversationId, parentConversationId }),
+    setIdleTimeoutBySessionKeyAsync: setZulipBindingIdleTimeoutBySessionKey,
+    setMaxAgeBySessionKeyAsync: setZulipBindingMaxAgeBySessionKey,
   },
   groups: {
     resolveRequireMention: resolveZulipGroupRequireMention,

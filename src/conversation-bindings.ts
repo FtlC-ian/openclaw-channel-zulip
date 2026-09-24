@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import type { OpenClawConfig } from "./sdk.js";
 import {
   ensureConfiguredBindingRouteReady,
@@ -24,6 +25,7 @@ type BindingDependencies = {
   resolveConfiguredBindingRoute: typeof resolveConfiguredBindingRoute;
   ensureConfiguredBindingRouteReady: typeof ensureConfiguredBindingRouteReady;
   resolveRuntimeConversationBindingRouteAsync: RuntimeBindingRouteResolver;
+  getSessionBindingService: typeof getSessionBindingService;
 };
 
 type BindingLifecycleRecord = {
@@ -34,6 +36,31 @@ type BindingLifecycleRecord = {
 };
 
 type SessionBindingService = ReturnType<typeof getSessionBindingService>;
+
+function sameConversation(
+  left: SessionBindingRecord["conversation"],
+  right: SessionBindingRecord["conversation"],
+): boolean {
+  return left.channel === right.channel &&
+    left.accountId === right.accountId &&
+    left.conversationId === right.conversationId &&
+    left.parentConversationId === right.parentConversationId;
+}
+
+function sameBindingGeneration(
+  left: SessionBindingRecord | null,
+  right: SessionBindingRecord,
+): boolean {
+  return left !== null &&
+    left.bindingId === right.bindingId &&
+    left.targetSessionKey === right.targetSessionKey &&
+    left.targetKind === right.targetKind &&
+    left.status === right.status &&
+    left.boundAt === right.boundAt &&
+    left.expiresAt === right.expiresAt &&
+    sameConversation(left.conversation, right.conversation) &&
+    isDeepStrictEqual(left.metadata ?? {}, right.metadata ?? {});
+}
 
 function finiteMetadataNumber(record: SessionBindingRecord, key: string): number | undefined {
   const value = record.metadata?.[key];
@@ -80,7 +107,7 @@ async function updateZulipBindingLifecycleRecord(
     ...(ttlMs === undefined ? {} : { ttlMs }),
     assertCurrent: () => {
       const current = service.resolveByConversation(record.conversation);
-      if (current?.bindingId !== record.bindingId || current.targetSessionKey !== record.targetSessionKey) {
+      if (!sameBindingGeneration(current, record)) {
         throw new Error("Zulip conversation binding changed during lifecycle update");
       }
     },
@@ -143,10 +170,11 @@ export async function resolveZulipInboundBindingRoute(
     resolveConfiguredBindingRoute,
     ensureConfiguredBindingRouteReady,
     resolveRuntimeConversationBindingRouteAsync,
+    getSessionBindingService,
   },
 ) {
   const configured = dependencies.resolveConfiguredBindingRoute(params);
-  const runtime = await dependencies.resolveRuntimeConversationBindingRouteAsync({
+  let runtime = await dependencies.resolveRuntimeConversationBindingRouteAsync({
     route: configured.route,
     conversation: params.conversation,
   });
@@ -155,7 +183,15 @@ export async function resolveZulipInboundBindingRoute(
     (finiteMetadataNumber(runtime.bindingRecord, "idleTimeoutMs") !== undefined ||
       finiteMetadataNumber(runtime.bindingRecord, "maxAgeMs") !== undefined)
   ) {
-    await updateZulipBindingLifecycleRecord(runtime.bindingRecord, {}, getSessionBindingService());
+    await updateZulipBindingLifecycleRecord(
+      runtime.bindingRecord,
+      {},
+      dependencies.getSessionBindingService(),
+    );
+    runtime = await dependencies.resolveRuntimeConversationBindingRouteAsync({
+      route: configured.route,
+      conversation: params.conversation,
+    });
   }
   const configuredSelected =
     configured.bindingResolution !== null &&

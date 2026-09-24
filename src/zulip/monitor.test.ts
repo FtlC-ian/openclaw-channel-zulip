@@ -2820,6 +2820,14 @@ describe("monitorZulipProvider", () => {
 
     await runMonitorOnce();
 
+    expect(state.core.channel.routing.resolveAgentRoute).toHaveBeenCalledWith(expect.objectContaining({
+      channel: "zulip",
+      accountId: "default",
+      peer: {
+        kind: "direct",
+        id: "user8@zlp.pubnerd.app",
+      },
+    }));
     expect(state.core.channel.inbound.buildContext).toHaveReturnedWith(
       expect.objectContaining({
         To: "user:user8@zlp.pubnerd.app",

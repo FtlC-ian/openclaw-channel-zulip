@@ -1178,7 +1178,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       teamId: undefined,
       peer: {
         kind: chatType,
-        id: conversation.conversationId,
+        id: isDM ? dmTargetIdentity : conversation.conversationId,
       },
       parentPeer:
         !isDM

@@ -128,13 +128,13 @@ export async function stagePinnedAcpRuntime(runnerTemp, hostVersion, runCli = ru
   const root = join(runnerTemp, "openclaw-smoke");
   const stateDir = join(root, "state");
   const bootstrap = join(root, "bootstrap.json");
-  await mkdir(stateDir, { recursive: true, mode: 0o700 });
   try {
     await lstat(join(root, "openclaw.json"));
-    throw new Error("ACP runtime must be staged before protected configuration exists");
+    return { stateDir, staged: false };
   } catch (error) {
     if (error?.code !== "ENOENT") throw error;
   }
+  await mkdir(stateDir, { recursive: true, mode: 0o700 });
   await writeFile(bootstrap, "{}\n", { mode: 0o600, flag: "wx" });
   const env = { OPENCLAW_CONFIG_PATH: bootstrap, OPENCLAW_STATE_DIR: stateDir };
   try {
@@ -152,7 +152,7 @@ export async function stagePinnedAcpRuntime(runnerTemp, hostVersion, runCli = ru
     await rm(bootstrap, { force: true });
     await rm(`${bootstrap}.bak`, { force: true });
   }
-  return stateDir;
+  return { stateDir, staged: true };
 }
 
 async function main() {
@@ -165,7 +165,10 @@ async function main() {
     if (!process.env.RUNNER_TEMP || !process.env.GITHUB_ENV) {
       throw new Error("Protected smoke staging requires runner-local paths");
     }
-    await stagePinnedAcpRuntime(process.env.RUNNER_TEMP, result.openclawVersion);
+    const acp = await stagePinnedAcpRuntime(process.env.RUNNER_TEMP, result.openclawVersion);
+    process.stdout.write(acp.staged
+      ? "Staged pinned acpx before protected configuration\n"
+      : "Protected configuration already exists; acpx availability will be checked without installing\n");
   }
   if (process.env.GITHUB_ENV) {
     await appendFile(

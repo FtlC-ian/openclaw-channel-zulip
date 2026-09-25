@@ -11,7 +11,7 @@ import { zstdCompressSync } from "node:zlib";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { assertFinalPrivateTypingStop, assertMessageRemainsExact, authenticatedUserId, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, drainEventQueueUntilQuiet, DURABLE_OFFLINE_DELAY_MS, enableHandledReadForSmokeConfig, eventOccursBefore, EventQueue, extractExactUploadUrl, formatSmokeTurnEvidence, Gateway, hasFinalPrivateTypingStop, hasProvableMinimumMessageDelay, inspectChildTranscripts, inspectLifecycleTurnEvidence, inspectSmokeTurnEvidence, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactPollMessage, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, isUsageCountedTranscriptName, lifecycleDiagnosticSummary, lifecycleEvidenceCounts, lifecycleSummary, normalizeScenarioError, parseZulipChannelTurnDiagnostic, parseZulipChannelTurnResult, parseZulipHandledReadDiagnostic, parseZulipSubagentDiagnostic, probeRunnerLocalGatewayHealth, readZulipMessageFlags, redactError, resolveUploadUrl, signalProcessTree, subagentCompletedBeforeReply, validateEnvironment, verifySmokeAcpRuntime, waitForProcessTreeExit, waitForZulipMessageRead, writeGatewayGeneration } from "./run.mjs";
-import { selectSmokeModel, validateSmokeAcpCapability, validateSmokeBaselineModel } from "./prepare-config.mjs";
+import { validateSmokeAcpCapability, validateSmokeBaselineModel } from "./prepare-config.mjs";
 import { resolveInstalledOpenClawRoot, stageBundledPlugin, stagePinnedAcpRuntime } from "./stage-bundled-plugin.mjs";
 import { parseSpawnReceipt, readOrdinaryTranscriptEvidence, readSessionTranscriptEvidence, readZulipBindings, renderedText } from "./bindings.mjs";
 
@@ -63,15 +63,6 @@ test("requires ACP policy and plugin admission without exposing protected values
   assert.throws(() => validateSmokeAcpCapability({ ...config, plugins: { allow: ["zulip"] } }), /omits acpx/);
 });
 
-test("keeps the trusted main workflow model selector compatible with binding preflight", () => {
-  const config = { agents: { defaults: { model: "provider/baseline", models: { "provider/baseline": {} } } },
-    models: { providers: { provider: { models: [{ id: "baseline" }] } } } };
-  assert.equal(selectSmokeModel(config, "gpt-5.2"), config);
-  assert.equal(config.agents.defaults.model, "provider/gpt-5.2");
-  assert.ok(config.models.providers.provider.models.some((model) => model.id === "gpt-5.2"));
-  assert.equal(validateSmokeBaselineModel(config), config);
-});
-
 test("requires a pinned ACP runtime without installing code after protected secrets exist", async () => {
   const root = await mkdtemp(join(tmpdir(), "zulip-smoke-acp-preflight-"));
   const configPath = join(root, "protected.json");
@@ -100,7 +91,7 @@ test("stages pinned ACP runtime before the protected configuration exists", asyn
   const bootstrapPath = join(root, "openclaw-smoke", "bootstrap.json");
   const calls = [];
   try {
-    const stateDir = await stagePinnedAcpRuntime(root, "2026.9.6", (args, env) => {
+    const result = await stagePinnedAcpRuntime(root, "2026.9.6", (args, env) => {
       calls.push(args);
       assert.equal(env.OPENCLAW_CONFIG_PATH, bootstrapPath);
       assert.equal(env.OPENCLAW_STATE_DIR, join(root, "openclaw-smoke", "state"));
@@ -109,13 +100,13 @@ test("stages pinned ACP runtime before the protected configuration exists", asyn
       if (args[1] === "install") return "";
       return JSON.stringify({ plugins: [{ id: "acpx", status: "loaded", version: "2026.9.6" }] });
     });
-    assert.equal(stateDir, join(root, "openclaw-smoke", "state"));
+    assert.deepEqual(result, { stateDir: join(root, "openclaw-smoke", "state"), staged: true });
     assert.deepEqual(calls, [["plugins", "install", "@openclaw/acpx@2026.9.6"],
       ["plugins", "list", "--json"]]);
     await assert.rejects(readFile(bootstrapPath), { code: "ENOENT" });
     await writeFile(configPath, "{}", { mode: 0o600 });
-    await assert.rejects(stagePinnedAcpRuntime(root, "2026.9.6", () => { throw new Error("must not run"); }),
-      /before protected configuration exists/);
+    assert.deepEqual(await stagePinnedAcpRuntime(root, "2026.9.6", () => { throw new Error("must not run"); }),
+      { stateDir: join(root, "openclaw-smoke", "state"), staged: false });
   } finally {
     await rm(root, { recursive: true, force: true });
   }

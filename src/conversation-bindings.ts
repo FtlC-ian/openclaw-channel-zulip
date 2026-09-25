@@ -160,8 +160,7 @@ async function updateZulipBindingLifecycleRecord(
           }
         },
       });
-      await service.touchAsync(rebound.bindingId, next.lastActivityAt, rebound.conversation);
-      return next;
+      return lifecycleRecord(rebound);
     } catch (error) {
       if (!(error instanceof BindingActivityChangedError)) throw error;
       const current = service.resolveByConversation(candidate.conversation);

@@ -356,7 +356,7 @@ describe("Zulip generic binding lifecycle updates", () => {
 
     expect(result).toEqual([{
       boundAt: 100,
-      lastActivityAt: 150,
+      lastActivityAt: 999,
       idleTimeoutMs: 500,
       maxAgeMs: 1_000,
     }]);
@@ -370,7 +370,7 @@ describe("Zulip generic binding lifecycle updates", () => {
         zulipMaxAgeMs: 1_000,
       }),
     }));
-    expect(service.touchAsync).toHaveBeenCalledWith("generic:default-binding", 150, defaultRecord.conversation);
+    expect(service.touchAsync).not.toHaveBeenCalled();
   });
 
   it("updates max age, preserves idle state, and returns no records for a missing binding", async () => {
@@ -389,7 +389,7 @@ describe("Zulip generic binding lifecycle updates", () => {
         maxAgeMs: 2_000,
       }, service as never)).resolves.toEqual([{
         boundAt: 80,
-        lastActivityAt: 120,
+        lastActivityAt: 999,
         idleTimeoutMs: 600,
         maxAgeMs: 2_000,
       }]);
@@ -470,10 +470,53 @@ describe("Zulip generic binding lifecycle updates", () => {
       idleTimeoutMs: 500,
     }, service as never)).resolves.toEqual([{
       boundAt: 100,
-      lastActivityAt: 175,
+      lastActivityAt: 999,
       idleTimeoutMs: 500,
     }]);
     expect(service.bind).toHaveBeenCalledTimes(2);
+    expect(service.touchAsync).not.toHaveBeenCalled();
+  });
+
+  it("does not overwrite activity that advances after the lifecycle bind commits", async () => {
+    const targetSessionKey = "agent:bound:acp:topic";
+    const record = {
+      ...bindingRecord("generic:topic-binding", targetSessionKey, 100),
+      metadata: { boundAt: 100, lastActivityAt: 150, idleTimeoutMs: 500 },
+    };
+    let current: SessionBindingRecord = record;
+    const service = {
+      listBySession: vi.fn(() => [record]),
+      resolveByConversation: vi.fn(() => current),
+      bind: vi.fn(async (input: {
+        assertCurrent?: () => void;
+        metadata?: Record<string, unknown>;
+      }) => {
+        input.assertCurrent?.();
+        const rebound = {
+          ...current,
+          boundAt: 200,
+          metadata: { ...input.metadata, lastActivityAt: 200 },
+        };
+        current = {
+          ...rebound,
+          metadata: { ...rebound.metadata, lastActivityAt: 300 },
+        };
+        return rebound;
+      }),
+      touchAsync: vi.fn(async () => {}),
+    };
+
+    await expect(setZulipBindingIdleTimeoutBySessionKey({
+      targetSessionKey,
+      accountId: "default",
+      idleTimeoutMs: 500,
+    }, service as never)).resolves.toEqual([{
+      boundAt: 100,
+      lastActivityAt: 200,
+      idleTimeoutMs: 500,
+    }]);
+    expect(current.metadata?.lastActivityAt).toBe(300);
+    expect(service.touchAsync).not.toHaveBeenCalled();
   });
 
   it("leaves adapter-owned bindings to their adapter lifecycle contract", async () => {

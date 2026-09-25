@@ -578,6 +578,7 @@ describe("monitorZulipProvider", () => {
       return { code: "123456", created: false };
     });
     state.account.streams = ["debbie"];
+    state.account.accountId = "default";
     state.account.requireMention = false;
     state.account.chatmode = "normal";
     state.account.config = {
@@ -2885,6 +2886,47 @@ describe("monitorZulipProvider", () => {
         },
       },
     });
+  });
+
+  it("keeps durable inbound retryable when binding ownership becomes unavailable", async () => {
+    state.account.accountId = "owner-unavailable";
+    enableDurableInboundJournal();
+    const adapter: SessionBindingAdapter = {
+      channel: "zulip",
+      accountId: state.account.accountId,
+      listBySession: () => [],
+      resolveByConversation: () => null,
+      inspectByConversationAsync: async () => {
+        unregisterSessionBindingAdapter({
+          channel: "zulip",
+          accountId: state.account.accountId,
+          adapter,
+        });
+        return null;
+      },
+    };
+    registerSessionBindingAdapter(adapter);
+    registeredBindingAdapters.push(adapter);
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 1, type: "message", message: makeChannelMessage(1006) }],
+    }];
+
+    await runMonitorOnce();
+
+    const { createZulipDurableInboundMessageId } = await import("./durable-receive.js");
+    const durableId = createZulipDurableInboundMessageId({
+      accountId: state.account.accountId,
+      messageId: "1006",
+    });
+    expect(state.core.channel.inbound.buildContext).not.toHaveBeenCalled();
+    expect(state.core.channel.inbound.dispatch).not.toHaveBeenCalled();
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+    const queue = state.durableQueues.get(state.account.accountId);
+    expect(queue?.release).toHaveBeenCalledWith(durableId, {
+      lastError: "Error: Zulip conversation binding owner unavailable; retry inbound delivery",
+    });
+    expect(queue?.complete).not.toHaveBeenCalled();
   });
 
   it("routes a bound DM through the real binding runtime while preserving the native reply target", async () => {

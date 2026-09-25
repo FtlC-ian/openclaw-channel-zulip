@@ -110,7 +110,7 @@ describe("resolveZulipInboundBindingRoute", () => {
   it("does not prepare or reuse a configured target while runtime ownership is unavailable", async () => {
     const ensureReady = vi.fn();
     const configuredRoute = { ...ordinaryRoute, sessionKey: "agent:main:acp:configured" };
-    const result = await resolveZulipInboundBindingRoute(
+    await expect(resolveZulipInboundBindingRoute(
       { cfg: {} as OpenClawConfig, route: ordinaryRoute, conversation },
       {
         resolveConfiguredBindingRoute: vi.fn(() => ({
@@ -125,10 +125,9 @@ describe("resolveZulipInboundBindingRoute", () => {
           route,
         })),
       } as never,
-    );
+    )).rejects.toThrow("Zulip conversation binding owner unavailable; retry inbound delivery");
 
     expect(ensureReady).not.toHaveBeenCalled();
-    expect(result.boundSessionKey).toBeUndefined();
   });
 
   it("re-resolves route ownership after refreshing lifecycle persistence", async () => {

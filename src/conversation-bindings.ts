@@ -248,9 +248,11 @@ export async function resolveZulipInboundBindingRoute(
       conversation: params.conversation,
     });
   }
+  if (runtime.bindingOwnerAvailable === false) {
+    throw new Error("Zulip conversation binding owner unavailable; retry inbound delivery");
+  }
   const configuredSelected =
     configured.bindingResolution !== null &&
-    runtime.bindingOwnerAvailable !== false &&
     runtime.bindingRecord === null;
   if (configuredSelected) {
     const ready = await dependencies.ensureConfiguredBindingRouteReady({

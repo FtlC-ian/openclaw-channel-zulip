@@ -319,13 +319,13 @@ export async function resolveZulipInboundBindingRoute(
     route: configured.route,
     conversation: params.conversation,
   });
-  if (runtime.bindingRecord?.bindingId.startsWith("generic:") &&
-      !hasIdleLifecyclePolicy(runtime.bindingRecord)) {
+  if (runtime.bindingRecord?.bindingId.startsWith("generic:")) {
+    const initializeDefaultIdle = !hasIdleLifecyclePolicy(runtime.bindingRecord);
     await updateZulipBindingLifecycleRecord(
       runtime.bindingRecord,
-      { idleTimeoutMs: DEFAULT_IDLE_TIMEOUT_MS },
+      initializeDefaultIdle ? { idleTimeoutMs: DEFAULT_IDLE_TIMEOUT_MS } : {},
       dependencies.getSessionBindingService(),
-      { initializeDefaultIdle: true },
+      { initializeDefaultIdle },
     );
     runtime = await dependencies.resolveRuntimeConversationBindingRouteAsync({
       route: configured.route,

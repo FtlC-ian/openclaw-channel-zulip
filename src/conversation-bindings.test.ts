@@ -1,8 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+vi.hoisted(() => {
+  process.env.OPENCLAW_STATE_DIR ??= `/tmp/openclaw-zulip-conversation-bindings-${process.pid}`;
+});
 import {
+  getSessionBindingService,
   registerSessionBindingAdapter,
   unregisterSessionBindingAdapter,
 } from "openclaw/plugin-sdk/conversation-runtime";
+import { resolveRuntimeConversationBindingRouteAsync } from
+  "openclaw/plugin-sdk/conversation-binding-runtime";
 import type {
   SessionBindingAdapter,
   SessionBindingRecord,
@@ -130,7 +137,7 @@ describe("resolveZulipInboundBindingRoute", () => {
     expect(ensureReady).not.toHaveBeenCalled();
   });
 
-  it("re-resolves route ownership after refreshing lifecycle persistence", async () => {
+  it("does not create a new generation for routine inbound activity", async () => {
     const targetSessionKey = "agent:main:acp:bound";
     const initial = {
       ...bindingRecord("generic:binding", targetSessionKey, 100),
@@ -153,18 +160,11 @@ describe("resolveZulipInboundBindingRoute", () => {
       touchAsync: vi.fn(async () => {}),
     };
     const staleRoute = { ...ordinaryRoute, sessionKey: targetSessionKey };
-    const currentRoute = { ...staleRoute };
-    const runtime = vi.fn()
-      .mockResolvedValueOnce({
-        bindingRecord: initial,
-        boundSessionKey: targetSessionKey,
-        route: staleRoute,
-      })
-      .mockResolvedValueOnce({
-        bindingRecord: rebound,
-        boundSessionKey: targetSessionKey,
-        route: currentRoute,
-      });
+    const runtime = vi.fn().mockResolvedValue({
+      bindingRecord: initial,
+      boundSessionKey: targetSessionKey,
+      route: staleRoute,
+    });
 
     const result = await resolveZulipInboundBindingRoute(
       { cfg: {} as OpenClawConfig, route: ordinaryRoute, conversation },
@@ -176,27 +176,40 @@ describe("resolveZulipInboundBindingRoute", () => {
       } as never,
     );
 
-    expect(runtime).toHaveBeenCalledTimes(2);
-    expect(result.bindingRecord).toBe(rebound);
-    expect(result.route).toBe(currentRoute);
+    expect(runtime).toHaveBeenCalledTimes(1);
+    expect(service.bind).not.toHaveBeenCalled();
+    expect(result.bindingRecord).toBe(initial);
+    expect(result.route).toBe(staleRoute);
   });
 
   it("initializes the generic binding default idle expiry on first inbound activity", async () => {
     const now = vi.spyOn(Date, "now").mockReturnValue(200);
     const targetSessionKey = "agent:main:acp:bound";
     const initial = bindingRecord("generic:binding", targetSessionKey, 100);
-    const rebound = { ...initial, boundAt: 200 };
+    let current: SessionBindingRecord = initial;
     const service = {
-      resolveByConversation: vi.fn(() => initial),
-      bind: vi.fn(async (input: { assertCurrent?: () => void }) => {
+      resolveByConversation: vi.fn(() => current),
+      bind: vi.fn(async (input: {
+        assertCurrent?: () => void;
+        metadata?: Record<string, unknown>;
+        ttlMs?: number;
+      }) => {
         input.assertCurrent?.();
-        return rebound;
+        current = {
+          ...initial,
+          boundAt: 200,
+          ...(input.ttlMs === undefined ? {} : { expiresAt: 200 + input.ttlMs }),
+          metadata: { ...input.metadata, lastActivityAt: 200 },
+        };
+        return current;
       }),
       touchAsync: vi.fn(async () => {}),
     };
-    const runtime = vi.fn()
-      .mockResolvedValueOnce({ bindingRecord: initial, boundSessionKey: targetSessionKey, route: ordinaryRoute })
-      .mockResolvedValueOnce({ bindingRecord: rebound, boundSessionKey: targetSessionKey, route: ordinaryRoute });
+    const runtime = vi.fn(async () => ({
+      bindingRecord: current,
+      boundSessionKey: targetSessionKey,
+      route: ordinaryRoute,
+    }));
 
     try {
       await resolveZulipInboundBindingRoute(
@@ -219,6 +232,87 @@ describe("resolveZulipInboundBindingRoute", () => {
         zulipIdleTimeoutMs: 86_400_000,
       }),
     }));
+  });
+
+  it("routes two synchronized concurrent resolutions through the real generic service", async () => {
+    const service = getSessionBindingService();
+    const targetSessionKey = "agent:main:acp:concurrent-generic";
+    const realConversation = {
+      channel: "webchat",
+      accountId: "default",
+      conversationId: `zulip-binding-race-${Date.now()}-${Math.random()}`,
+    };
+    const initial = await service.bind({
+      targetSessionKey,
+      targetKind: "session",
+      conversation: realConversation,
+      placement: "current",
+    });
+    let releaseFirstReads!: () => void;
+    const firstReadsReady = new Promise<void>((resolve) => {
+      releaseFirstReads = resolve;
+    });
+    let firstReadCount = 0;
+    const synchronizedResolver = async (
+      params: Parameters<typeof resolveRuntimeConversationBindingRouteAsync>[0],
+    ) => {
+      const result = await resolveRuntimeConversationBindingRouteAsync(params);
+      if (firstReadCount < 2) {
+        firstReadCount += 1;
+        if (firstReadCount === 2) releaseFirstReads();
+        await firstReadsReady;
+      }
+      return result;
+    };
+    const dependencies = {
+      resolveConfiguredBindingRoute: vi.fn(() => ({ bindingResolution: null, route: ordinaryRoute })),
+      ensureConfiguredBindingRouteReady: vi.fn(),
+      resolveRuntimeConversationBindingRouteAsync: synchronizedResolver,
+      getSessionBindingService: () => service,
+    } as never;
+
+    try {
+      const settled = await Promise.allSettled([
+        resolveZulipInboundBindingRoute({
+          cfg: {} as OpenClawConfig,
+          route: ordinaryRoute,
+          conversation: realConversation,
+        }, dependencies),
+        resolveZulipInboundBindingRoute({
+          cfg: {} as OpenClawConfig,
+          route: ordinaryRoute,
+          conversation: realConversation,
+        }, dependencies),
+      ]);
+
+      expect(settled).toHaveLength(2);
+      expect(settled.every((result) => result.status === "fulfilled")).toBe(true);
+      for (const result of settled) {
+        if (result.status !== "fulfilled") continue;
+        expect(result.value.boundSessionKey).toBe(targetSessionKey);
+        expect(result.value.bindingRecord?.bindingId).toBe(initial.bindingId);
+      }
+      const initialized = service.resolveByConversation(realConversation);
+      expect(initialized).toMatchObject({
+        bindingId: initial.bindingId,
+        targetSessionKey,
+        metadata: expect.objectContaining({
+          zulipIdleTimeoutMs: 86_400_000,
+        }),
+      });
+      await resolveZulipInboundBindingRoute({
+        cfg: {} as OpenClawConfig,
+        route: ordinaryRoute,
+        conversation: realConversation,
+      }, dependencies);
+      expect(service.resolveByConversation(realConversation)?.boundAt).toBe(initialized?.boundAt);
+    } finally {
+      await service.unbind({
+        bindingId: initial.bindingId,
+        scope: realConversation,
+        reason: "test cleanup",
+      });
+    }
   });
 });
 
@@ -476,6 +570,142 @@ describe("Zulip generic binding lifecycle updates", () => {
     expect(service.touchAsync).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["idle timeout", () => ({ idleTimeoutMs: 500 })],
+    ["max age", () => ({ maxAgeMs: 1_000 })],
+  ] as const)("merges default initialization with a concurrent %s mutation", async (_label, patch) => {
+    const targetSessionKey = "agent:bound:acp:overlap";
+    const record = bindingRecord("generic:overlap-binding", targetSessionKey, 100);
+    let current: SessionBindingRecord = record;
+    let waiting = 0;
+    let release!: () => void;
+    const bothWaiting = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const service = {
+      listBySession: vi.fn(() => [current]),
+      resolveByConversation: vi.fn(() => current),
+      bind: vi.fn(async (input: {
+        assertCurrent?: () => void;
+        metadata?: Record<string, unknown>;
+        ttlMs?: number;
+      }) => {
+        waiting += 1;
+        if (waiting === 2) release();
+        if (waiting <= 2) await bothWaiting;
+        input.assertCurrent?.();
+        const now = 200 + service.bind.mock.calls.length;
+        current = {
+          ...current,
+          boundAt: now,
+          ...(input.ttlMs === undefined ? {} : { expiresAt: now + input.ttlMs }),
+          metadata: { ...input.metadata, lastActivityAt: now },
+        };
+        return current;
+      }),
+      touchAsync: vi.fn(async () => {}),
+    };
+    const runtime = vi.fn(async () => ({
+      bindingRecord: current,
+      boundSessionKey: targetSessionKey,
+      route: { ...ordinaryRoute, sessionKey: targetSessionKey },
+    }));
+    const inbound = resolveZulipInboundBindingRoute(
+      { cfg: {} as OpenClawConfig, route: ordinaryRoute, conversation },
+      {
+        resolveConfiguredBindingRoute: vi.fn(() => ({ bindingResolution: null, route: ordinaryRoute })),
+        ensureConfiguredBindingRouteReady: vi.fn(),
+        resolveRuntimeConversationBindingRouteAsync: runtime,
+        getSessionBindingService: vi.fn(() => service),
+      } as never,
+    );
+    const lifecycle = "idleTimeoutMs" in patch()
+      ? setZulipBindingIdleTimeoutBySessionKey({
+          targetSessionKey,
+          accountId: "default",
+          idleTimeoutMs: patch().idleTimeoutMs!,
+        }, service as never)
+      : setZulipBindingMaxAgeBySessionKey({
+          targetSessionKey,
+          accountId: "default",
+          maxAgeMs: patch().maxAgeMs!,
+        }, service as never);
+
+    await expect(Promise.all([inbound, lifecycle])).resolves.toHaveLength(2);
+    expect(current.metadata).toMatchObject({
+      zulipIdleTimeoutMs: "idleTimeoutMs" in patch() ? 500 : 86_400_000,
+      ...(patch().maxAgeMs === undefined ? {} : { zulipMaxAgeMs: 1_000 }),
+    });
+  });
+
+  it("fails closed on concurrent conflicting lifecycle mutations", async () => {
+    const targetSessionKey = "agent:bound:acp:conflict";
+    const record = {
+      ...bindingRecord("generic:conflict-binding", targetSessionKey, 100),
+      metadata: { boundAt: 100, lastActivityAt: 150, zulipIdleTimeoutMs: 600 },
+    };
+    let current: SessionBindingRecord = record;
+    let waiting = 0;
+    let release!: () => void;
+    const bothWaiting = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const service = {
+      listBySession: vi.fn(() => [record]),
+      resolveByConversation: vi.fn(() => current),
+      bind: vi.fn(async (input: {
+        assertCurrent?: () => void;
+        metadata?: Record<string, unknown>;
+      }) => {
+        waiting += 1;
+        if (waiting === 2) release();
+        await bothWaiting;
+        input.assertCurrent?.();
+        current = {
+          ...current,
+          boundAt: 200 + service.bind.mock.calls.length,
+          metadata: { ...input.metadata, lastActivityAt: 200 },
+        };
+        return current;
+      }),
+      touchAsync: vi.fn(async () => {}),
+    };
+
+    const settled = await Promise.allSettled([
+      setZulipBindingIdleTimeoutBySessionKey({
+        targetSessionKey,
+        accountId: "default",
+        idleTimeoutMs: 500,
+      }, service as never),
+      setZulipBindingIdleTimeoutBySessionKey({
+        targetSessionKey,
+        accountId: "default",
+        idleTimeoutMs: 700,
+      }, service as never),
+    ]);
+
+    expect(settled.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const rejected = settled.find((result) => result.status === "rejected");
+    expect(rejected).toMatchObject({
+      reason: expect.objectContaining({
+        message: "Zulip conversation binding changed during lifecycle update",
+      }),
+    });
+  });
+
+  it("fails closed when the binding is unbound during a lifecycle mutation", async () => {
+    const targetSessionKey = "agent:bound:acp:unbound";
+    const record = bindingRecord("generic:unbound-binding", targetSessionKey, 100);
+    const service = createService([record]);
+    service.resolveByConversation.mockReturnValueOnce(null);
+
+    await expect(setZulipBindingMaxAgeBySessionKey({
+      targetSessionKey,
+      accountId: "default",
+      maxAgeMs: 1_000,
+    }, service as never)).rejects.toThrow("changed during lifecycle update");
+  });
+
   it("does not overwrite activity that advances after the lifecycle bind commits", async () => {
     const targetSessionKey = "agent:bound:acp:topic";
     const record = {
@@ -511,11 +741,59 @@ describe("Zulip generic binding lifecycle updates", () => {
       idleTimeoutMs: 500,
     }, service as never)).resolves.toEqual([{
       boundAt: 100,
-      lastActivityAt: 200,
+      lastActivityAt: 300,
       idleTimeoutMs: 500,
     }]);
     expect(current.metadata?.lastActivityAt).toBe(300);
     expect(service.touchAsync).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["target ownership", (rebound: SessionBindingRecord) => ({
+      ...rebound,
+      targetSessionKey: "agent:other:acp:replacement",
+    })],
+    ["status", (rebound: SessionBindingRecord) => ({
+      ...rebound,
+      status: "closed" as SessionBindingRecord["status"],
+    })],
+    ["lifecycle settings", (rebound: SessionBindingRecord) => ({
+      ...rebound,
+      metadata: { ...rebound.metadata, zulipIdleTimeoutMs: 700 },
+    })],
+  ] as const)("fails closed when post-commit %s changes at the same timestamps", async (_label, mutate) => {
+    const targetSessionKey = "agent:bound:acp:post-commit";
+    const record = {
+      ...bindingRecord("generic:post-commit-binding", targetSessionKey, 100),
+      expiresAt: 1_000,
+      metadata: { boundAt: 100, lastActivityAt: 150, zulipIdleTimeoutMs: 600 },
+    };
+    let current: SessionBindingRecord = record;
+    const service = {
+      listBySession: vi.fn(() => [record]),
+      resolveByConversation: vi.fn(() => current),
+      bind: vi.fn(async (input: {
+        assertCurrent?: () => void;
+        metadata?: Record<string, unknown>;
+      }) => {
+        input.assertCurrent?.();
+        const rebound: SessionBindingRecord = {
+          ...record,
+          boundAt: 200,
+          expiresAt: 1_000,
+          metadata: { ...input.metadata, lastActivityAt: 200 },
+        };
+        current = mutate(rebound);
+        return rebound;
+      }),
+      touchAsync: vi.fn(async () => {}),
+    };
+
+    await expect(setZulipBindingIdleTimeoutBySessionKey({
+      targetSessionKey,
+      accountId: "default",
+      idleTimeoutMs: 500,
+    }, service as never)).rejects.toThrow("changed during lifecycle update");
   });
 
   it("leaves adapter-owned bindings to their adapter lifecycle contract", async () => {

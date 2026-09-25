@@ -40,6 +40,11 @@ const DEFAULT_IDLE_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const LIFECYCLE_UPDATE_ATTEMPTS = 3;
 
 class BindingActivityChangedError extends Error {}
+class BindingLifecycleAdoptedError extends Error {
+  constructor(readonly record: SessionBindingRecord) {
+    super("Zulip conversation binding lifecycle update already committed");
+  }
+}
 
 function sameConversation(
   left: SessionBindingRecord["conversation"],
@@ -51,7 +56,7 @@ function sameConversation(
     left.parentConversationId === right.parentConversationId;
 }
 
-function sameBindingGeneration(
+function sameLogicalBinding(
   left: SessionBindingRecord | null,
   right: SessionBindingRecord,
 ): boolean {
@@ -60,22 +65,26 @@ function sameBindingGeneration(
     left.targetSessionKey === right.targetSessionKey &&
     left.targetKind === right.targetKind &&
     left.status === right.status &&
-    left.boundAt === right.boundAt &&
-    left.expiresAt === right.expiresAt &&
+    lifecycleRecord(left).boundAt === lifecycleRecord(right).boundAt &&
     sameConversation(left.conversation, right.conversation);
 }
 
-function metadataWithoutActivity(record: SessionBindingRecord): Record<string, unknown> {
+function metadataWithoutLifecycle(record: SessionBindingRecord): Record<string, unknown> {
   const metadata = { ...record.metadata };
+  delete metadata.boundAt;
   delete metadata.lastActivityAt;
+  delete metadata.idleTimeoutMs;
+  delete metadata.zulipIdleTimeoutMs;
+  delete metadata.maxAgeMs;
+  delete metadata.zulipMaxAgeMs;
   return metadata;
 }
 
-function sameLifecycleMetadata(
+function sameBindingOwnerMetadata(
   left: SessionBindingRecord,
   right: SessionBindingRecord,
 ): boolean {
-  return isDeepStrictEqual(metadataWithoutActivity(left), metadataWithoutActivity(right));
+  return isDeepStrictEqual(metadataWithoutLifecycle(left), metadataWithoutLifecycle(right));
 }
 
 function finiteMetadataNumber(record: SessionBindingRecord, key: string): number | undefined {
@@ -113,13 +122,52 @@ function lifecycleTtlMs(record: BindingLifecycleRecord, now: number): number | u
   return Math.max(0, Math.min(...expirations) - now);
 }
 
+function hasIdleLifecyclePolicy(record: SessionBindingRecord): boolean {
+  return finiteMetadataNumber(record, "zulipIdleTimeoutMs") !== undefined ||
+    finiteMetadataNumber(record, "idleTimeoutMs") !== undefined;
+}
+
+function sameLifecycleSettings(
+  left: BindingLifecycleRecord,
+  right: BindingLifecycleRecord,
+): boolean {
+  return left.idleTimeoutMs === right.idleTimeoutMs && left.maxAgeMs === right.maxAgeMs;
+}
+
+function lifecycleUpdateDisposition(
+  current: SessionBindingRecord,
+  candidate: SessionBindingRecord,
+  patch: Pick<BindingLifecycleRecord, "idleTimeoutMs" | "maxAgeMs">,
+  initializeDefaultIdle: boolean,
+): "adopt" | "retry" | "conflict" {
+  if (!sameLogicalBinding(current, candidate) ||
+      !sameBindingOwnerMetadata(current, candidate)) {
+    return "conflict";
+  }
+  if (initializeDefaultIdle && hasIdleLifecyclePolicy(current)) return "adopt";
+  const baseline = lifecycleRecord(candidate);
+  const desired = { ...baseline, ...patch };
+  const latest = lifecycleRecord(current);
+  let allPatchedSettingsCommitted = true;
+  for (const key of ["idleTimeoutMs", "maxAgeMs"] as const) {
+    if (patch[key] === undefined || latest[key] === desired[key]) continue;
+    allPatchedSettingsCommitted = false;
+    if (latest[key] !== baseline[key]) return "conflict";
+  }
+  return allPatchedSettingsCommitted ? "adopt" : "retry";
+}
+
 async function updateZulipBindingLifecycleRecord(
   record: SessionBindingRecord,
   patch: Pick<BindingLifecycleRecord, "idleTimeoutMs" | "maxAgeMs">,
   service: SessionBindingService,
+  options: { initializeDefaultIdle?: boolean } = {},
 ): Promise<BindingLifecycleRecord> {
   let candidate = record;
   for (let attempt = 0; attempt < LIFECYCLE_UPDATE_ATTEMPTS; attempt += 1) {
+    if (options.initializeDefaultIdle === true && hasIdleLifecyclePolicy(candidate)) {
+      return lifecycleRecord(candidate);
+    }
     const next = { ...lifecycleRecord(candidate), ...patch };
     const now = Date.now();
     const ttlMs = lifecycleTtlMs(next, now);
@@ -148,10 +196,25 @@ async function updateZulipBindingLifecycleRecord(
         ...(ttlMs === undefined ? {} : { ttlMs }),
         assertCurrent: () => {
           const current = service.resolveByConversation(candidate.conversation);
-          if (!sameBindingGeneration(current, candidate) || !current) {
+          if (!current || !sameLogicalBinding(current, candidate) ||
+              !sameBindingOwnerMetadata(current, candidate)) {
             throw new Error("Zulip conversation binding changed during lifecycle update");
           }
-          if (!sameLifecycleMetadata(current, candidate)) {
+          const sameGeneration = current.boundAt === candidate.boundAt &&
+            current.expiresAt === candidate.expiresAt;
+          const sameSettings = sameLifecycleSettings(
+            lifecycleRecord(current),
+            lifecycleRecord(candidate),
+          );
+          if (!sameGeneration || !sameSettings) {
+            const disposition = lifecycleUpdateDisposition(
+              current,
+              candidate,
+              patch,
+              options.initializeDefaultIdle === true,
+            );
+            if (disposition === "adopt") throw new BindingLifecycleAdoptedError(current);
+            if (disposition === "retry") throw new BindingActivityChangedError();
             throw new Error("Zulip conversation binding changed during lifecycle update");
           }
           if (finiteMetadataNumber(current, "lastActivityAt") !==
@@ -160,12 +223,31 @@ async function updateZulipBindingLifecycleRecord(
           }
         },
       });
-      return lifecycleRecord(rebound);
+      const current = service.resolveByConversation(rebound.conversation);
+      if (!current) {
+        throw new Error("Zulip conversation binding changed during lifecycle update");
+      }
+      if (lifecycleUpdateDisposition(
+        current,
+        rebound,
+        patch,
+        options.initializeDefaultIdle === true,
+      ) === "adopt") {
+        return lifecycleRecord(current);
+      }
+      throw new Error("Zulip conversation binding changed during lifecycle update");
     } catch (error) {
+      if (error instanceof BindingLifecycleAdoptedError) {
+        return lifecycleRecord(error.record);
+      }
       if (!(error instanceof BindingActivityChangedError)) throw error;
       const current = service.resolveByConversation(candidate.conversation);
-      if (!sameBindingGeneration(current, candidate) || !current ||
-          !sameLifecycleMetadata(current, candidate)) {
+      if (!current || lifecycleUpdateDisposition(
+        current,
+        candidate,
+        patch,
+        options.initializeDefaultIdle === true,
+      ) === "conflict") {
         throw new Error("Zulip conversation binding changed during lifecycle update");
       }
       candidate = current;
@@ -237,11 +319,13 @@ export async function resolveZulipInboundBindingRoute(
     route: configured.route,
     conversation: params.conversation,
   });
-  if (runtime.bindingRecord?.bindingId.startsWith("generic:")) {
+  if (runtime.bindingRecord?.bindingId.startsWith("generic:") &&
+      !hasIdleLifecyclePolicy(runtime.bindingRecord)) {
     await updateZulipBindingLifecycleRecord(
       runtime.bindingRecord,
-      {},
+      { idleTimeoutMs: DEFAULT_IDLE_TIMEOUT_MS },
       dependencies.getSessionBindingService(),
+      { initializeDefaultIdle: true },
     );
     runtime = await dependencies.resolveRuntimeConversationBindingRouteAsync({
       route: configured.route,

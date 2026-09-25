@@ -338,11 +338,11 @@ describe("Zulip generic binding lifecycle updates", () => {
   it("mutates only the requested account and returns the persisted lifecycle record", async () => {
     const targetSessionKey = "agent:bound:acp:shared";
     const defaultRecord = {
-      ...bindingRecord("default-binding", targetSessionKey, 100),
+      ...bindingRecord("generic:default-binding", targetSessionKey, 100),
       metadata: { lastActivityAt: 150, maxAgeMs: 1_000 },
     };
     const otherRecord = {
-      ...bindingRecord("other-binding", targetSessionKey, 200),
+      ...bindingRecord("generic:other-binding", targetSessionKey, 200),
       conversation: { ...conversation, accountId: "other", conversationId: `43:topic:v2:${"b".repeat(64)}` },
       metadata: { lastActivityAt: 250 },
     };
@@ -370,14 +370,14 @@ describe("Zulip generic binding lifecycle updates", () => {
         zulipMaxAgeMs: 1_000,
       }),
     }));
-    expect(service.touchAsync).toHaveBeenCalledWith("default-binding", 150, defaultRecord.conversation);
+    expect(service.touchAsync).toHaveBeenCalledWith("generic:default-binding", 150, defaultRecord.conversation);
   });
 
   it("updates max age, preserves idle state, and returns no records for a missing binding", async () => {
     const now = vi.spyOn(Date, "now").mockReturnValue(200);
     const targetSessionKey = "agent:bound:acp:topic";
     const record = {
-      ...bindingRecord("topic-binding", targetSessionKey, 100),
+      ...bindingRecord("generic:topic-binding", targetSessionKey, 100),
       metadata: { boundAt: 80, lastActivityAt: 120, idleTimeoutMs: 600 },
     };
     const service = createService([record]);
@@ -414,7 +414,7 @@ describe("Zulip generic binding lifecycle updates", () => {
 
   it("rejects a same-id, same-target replacement instead of overwriting the new generation", async () => {
     const targetSessionKey = "agent:bound:acp:topic";
-    const record = bindingRecord("topic-binding", targetSessionKey, 100);
+    const record = bindingRecord("generic:topic-binding", targetSessionKey, 100);
     const service = createService([record]);
     service.resolveByConversation.mockReturnValueOnce({
       ...record,
@@ -433,7 +433,7 @@ describe("Zulip generic binding lifecycle updates", () => {
   it("retries a lifecycle update after concurrent inbound activity", async () => {
     const targetSessionKey = "agent:bound:acp:topic";
     const record = {
-      ...bindingRecord("topic-binding", targetSessionKey, 100),
+      ...bindingRecord("generic:topic-binding", targetSessionKey, 100),
       metadata: { boundAt: 100, lastActivityAt: 150, idleTimeoutMs: 500 },
     };
     const touched = {
@@ -474,5 +474,20 @@ describe("Zulip generic binding lifecycle updates", () => {
       idleTimeoutMs: 500,
     }]);
     expect(service.bind).toHaveBeenCalledTimes(2);
+  });
+
+  it("leaves adapter-owned bindings to their adapter lifecycle contract", async () => {
+    const targetSessionKey = "agent:bound:acp:adapter";
+    const adapterRecord = bindingRecord("adapter-owned", targetSessionKey, 100);
+    const service = createService([adapterRecord]);
+
+    await expect(setZulipBindingIdleTimeoutBySessionKey({
+      targetSessionKey,
+      accountId: "default",
+      idleTimeoutMs: 500,
+    }, service as never)).resolves.toEqual([]);
+
+    expect(service.bind).not.toHaveBeenCalled();
+    expect(service.touchAsync).not.toHaveBeenCalled();
   });
 });

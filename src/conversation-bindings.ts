@@ -188,6 +188,7 @@ async function setZulipBindingLifecycleBySessionKey(
   const accountId = params.accountId?.trim();
   if (!targetSessionKey) return [];
   const records = service.listBySession(targetSessionKey).filter((record) =>
+    record.bindingId.startsWith("generic:") &&
     record.conversation.channel === "zulip" &&
     (!accountId || record.conversation.accountId === accountId)
   );

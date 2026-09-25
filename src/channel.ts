@@ -32,6 +32,13 @@ import { normalizeZulipBaseUrl } from "./zulip/client.js";
 import { sendMessageZulip, sendPollZulip, type ZulipSendResult } from "./zulip/send.js";
 import type { ZulipRoutingFallback } from "./zulip/routing-fallback.js";
 import {
+  setZulipBindingIdleTimeoutBySessionKey,
+  setZulipBindingMaxAgeBySessionKey,
+} from "./conversation-bindings.js";
+import {
+  matchZulipConfiguredConversation,
+  resolveZulipCommandConversation,
+  resolveZulipConversationRef,
   resolveZulipOutboundSessionRoute,
   resolveZulipSessionConversation,
 } from "./session-conversation.js";
@@ -320,6 +327,22 @@ export const zulipPlugin = {
     },
   },
   approvalCapability: zulipApprovalAuth,
+  bindings: {
+    compileConfiguredBinding: ({ conversationId }) =>
+      resolveZulipConversationRef({ conversationId }),
+    matchInboundConversation: ({ compiledBinding, conversationId, parentConversationId }) =>
+      matchZulipConfiguredConversation({ compiledBinding, conversationId, parentConversationId }),
+    resolveCommandConversation: ({ sessionKey, parentSessionKey }) =>
+      resolveZulipCommandConversation({ sessionKey, parentSessionKey }),
+  },
+  conversationBindings: {
+    supportsCurrentConversationBinding: true,
+    defaultTopLevelPlacement: "current",
+    resolveConversationRef: ({ conversationId, parentConversationId }) =>
+      resolveZulipConversationRef({ conversationId, parentConversationId }),
+    setIdleTimeoutBySessionKeyAsync: setZulipBindingIdleTimeoutBySessionKey,
+    setMaxAgeBySessionKeyAsync: setZulipBindingMaxAgeBySessionKey,
+  },
   groups: {
     resolveRequireMention: resolveZulipGroupRequireMention,
   },
@@ -346,6 +369,8 @@ export const zulipPlugin = {
   actions: zulipMessageActions,
   messaging: {
     normalizeTarget: normalizeZulipMessagingTarget,
+    resolveInboundConversation: ({ conversationId }) =>
+      conversationId ? resolveZulipConversationRef({ conversationId }) : null,
     resolveSessionConversation: resolveZulipSessionConversation,
     resolveSessionTarget: ({ kind, id }) => {
       const trimmedId = id.trim();

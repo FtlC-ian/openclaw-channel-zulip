@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildChannelInboundEventContext } from "openclaw/plugin-sdk/channel-inbound";
+import {
+  registerSessionBindingAdapter,
+  unregisterSessionBindingAdapter,
+} from "openclaw/plugin-sdk/conversation-runtime";
+import type { SessionBindingAdapter } from "openclaw/plugin-sdk/conversation-runtime";
 import type { RuntimeEnv } from "../sdk.js";
 
 const questionRuntimeMocks = vi.hoisted(() => ({
@@ -543,8 +548,19 @@ function enableDurableInboundJournal(
   };
 }
 
+const registeredBindingAdapters: SessionBindingAdapter[] = [];
+
 describe("monitorZulipProvider", () => {
-  afterEach(() => vi.useRealTimers());
+  afterEach(() => {
+    for (const adapter of registeredBindingAdapters.splice(0)) {
+      unregisterSessionBindingAdapter({
+        channel: adapter.channel,
+        accountId: adapter.accountId,
+        adapter,
+      });
+    }
+    vi.useRealTimers();
+  });
 
   beforeEach(async () => {
     const { startZulipMonitorReactionLifecycles } = await import("./monitor.js");
@@ -562,6 +578,7 @@ describe("monitorZulipProvider", () => {
       return { code: "123456", created: false };
     });
     state.account.streams = ["debbie"];
+    state.account.accountId = "default";
     state.account.requireMention = false;
     state.account.chatmode = "normal";
     state.account.config = {
@@ -2790,10 +2807,10 @@ describe("monitorZulipProvider", () => {
       cfg: expect.objectContaining({
         session: { store: "/configured/{agentId}/sessions.json" },
       }),
-      route: {
+      route: expect.objectContaining({
         agentId: "debbie",
         sessionKey: expect.stringMatching(/^agent:debbie:zulip:channel:4:topic:v2:[0-9a-f]{64}$/),
-      },
+      }),
       ctxPayload: expect.objectContaining({
         SessionKey: expect.stringMatching(/^agent:debbie:zulip:channel:4:topic:v2:[0-9a-f]{64}$/),
       }),
@@ -2810,6 +2827,163 @@ describe("monitorZulipProvider", () => {
     }));
   });
 
+  it("routes a bound topic through the real binding runtime and preserves ownership facts and Zulip delivery", async () => {
+    const targetSessionKey = "agent:bound:acp:topic-session";
+    const inspectByConversationAsync = vi.fn(async (conversation: Record<string, string>) => ({
+      bindingId: "topic-binding",
+      targetSessionKey,
+      targetKind: "session" as const,
+      conversation,
+      status: "active" as const,
+      boundAt: 100,
+    }));
+    const adapter: SessionBindingAdapter = {
+      channel: "zulip",
+      accountId: "default",
+      listBySession: () => [],
+      resolveByConversation: () => null,
+      inspectByConversationAsync,
+      touchAsync: async () => {},
+    };
+    registerSessionBindingAdapter(adapter);
+    registeredBindingAdapters.push(adapter);
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 1, type: "message", message: makeChannelMessage(1003) }],
+    }];
+
+    await runMonitorOnce();
+
+    const bindingFacts = Symbol.for("openclaw.conversationBindingRouteFacts");
+    const buildInput = state.core.channel.inbound.buildContext.mock.calls[0]?.[0];
+    const context = state.core.channel.inbound.buildContext.mock.results[0]?.value;
+    const dispatchInput = state.core.channel.inbound.dispatch.mock.calls[0]?.[0];
+    expect(inspectByConversationAsync).toHaveBeenCalledWith(expect.objectContaining({
+      channel: "zulip",
+      accountId: "default",
+      conversationId: expect.stringMatching(/^4:topic:v2:[0-9a-f]{64}$/),
+      parentConversationId: "4",
+    }));
+    expect(buildInput.route[bindingFacts]).toMatchObject({ kind: "agent", bindingId: "topic-binding" });
+    expect(context[bindingFacts]).toBe(buildInput.route[bindingFacts]);
+    expect(dispatchInput.route[bindingFacts]).toBe(buildInput.route[bindingFacts]);
+    expect(dispatchInput).toMatchObject({
+      route: { agentId: "bound", sessionKey: targetSessionKey },
+      ctxPayload: {
+        AgentId: "bound",
+        SessionKey: targetSessionKey,
+        ParentSessionKey: expect.stringMatching(/^agent:debbie:zulip:channel:4:topic:v2:[0-9a-f]{64}$/),
+        To: "stream:4:zulip-plugin-pr",
+        MessageThreadId: "zulip-plugin-pr",
+      },
+      record: {
+        updateLastRoute: {
+          sessionKey: targetSessionKey,
+          channel: "zulip",
+          to: "stream:4:zulip-plugin-pr",
+          accountId: "default",
+          threadId: "zulip-plugin-pr",
+        },
+      },
+    });
+  });
+
+  it("keeps durable inbound retryable when binding ownership becomes unavailable", async () => {
+    state.account.accountId = "owner-unavailable";
+    enableDurableInboundJournal();
+    const adapter: SessionBindingAdapter = {
+      channel: "zulip",
+      accountId: state.account.accountId,
+      listBySession: () => [],
+      resolveByConversation: () => null,
+      inspectByConversationAsync: async () => {
+        unregisterSessionBindingAdapter({
+          channel: "zulip",
+          accountId: state.account.accountId,
+          adapter,
+        });
+        return null;
+      },
+    };
+    registerSessionBindingAdapter(adapter);
+    registeredBindingAdapters.push(adapter);
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 1, type: "message", message: makeChannelMessage(1006) }],
+    }];
+
+    await runMonitorOnce();
+
+    const { createZulipDurableInboundMessageId } = await import("./durable-receive.js");
+    const durableId = createZulipDurableInboundMessageId({
+      accountId: state.account.accountId,
+      messageId: "1006",
+    });
+    expect(state.core.channel.inbound.buildContext).not.toHaveBeenCalled();
+    expect(state.core.channel.inbound.dispatch).not.toHaveBeenCalled();
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+    const queue = state.durableQueues.get(state.account.accountId);
+    expect(queue?.release).toHaveBeenCalledWith(durableId, {
+      lastError: "Error: Zulip conversation binding owner unavailable; retry inbound delivery",
+    });
+    expect(queue?.complete).not.toHaveBeenCalled();
+  });
+
+  it("routes a bound DM through the real binding runtime while preserving the native reply target", async () => {
+    const targetSessionKey = "agent:bound:acp:dm-session";
+    const inspectByConversationAsync = vi.fn(async (conversation: Record<string, string>) => ({
+      bindingId: "dm-binding",
+      targetSessionKey,
+      targetKind: "session" as const,
+      conversation,
+      status: "active" as const,
+      boundAt: 200,
+    }));
+    const adapter: SessionBindingAdapter = {
+      channel: "zulip",
+      accountId: "default",
+      listBySession: () => [],
+      resolveByConversation: () => null,
+      inspectByConversationAsync,
+      touchAsync: async () => {},
+    };
+    registerSessionBindingAdapter(adapter);
+    registeredBindingAdapters.push(adapter);
+    state.pollResponses = [{
+      result: "success",
+      events: [{ id: 1, type: "message", message: makePrivateMessage(1103) }],
+    }];
+
+    await runMonitorOnce();
+
+    expect(inspectByConversationAsync).toHaveBeenCalledWith(expect.objectContaining({
+      channel: "zulip",
+      accountId: "default",
+      conversationId: expect.stringMatching(/^account-[0-9a-f]{64}:user8@zlp\.pubnerd\.app$/),
+    }));
+    expect(state.core.channel.inbound.dispatch).toHaveBeenCalledWith(expect.objectContaining({
+      route: expect.objectContaining({ agentId: "bound", sessionKey: targetSessionKey }),
+      ctxPayload: expect.objectContaining({
+        AgentId: "bound",
+        SessionKey: targetSessionKey,
+        ParentSessionKey: expect.stringMatching(
+          /^agent:debbie:zulip:default:direct:account-[0-9a-f]{64}:user8@zlp\.pubnerd\.app$/,
+        ),
+        To: "user:user8@zlp.pubnerd.app",
+        OriginatingTo: "user:user8@zlp.pubnerd.app",
+      }),
+      record: {
+        updateLastRoute: {
+          sessionKey: targetSessionKey,
+          channel: "zulip",
+          to: "user:user8@zlp.pubnerd.app",
+          accountId: "default",
+        },
+        onRecordError: expect.any(Function),
+      },
+    }));
+  });
+
   it("for private messages, stores user:<sender_email> in context and last-route when sender_email exists", async () => {
     state.pollResponses = [
       {
@@ -2820,6 +2994,14 @@ describe("monitorZulipProvider", () => {
 
     await runMonitorOnce();
 
+    expect(state.core.channel.routing.resolveAgentRoute).toHaveBeenCalledWith(expect.objectContaining({
+      channel: "zulip",
+      accountId: "default",
+      peer: {
+        kind: "direct",
+        id: "user8@zlp.pubnerd.app",
+      },
+    }));
     expect(state.core.channel.inbound.buildContext).toHaveReturnedWith(
       expect.objectContaining({
         To: "user:user8@zlp.pubnerd.app",
@@ -2827,12 +3009,12 @@ describe("monitorZulipProvider", () => {
       }),
     );
     expect(state.core.channel.inbound.dispatch).toHaveBeenCalledWith(expect.objectContaining({
-      route: {
+      route: expect.objectContaining({
         agentId: "debbie",
         sessionKey: expect.stringMatching(
           /^agent:debbie:zulip:default:direct:account-[0-9a-f]{64}:user8@zlp\.pubnerd\.app$/,
         ),
-      },
+      }),
       ctxPayload: expect.objectContaining({
         SessionKey: expect.stringMatching(
           /^agent:debbie:zulip:default:direct:account-[0-9a-f]{64}:user8@zlp\.pubnerd\.app$/,
@@ -2878,12 +3060,12 @@ describe("monitorZulipProvider", () => {
       }),
     );
     expect(state.core.channel.inbound.dispatch).toHaveBeenCalledWith(expect.objectContaining({
-      route: {
+      route: expect.objectContaining({
         agentId: "debbie",
         sessionKey: expect.stringMatching(
           /^agent:debbie:zulip:default:direct:account-[0-9a-f]{64}:123$/,
         ),
-      },
+      }),
       ctxPayload: expect.objectContaining({
         SessionKey: expect.stringMatching(
           /^agent:debbie:zulip:default:direct:account-[0-9a-f]{64}:123$/,
@@ -2925,7 +3107,7 @@ describe("monitorZulipProvider", () => {
       senderIdentity: "user8@zlp.pubnerd.app",
     });
     expect(state.core.channel.inbound.dispatch).toHaveBeenCalledWith(expect.objectContaining({
-      route: { agentId: "debbie", sessionKey: expectedSessionKey },
+      route: expect.objectContaining({ agentId: "debbie", sessionKey: expectedSessionKey }),
       ctxPayload: expect.objectContaining({ SessionKey: expectedSessionKey }),
       record: {
         updateLastRoute: {

@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
-import { chmod, lstat, open, opendir, realpath, unlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, open, opendir, readFile, realpath, unlink, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { isAbsolute, relative, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
+import { runBindingScenarios } from "./bindings.mjs";
+import { validateSmokeAcpCapability, validateSmokeBaselineModel } from "./prepare-config.mjs";
 
 export const REQUIRED_ENV = [
   "ZULIP_URL",
@@ -909,7 +911,10 @@ export class EventQueue {
     throw new Error(`${label} timed out after ${timeoutMs}ms`);
   }
   async close() {
-    if (this.queueId) await this.client.request("events", { method: "DELETE", params: { queue_id: this.queueId } }).catch(() => {});
+    if (this.queueId) {
+      await this.client.request("events", { method: "DELETE", params: { queue_id: this.queueId } });
+      this.queueId = undefined;
+    }
   }
   reconcileMessageUpdate(event) {
     const nestedMessage = event.message && typeof event.message === "object" ? event.message : undefined;
@@ -1257,8 +1262,51 @@ export async function waitForProcessTreeExit(child, timeoutMs) {
 
 function command(value) { return `SMOKE_COMMAND\n${value}\nEND_SMOKE_COMMAND`; }
 
+function runOpenClawCli(args, env) {
+  const allowed = ["PATH", "HOME", "TMPDIR", "CI", "PNPM_HOME", "COREPACK_HOME",
+    "NPM_CONFIG_CACHE", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "NODE_EXTRA_CA_CERTS"];
+  const childEnv = Object.fromEntries(allowed.filter((key) => process.env[key] !== undefined)
+    .map((key) => [key, process.env[key]]));
+  return execFileSync("pnpm", ["exec", "openclaw", ...args], {
+    encoding: "utf8", env: { ...childEnv, ...env },
+    stdio: ["ignore", "pipe", "pipe"], timeout: 180000, maxBuffer: 4 * 1024 * 1024,
+  });
+}
+
+export async function verifySmokeAcpRuntime(configPath, stateDir, runCli = runOpenClawCli) {
+  const config = JSON.parse(await readFile(configPath, "utf8"));
+  validateSmokeBaselineModel(config);
+  validateSmokeAcpCapability(config);
+  const cliEnv = { OPENCLAW_CONFIG_PATH: configPath, OPENCLAW_STATE_DIR: stateDir };
+  const pluginList = () => {
+    try {
+      const report = JSON.parse(runCli(["plugins", "list", "--json"], cliEnv));
+      if (!Array.isArray(report.plugins)) throw new Error("invalid plugin report");
+      return report.plugins;
+    } catch {
+      throw new Error("Protected smoke could not inspect the isolated ACP runtime");
+    }
+  };
+  const acpx = pluginList().find((entry) => entry.id === "acpx");
+  if (!acpx || acpx.status !== "loaded" || acpx.version !== "2026.9.6") {
+    throw new Error("Protected smoke requires loaded acpx 2026.9.6; install it in the trusted workflow before preparing protected config");
+  }
+}
+
 async function main() {
   const env = validateEnvironment(process.env);
+  const checkedOutSha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  if (checkedOutSha !== env.SMOKE_TESTED_SHA) throw new Error("Protected smoke checkout does not match the authorized candidate SHA");
+  const hostPackage = JSON.parse(await readFile(resolve("node_modules/openclaw/package.json"), "utf8"));
+  const pluginPackage = JSON.parse(await readFile(resolve("package.json"), "utf8"));
+  if (hostPackage.version !== "2026.9.6" || env.SMOKE_OPENCLAW_VERSION !== hostPackage.version) {
+    throw new Error("Protected binding smoke requires the loaded OpenClaw 2026.9.6 host");
+  }
+  if (env.SMOKE_PLUGIN_VERSION !== pluginPackage.version) {
+    throw new Error("Protected binding smoke plugin version differs from the candidate package");
+  }
+  if (!env.OPENCLAW_CONFIG_PATH?.trim()) throw new Error("OPENCLAW_CONFIG_PATH is required for binding smoke");
+  await verifySmokeAcpRuntime(env.OPENCLAW_CONFIG_PATH, env.OPENCLAW_STATE_DIR);
   process.env.ZULIP_SUBAGENT_DIAGNOSTICS = "1";
   if (env.ZULIP_SMOKE_ENABLE_DURABLE === "1") {
     const configPath = env.OPENCLAW_CONFIG_PATH?.trim();
@@ -1544,6 +1592,10 @@ async function main() {
       "durable-receive-completion-deduplication",
       "skipped because durable smoke is disabled; durable plugin keyed state requires a bundled or trusted official install",
     );
+    await runBindingScenarios({
+      env, actor, queue, gateway, scenario, sendDm, messageIds, actorUserId, botUserId,
+      isPrivateBotEvent, isExactRenderedContent, command, timeoutMs, runId,
+    });
   } catch (error) {
     runError = error;
   } finally {
@@ -1556,8 +1608,13 @@ async function main() {
         smokeTurnEvidenceLine = "Smoke turn evidence: available=false";
       }
     }
-    await gateway.stop().catch(() => {});
-    await unlink(gatewayGenerationPath).catch(() => {});
+    const cleanupProblems = [];
+    try { await gateway.stop(); } catch { cleanupProblems.push("isolated Gateway process tree did not stop"); }
+    try {
+      if (await gateway.isHealthy()) cleanupProblems.push("smoke port remained healthy after Gateway cleanup");
+    } catch { cleanupProblems.push("smoke port cleanup could not be verified"); }
+    try { await unlink(gatewayGenerationPath); }
+    catch (error) { if (error?.code !== "ENOENT") cleanupProblems.push("Gateway generation marker could not be removed"); }
     await queue.poll().catch(() => {});
     captureObservedSmokeBotMessageIds(queue.events, {
       botUserId,
@@ -1568,7 +1625,7 @@ async function main() {
     const cleanupFailures =
       await countMessageDeletionFailures(bot, messageIds.bot) +
       await countMessageDeletionFailures(actor, messageIds.actor);
-    await queue.close().catch(() => {});
+    try { await queue.close(); } catch { cleanupProblems.push("Zulip event queue could not be closed"); }
     for (const item of report) console.log(`${item.skipped ? "SKIP" : item.ok ? "PASS" : "FAIL"} ${item.name} (${item.ms}ms)${item.reason ? `: ${item.reason}` : ""}${item.error ? `: ${item.error}` : ""}`);
     if (runError && lifecycleInboundId) {
       const evidence = lifecycleEvidenceCounts(queue.events, lifecycleInboundId);
@@ -1590,6 +1647,12 @@ async function main() {
     console.log(`Evidence: tested commit ${env.SMOKE_TESTED_SHA}; run identifier ${runId}`);
     console.log(`Cleanup: message deletion failures=${cleanupFailures}; Zulip exposes no public API for deleting uploaded files.`);
     if (cleanupFailures > 0) console.warn(`Cleanup warning: ${cleanupFailures} smoke messages could not be deleted through the Zulip API.`);
+    if (cleanupProblems.length) {
+      console.error(`Cleanup failure: ${cleanupProblems.join("; ")}`);
+      if (!runError) runError = new Error(`Protected smoke cleanup failed: ${cleanupProblems.join("; ")}`);
+    } else {
+      console.log("Cleanup: isolated Gateway stopped, smoke port closed, event queue closed, generation marker removed");
+    }
   }
   if (runError) throw runError;
 }

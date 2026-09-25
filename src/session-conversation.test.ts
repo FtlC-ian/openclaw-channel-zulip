@@ -2,8 +2,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveAgentRoute } from "openclaw/plugin-sdk/routing";
 import type { OpenClawConfig } from "./sdk.js";
 import {
+  buildZulipDirectPeerId,
   buildZulipStreamConversation,
   buildZulipStreamSessionKey,
+  matchZulipConfiguredConversation,
+  resolveZulipCommandConversation,
+  resolveZulipConversationRef,
   resolveZulipOutboundSessionRoute,
   resolveZulipSessionConversation,
 } from "./session-conversation.js";
@@ -112,5 +116,59 @@ describe("isolated Zulip topic sessions", () => {
 
   it.each(["", "Engineering", "0", "-1", "9007199254740992"])("rejects invalid stream identity %j", (streamId) => {
     expect(() => conversation("Release A", { streamId })).toThrow("numeric stream ID");
+  });
+});
+
+describe("Zulip conversation binding identities", () => {
+  it("canonicalizes topic and DM refs while rejecting delivery-only identities", () => {
+    const topic = conversation("Release A").conversationId;
+    const direct = buildZulipDirectPeerId({
+      baseUrl: scope.baseUrl,
+      botIdentity: scope.botIdentity,
+      senderIdentity: "Alice@Example.Test",
+    });
+    expect(resolveZulipConversationRef({ conversationId: topic.toUpperCase() })).toEqual({
+      conversationId: topic,
+      parentConversationId: "42",
+    });
+    expect(resolveZulipConversationRef({ conversationId: direct.toUpperCase() })).toEqual({
+      conversationId: direct,
+    });
+    expect(resolveZulipConversationRef({ conversationId: "user:alice@example.test" })).toBeNull();
+    expect(resolveZulipConversationRef({ conversationId: "42", parentConversationId: "42" })).toBeNull();
+  });
+
+  it("resolves command conversations from ordinary topic and DM session keys", () => {
+    const topic = conversation("Release A").conversationId;
+    const direct = buildZulipDirectPeerId({
+      baseUrl: scope.baseUrl,
+      botIdentity: scope.botIdentity,
+      senderIdentity: "alice@example.test",
+    });
+    expect(resolveZulipCommandConversation({
+      sessionKey: `agent:main:zulip:channel:${topic}`,
+    })).toEqual({ conversationId: topic, parentConversationId: "42" });
+    expect(resolveZulipCommandConversation({
+      sessionKey: `agent:main:zulip:default:direct:${direct}`,
+    })).toEqual({ conversationId: direct });
+    expect(resolveZulipCommandConversation({
+      sessionKey: "agent:bound:acp:topic-session",
+      parentSessionKey: `agent:main:zulip:channel:${topic}`,
+    })).toEqual({ conversationId: topic, parentConversationId: "42" });
+    expect(resolveZulipCommandConversation({
+      sessionKey: "agent:bound:acp:dm-session",
+      parentSessionKey: `agent:main:zulip:default:direct:${direct}`,
+    })).toEqual({ conversationId: direct });
+  });
+
+  it("matches only the exact canonical identity, so substantive topic renames require rebind", () => {
+    const original = conversation("Release A").conversationId;
+    const caseOnly = conversation("release a").conversationId;
+    const renamed = conversation("Release B").conversationId;
+    const compiledBinding = resolveZulipConversationRef({ conversationId: original })!;
+    expect(matchZulipConfiguredConversation({ compiledBinding, conversationId: caseOnly, parentConversationId: "42" }))
+      .toMatchObject({ conversationId: original, matchPriority: 100 });
+    expect(matchZulipConfiguredConversation({ compiledBinding, conversationId: renamed, parentConversationId: "42" }))
+      .toBeNull();
   });
 });

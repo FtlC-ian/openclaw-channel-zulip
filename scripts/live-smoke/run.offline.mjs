@@ -1,15 +1,19 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { EventEmitter, once } from "node:events";
+import { readFileSync } from "node:fs";
 import { mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { zstdCompressSync } from "node:zlib";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { assertFinalPrivateTypingStop, assertMessageRemainsExact, authenticatedUserId, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, drainEventQueueUntilQuiet, DURABLE_OFFLINE_DELAY_MS, enableHandledReadForSmokeConfig, eventOccursBefore, EventQueue, extractExactUploadUrl, formatSmokeTurnEvidence, Gateway, hasFinalPrivateTypingStop, hasProvableMinimumMessageDelay, inspectChildTranscripts, inspectLifecycleTurnEvidence, inspectSmokeTurnEvidence, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactPollMessage, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, isUsageCountedTranscriptName, lifecycleDiagnosticSummary, lifecycleEvidenceCounts, lifecycleSummary, normalizeScenarioError, parseZulipChannelTurnDiagnostic, parseZulipChannelTurnResult, parseZulipHandledReadDiagnostic, parseZulipSubagentDiagnostic, probeRunnerLocalGatewayHealth, readZulipMessageFlags, redactError, resolveUploadUrl, signalProcessTree, subagentCompletedBeforeReply, validateEnvironment, waitForProcessTreeExit, waitForZulipMessageRead, writeGatewayGeneration } from "./run.mjs";
-import { validateSmokeBaselineModel } from "./prepare-config.mjs";
-import { resolveInstalledOpenClawRoot, stageBundledPlugin } from "./stage-bundled-plugin.mjs";
+import { assertFinalPrivateTypingStop, assertMessageRemainsExact, authenticatedUserId, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, drainEventQueueUntilQuiet, DURABLE_OFFLINE_DELAY_MS, enableHandledReadForSmokeConfig, eventOccursBefore, EventQueue, extractExactUploadUrl, formatSmokeTurnEvidence, Gateway, hasFinalPrivateTypingStop, hasProvableMinimumMessageDelay, inspectChildTranscripts, inspectLifecycleTurnEvidence, inspectSmokeTurnEvidence, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactPollMessage, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, isUsageCountedTranscriptName, lifecycleDiagnosticSummary, lifecycleEvidenceCounts, lifecycleSummary, normalizeScenarioError, parseZulipChannelTurnDiagnostic, parseZulipChannelTurnResult, parseZulipHandledReadDiagnostic, parseZulipSubagentDiagnostic, probeRunnerLocalGatewayHealth, readZulipMessageFlags, redactError, resolveUploadUrl, signalProcessTree, subagentCompletedBeforeReply, validateEnvironment, verifySmokeAcpRuntime, waitForProcessTreeExit, waitForZulipMessageRead, writeGatewayGeneration } from "./run.mjs";
+import { selectSmokeModel, validateSmokeAcpCapability, validateSmokeBaselineModel } from "./prepare-config.mjs";
+import { resolveInstalledOpenClawRoot, stageBundledPlugin, stagePinnedAcpRuntime } from "./stage-bundled-plugin.mjs";
+import { parseSpawnReceipt, readOrdinaryTranscriptEvidence, readSessionTranscriptEvidence, readZulipBindings, renderedText } from "./bindings.mjs";
 
 const ACTOR_USER_ID = "42";
 const BOT_USER_ID = "91";
@@ -47,6 +51,128 @@ test("validates protected configuration while preserving base paths", () => {
   assert.equal(validateEnvironment(validEnv).ZULIP_URL, "https://zulip.example.test/path");
   assert.throws(() => validateEnvironment({ ...validEnv, ZULIP_URL: "http://zulip.test" }), /HTTPS/);
   assert.throws(() => validateEnvironment({ ...validEnv, ZULIP_SMOKE_USER_API_KEY: "" }), /protected configuration/);
+});
+
+test("requires ACP policy and plugin admission without exposing protected values", () => {
+  const config = { acp: { enabled: true, backend: "acpx", allowedAgents: ["codex"] },
+    plugins: { allow: ["zulip", "acpx"], entries: { acpx: { enabled: true } } } };
+  assert.equal(validateSmokeAcpCapability(config), config);
+  assert.throws(() => validateSmokeAcpCapability({}), /does not request/);
+  assert.throws(() => validateSmokeAcpCapability({ ...config, acp: { enabled: false } }), /disables ACP/);
+  assert.throws(() => validateSmokeAcpCapability({ ...config, acp: { ...config.acp, allowedAgents: ["claude"] } }), /codex ACP target/);
+  assert.throws(() => validateSmokeAcpCapability({ ...config, plugins: { allow: ["zulip"] } }), /omits acpx/);
+});
+
+test("keeps the trusted main workflow model selector compatible with binding preflight", () => {
+  const config = { agents: { defaults: { model: "provider/baseline", models: { "provider/baseline": {} } } },
+    models: { providers: { provider: { models: [{ id: "baseline" }] } } } };
+  assert.equal(selectSmokeModel(config, "gpt-5.2"), config);
+  assert.equal(config.agents.defaults.model, "provider/gpt-5.2");
+  assert.ok(config.models.providers.provider.models.some((model) => model.id === "gpt-5.2"));
+  assert.equal(validateSmokeBaselineModel(config), config);
+});
+
+test("requires a pinned ACP runtime without installing code after protected secrets exist", async () => {
+  const root = await mkdtemp(join(tmpdir(), "zulip-smoke-acp-preflight-"));
+  const configPath = join(root, "protected.json");
+  const config = { agents: { defaults: { model: "provider/gpt-5.2" } },
+    models: { providers: { provider: { models: [{ id: "gpt-5.2" }] } } },
+    acp: { enabled: true, backend: "acpx", allowedAgents: ["codex"] } };
+  try {
+    await writeFile(configPath, JSON.stringify(config), { mode: 0o600 });
+    const loaded = (args, env) => {
+      assert.equal(env.OPENCLAW_STATE_DIR, root);
+      assert.equal(env.OPENCLAW_CONFIG_PATH, configPath);
+      assert.deepEqual(args, ["plugins", "list", "--json"]);
+      return JSON.stringify({ plugins: [{ id: "acpx", status: "loaded", version: "2026.9.6" }] });
+    };
+    await verifySmokeAcpRuntime(configPath, root, loaded);
+    await assert.rejects(verifySmokeAcpRuntime(configPath, root, () => JSON.stringify({ plugins: [] })),
+      /install it in the trusted workflow/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("stages pinned ACP runtime before the protected configuration exists", async () => {
+  const root = await mkdtemp(join(tmpdir(), "zulip-smoke-acp-stage-"));
+  const configPath = join(root, "openclaw-smoke", "openclaw.json");
+  const bootstrapPath = join(root, "openclaw-smoke", "bootstrap.json");
+  const calls = [];
+  try {
+    const stateDir = await stagePinnedAcpRuntime(root, "2026.9.6", (args, env) => {
+      calls.push(args);
+      assert.equal(env.OPENCLAW_CONFIG_PATH, bootstrapPath);
+      assert.equal(env.OPENCLAW_STATE_DIR, join(root, "openclaw-smoke", "state"));
+      assert.equal(readFileSync(bootstrapPath, "utf8"), "{}\n");
+      assert.throws(() => readFileSync(configPath, "utf8"), { code: "ENOENT" });
+      if (args[1] === "install") return "";
+      return JSON.stringify({ plugins: [{ id: "acpx", status: "loaded", version: "2026.9.6" }] });
+    });
+    assert.equal(stateDir, join(root, "openclaw-smoke", "state"));
+    assert.deepEqual(calls, [["plugins", "install", "@openclaw/acpx@2026.9.6"],
+      ["plugins", "list", "--json"]]);
+    await assert.rejects(readFile(bootstrapPath), { code: "ENOENT" });
+    await writeFile(configPath, "{}", { mode: 0o600 });
+    await assert.rejects(stagePinnedAcpRuntime(root, "2026.9.6", () => { throw new Error("must not run"); }),
+      /before protected configuration exists/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("requires positive ACP spawn receipt naming the same bound target", () => {
+  const target = "agent:codex:acp:123";
+  assert.equal(parseSpawnReceipt(`<p>✅ Spawned ACP session ${target} (persistent, backend acpx). Bound this conversation to ${target}.</p>`), target);
+  assert.throws(() => parseSpawnReceipt(`<p>✅ Spawned ACP session agent:main:acp:123 (persistent, backend acpx). Bound this conversation to agent:main:acp:123.</p>`), /Codex ACP/);
+  assert.throws(() => parseSpawnReceipt(`<p>✅ Spawned ACP session ${target} (persistent, backend other). Bound this conversation to ${target}.</p>`), /Codex ACP/);
+  assert.throws(() => parseSpawnReceipt(`<p>⚠️ Spawn failed for ${target}</p>`), /positive/);
+  assert.equal(renderedText("<p>✅ Conversation unbound.</p>"), "✅ Conversation unbound.");
+});
+
+test("attributes marker turns to the exact ACP or ordinary session in read-only SQLite", async () => {
+  const root = await mkdtemp(join(tmpdir(), "zulip-smoke-binding-evidence-"));
+  const marker = "smoke-unique-marker";
+  const acpKey = "agent:codex:acp:one";
+  const ordinaryKey = "agent:main:zulip:channel:42:topic:v2:abc";
+  const event = (role, text) => JSON.stringify({ type: "message", message: {
+    role, content: role === "assistant" ? [{ type: "text", text }] : text,
+  } });
+  try {
+    for (const [agentId, key, transcriptMarker] of [
+      ["codex", acpKey, marker], ["main", ordinaryKey, "ordinary-marker"],
+    ]) {
+      const dir = join(root, "agents", agentId, "agent");
+      await mkdir(dir, { recursive: true });
+      const db = new DatabaseSync(join(dir, "openclaw-agent.sqlite"));
+      db.exec("CREATE TABLE session_windows (session_id TEXT, session_key TEXT, created_at INTEGER)");
+      db.exec("CREATE TABLE transcript_events (session_id TEXT, seq INTEGER, event_json TEXT, event_zstd BLOB, event_utf8_bytes INTEGER)");
+      db.prepare("INSERT INTO session_windows VALUES (?, ?, 1)").run("s1", key);
+      const user = event("user", `Reply with exactly ${transcriptMarker}`);
+      db.prepare("INSERT INTO transcript_events VALUES ('s1', 1, ?, NULL, NULL)").run(user);
+      const assistant = Buffer.from(event("assistant", transcriptMarker));
+      db.prepare("INSERT INTO transcript_events VALUES ('s1', 2, NULL, ?, ?)")
+        .run(zstdCompressSync(assistant), assistant.length);
+      db.close();
+    }
+    assert.deepEqual(readSessionTranscriptEvidence(root, acpKey, marker),
+      { sessionId: "s1", userSeq: 1, assistantSeq: 2 });
+    assert.equal(readSessionTranscriptEvidence(root, acpKey, "ordinary-marker"), null);
+    assert.equal(readOrdinaryTranscriptEvidence(root, "42:topic:v2:abc", "ordinary-marker")?.sessionKey, ordinaryKey);
+    assert.equal(readOrdinaryTranscriptEvidence(root, "42:topic:v2:abc", marker), null);
+
+    const stateDir = join(root, "state");
+    await mkdir(stateDir);
+    const bindings = new DatabaseSync(join(stateDir, "openclaw.sqlite"));
+    bindings.exec("CREATE TABLE current_conversation_bindings (binding_id TEXT, target_session_key TEXT, channel TEXT, account_id TEXT, conversation_id TEXT, parent_conversation_id TEXT, target_kind TEXT, status TEXT, bound_at INTEGER, expires_at INTEGER, metadata_json TEXT)");
+    bindings.prepare("INSERT INTO current_conversation_bindings VALUES (?, ?, 'zulip', 'default', ?, '42', 'session', 'active', 1, NULL, '{}')")
+      .run("test-binding", acpKey, "42:topic:v2:abc");
+    bindings.close();
+    assert.equal(readZulipBindings(root, { conversationId: "42:topic:v2:abc" })[0].target_session_key, acpKey);
+    assert.equal(readZulipBindings(root, { conversationId: "other" }).length, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("validates the protected baseline model without changing config or credentials", () => {
@@ -615,7 +741,7 @@ test("classifies the observed current-turn no-reply transcript without exposing 
 test("captures failure turn evidence before stopping the gateway", async () => {
   const source = await readFile(new URL("./run.mjs", import.meta.url), "utf8");
   const captureIndex = source.indexOf("smokeTurnEvidenceLine = formatSmokeTurnEvidence(");
-  const stopIndex = source.indexOf("await gateway.stop().catch(() => {});", captureIndex);
+  const stopIndex = source.indexOf("await gateway.stop();", captureIndex);
   assert.equal(captureIndex >= 0, true);
   assert.equal(stopIndex > captureIndex, true);
 });
@@ -1423,14 +1549,14 @@ test("authorizes only owner-dispatched commits reachable from the requested same
     await runSuccessfulCommand("git", ["push", "origin", "HEAD"], { cwd: seedDir });
     await runSuccessfulCommand("git", ["clone", "--branch", "main", remoteDir, runDir]);
 
-    const runAuthorization = async ({ actor = "FtlC-ian", requestedRef = "", requestedSha = mainSha } = {}) => {
+    const runAuthorization = async ({ actor = "FtlC-ian", dispatchRef = "refs/heads/main", requestedRef = "", requestedSha = mainSha } = {}) => {
       const outputPath = join(root, `github-output-${outputIndex++}`);
       await writeFile(outputPath, "");
       const result = await runCommand(authorizeScript, [], { cwd: runDir, env: {
         ...process.env,
         DISPATCH_ACTOR: actor,
         DISPATCH_REPOSITORY: "FtlC-ian/openclaw-channel-zulip",
-        DISPATCH_REF: "refs/heads/main",
+        DISPATCH_REF: dispatchRef,
         GITHUB_OUTPUT: outputPath,
         GITHUB_SHA: mainSha,
         REQUESTED_REF: requestedRef,
@@ -1450,6 +1576,10 @@ test("authorizes only owner-dispatched commits reachable from the requested same
     assert.equal(branchCandidate.code, 0, branchCandidate.stderr);
     assert.equal(branchCandidate.output, `sha=${candidateSha}\n`);
     assert.equal(await runSuccessfulCommand("git", ["rev-parse", "refs/remotes/origin/fix/test-candidate"], { cwd: runDir }), candidateSha);
+
+    const branchDispatch = await runAuthorization({ dispatchRef: "refs/heads/fix/test-candidate", requestedRef: "fix/test-candidate", requestedSha: candidateSha });
+    assert.equal(branchDispatch.code, 1);
+    assert.match(branchDispatch.stderr, /main branch/);
 
     const nonOwner = await runAuthorization({ actor: "someone-else" });
     assert.equal(nonOwner.code, 1);
@@ -1482,13 +1612,16 @@ test("workflow is manual, protected, pinned, and bounded", async () => {
   assert.match(workflow, /REQUESTED_REF.*inputs\.candidate_ref/);
   assert.match(workflow, /run: scripts\/live-smoke\/authorize-candidate\.sh/);
   assert.match(workflow, /permissions:\n\s+contents: read/);
-  assert.match(workflow, /timeout-minutes: 35/);
-  assert.doesNotMatch(workflow, /timeout-minutes: 35\n\s+env:/);
-  assert.match(workflow, /Stage candidate through the bundled-plugin trust path/);
+  assert.match(workflow, /timeout-minutes: 60/);
+  assert.doesNotMatch(workflow, /timeout-minutes: 60\n\s+env:/);
+  assert.match(workflow, /Stage candidate and pinned ACP runtime before protected configuration/);
+  assert.ok(workflow.indexOf("Stage candidate and pinned ACP runtime before protected configuration") <
+    workflow.indexOf("Prepare isolated OpenClaw state"));
   assert.match(workflow, /node scripts\/live-smoke\/stage-bundled-plugin\.mjs/);
   assert.doesNotMatch(workflow, /plugins install -l/);
   assert.match(workflow, /plugin\.origin !== "bundled"/);
   assert.match(workflow, /plugin\.status !== "loaded"/);
+  assert.match(workflow, /acpx\.status !== "loaded"/);
   assert.match(workflow, /ZULIP_SMOKE_ENABLE_DURABLE: '1'/);
   assert.match(workflow, /SMOKE_OPENCLAW_VERSION/);
   assert.match(workflow, /SMOKE_PLUGIN_VERSION/);
@@ -1522,16 +1655,16 @@ test("workflow is manual, protected, pinned, and bounded", async () => {
   assert.match(agentProtocol, /\.smoke-gateway-generation/);
   assert.match(agentProtocol, /at least six\nseconds/);
   const prepareIndex = workflow.indexOf("- name: Prepare isolated OpenClaw state");
-  const stageIndex = workflow.indexOf("- name: Stage candidate through the bundled-plugin trust path");
+  const stageIndex = workflow.indexOf("- name: Stage candidate and pinned ACP runtime before protected configuration");
   const verifyIndex = workflow.indexOf("- name: Verify staged bundled candidate");
   const configSetIndex = workflow.indexOf("pnpm exec openclaw config set");
   const configValidateIndex = workflow.indexOf("pnpm exec openclaw config validate");
   const pluginListIndex = workflow.indexOf("pnpm exec openclaw plugins list --json");
   const liveIndex = workflow.indexOf("- name: Run bounded live scenarios");
+  assert.ok(stageIndex >= 0 && prepareIndex >= 0 && stageIndex < prepareIndex);
   assert.ok(prepareIndex < configSetIndex);
   assert.ok(configSetIndex < configValidateIndex);
-  assert.ok(configValidateIndex < stageIndex);
-  assert.ok(stageIndex < verifyIndex);
+  assert.ok(configValidateIndex < verifyIndex);
   assert.ok(verifyIndex < pluginListIndex);
   assert.ok(pluginListIndex < liveIndex);
   for (const use of workflow.matchAll(/uses:\s+([^\s]+)/g)) assert.match(use[1], /@[0-9a-f]{40}$/);

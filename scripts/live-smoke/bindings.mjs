@@ -110,6 +110,43 @@ export function readOrdinaryTranscriptEvidence(stateDir, conversationId, marker)
   return null;
 }
 
+export async function closeTrackedBindings(sessions, { close, readBindings, initialTargets }) {
+  const failures = [];
+  for (const [target, session] of sessions) {
+    if (initialTargets.has(target)) {
+      failures.push("refused to close a preexisting ACP target");
+      continue;
+    }
+    if (!session.closed) {
+      try {
+        await close(target, session.surface);
+        session.closed = true;
+      } catch {
+        failures.push("one test ACP session could not be closed");
+      }
+    }
+    try {
+      if (readBindings(target).length) failures.push("test ACP target still owns persisted bindings after cleanup");
+    } catch {
+      failures.push("test ACP target binding absence could not be verified");
+    }
+  }
+  return failures;
+}
+
+export async function moveSmokeTopic(actor, { messageId, streamId, oldTopic, newTopic, signal }) {
+  const before = (await actor.request(`messages/${messageId}`, { signal })).message;
+  assert.equal(String(before?.stream_id), streamId);
+  assert.equal(before?.subject, oldTopic);
+  await actor.request(`messages/${messageId}`, { method: "PATCH", body: {
+    topic: newTopic, propagate_mode: "change_all", send_notification_to_old_thread: false,
+    send_notification_to_new_thread: false,
+  }, signal });
+  const after = (await actor.request(`messages/${messageId}`, { signal })).message;
+  assert.equal(String(after?.stream_id), streamId);
+  assert.equal(after?.subject, newTopic, "Zulip did not move the smoke message to the renamed topic");
+}
+
 export async function runBindingScenarios({
   env, actor, queue, gateway, scenario, sendDm, messageIds, actorUserId, botUserId,
   isPrivateBotEvent, isExactRenderedContent, command, timeoutMs, runId,
@@ -121,7 +158,9 @@ export async function runBindingScenarios({
   });
   const streamId = String(streamIdResult.stream_id);
   if (!/^\d+$/.test(streamId) || Number(streamId) <= 0) throw new Error("Smoke stream did not resolve to a numeric ID");
-  const initialBindingIds = new Set(readZulipBindings(env.OPENCLAW_STATE_DIR).map((row) => row.binding_id));
+  const initialBindings = readZulipBindings(env.OPENCLAW_STATE_DIR);
+  const initialBindingIds = new Set(initialBindings.map((row) => row.binding_id));
+  const initialTargets = new Set(initialBindings.map((row) => row.target_session_key));
   const sessions = new Map();
   const topic = `${runId}-binding`;
   const renamedTopic = `${runId}-binding-renamed`;
@@ -247,7 +286,7 @@ export async function runBindingScenarios({
       for (const row of readZulipBindings(env.OPENCLAW_STATE_DIR)) {
         if (initialBindingIds.has(row.binding_id) || sessions.has(row.target_session_key) ||
           !/^agent:[a-z0-9_-]+:acp:/.test(row.target_session_key)) continue;
-        const candidates = [mainTopic, renamed, topicSurface(`${runId}-expiry`)];
+        const candidates = [mainTopic, renamed, topicSurface(`${runId}-expiry`), topicSurface(`${runId}-max-age-expiry`)];
         const surface = row.conversation_id === dmConversationId ? dmSurface :
           candidates.find((candidate) => row.conversation_id ===
             topicConversationId(row.account_id, candidate.topic));
@@ -258,17 +297,15 @@ export async function runBindingScenarios({
     if (!await gateway.isHealthy()) {
       try { await gateway.restart(); } catch { failures.push("isolated Gateway could not restart for ACP cleanup"); return failures; }
     }
-    for (const [target, session] of sessions) {
-      if (session.closed) continue;
-      try {
-        const text = await receipt(session.surface, `/acp close ${target}`,
+    failures.push(...await closeTrackedBindings(sessions, {
+      initialTargets,
+      readBindings: (target) => readZulipBindings(env.OPENCLAW_STATE_DIR, { targetSessionKey: target }),
+      close: async (target, surface) => {
+        const text = await receipt(surface, `/acp close ${target}`,
           /^✅ Closed ACP session /, "ACP cleanup close", undefined, 15000);
         if (!text.includes(target)) throw new Error("ACP cleanup closed a different target");
-        session.closed = true;
-      } catch {
-        failures.push("one test ACP session could not be closed");
-      }
-    }
+      },
+    }));
     return failures;
   };
 
@@ -360,6 +397,8 @@ export async function runBindingScenarios({
       await waitTranscript(() => readSessionTranscriptEvidence(env.OPENCLAW_STATE_DIR,
         topicRow.target_session_key, marker), "Case alias ACP marker", signal);
       assert.equal(bindingFor(topicRow.conversation_id)?.target_session_key, topicRow.target_session_key);
+      await moveSmokeTopic(actor, { messageId: inboundId, streamId, oldTopic: rawTopic,
+        newTopic: renamedTopic, signal });
       const renamedId = topicConversationId(topicRow.account_id, renamedTopic);
       assert.notEqual(renamedId, topicRow.conversation_id);
       assert.equal(bindingFor(renamedId), null, "Substantive topic rename inherited old binding");
@@ -397,6 +436,28 @@ export async function runBindingScenarios({
       assert.ok(Number(expiring.expires_at) <= Date.now(), "Idle test did not reach persisted expiry");
       await echo(surface, `${runId}:expired-fallback`, null, signal);
       assert.equal(bindingFor(conversationId), null, "Expired ACP binding remained active");
+      assert.equal(row.target_session_key, expiring.target_session_key);
+    });
+
+    await scenario("binding-max-age-expiry", async (signal) => {
+      const surface = topicSurface(`${runId}-max-age-expiry`);
+      const conversationId = topicConversationId(topicRow.account_id, surface.topic);
+      const row = await spawnBound(surface, conversationId, signal);
+      await receipt(surface, "/session idle 10m", /^✅ Idle timeout set to 10m for 1 binding/,
+        "max-age independent idle policy", signal);
+      await receipt(surface, "/session max-age 20s", /^✅ Max age set to <1m for 1 binding/,
+        "short max-age lifecycle receipt", signal);
+      const expiring = bindingFor(conversationId);
+      const metadata = JSON.parse(expiring?.metadata_json ?? "{}");
+      assert.equal(metadata.zulipMaxAgeMs ?? metadata.maxAgeMs, 20000);
+      assert.equal(metadata.zulipIdleTimeoutMs ?? metadata.idleTimeoutMs, 600000);
+      assert.ok(Number(expiring?.expires_at) > Date.now(), "Max-age policy did not persist a future expiry");
+      assert.ok(Number(expiring.expires_at) <= Number(row.bound_at) + 20000,
+        "Max-age expiry must be capped by original binding age");
+      await delay(Math.max(0, Number(expiring.expires_at) - Date.now()) + 2500, undefined, { signal });
+      assert.ok(Number(expiring.expires_at) <= Date.now(), "Max-age test did not reach persisted expiry");
+      await echo(surface, `${runId}:max-age-expired-fallback`, null, signal);
+      assert.equal(bindingFor(conversationId), null, "Max-age expired ACP binding remained active");
       assert.equal(row.target_session_key, expiring.target_session_key);
     });
 
@@ -438,7 +499,7 @@ export async function runBindingScenarios({
       if (scenarioFailure) console.error(message);
       else throw new Error(message);
     } else {
-      console.log("Binding cleanup: all test ACP sessions closed");
+      console.log("Binding cleanup: all test ACP sessions closed; tracked targets own no persisted bindings");
     }
   }
 }

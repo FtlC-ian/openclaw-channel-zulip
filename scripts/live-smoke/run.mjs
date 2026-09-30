@@ -9,6 +9,7 @@ import { isAbsolute, relative, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { runBindingScenarios } from "./bindings.mjs";
+import { dispatchSmokeSuite, selectSmokeSuite } from "./suites.mjs";
 import { validateSmokeAcpCapability, validateSmokeBaselineModel } from "./prepare-config.mjs";
 
 export const REQUIRED_ENV = [
@@ -1294,6 +1295,7 @@ export async function verifySmokeAcpRuntime(configPath, stateDir, runCli = runOp
 }
 
 async function main() {
+  const suite = selectSmokeSuite(process.env.ZULIP_SMOKE_SUITE);
   const env = validateEnvironment(process.env);
   const checkedOutSha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
   if (checkedOutSha !== env.SMOKE_TESTED_SHA) throw new Error("Protected smoke checkout does not match the authorized candidate SHA");
@@ -1308,7 +1310,7 @@ async function main() {
   if (!env.OPENCLAW_CONFIG_PATH?.trim()) throw new Error("OPENCLAW_CONFIG_PATH is required for binding smoke");
   await verifySmokeAcpRuntime(env.OPENCLAW_CONFIG_PATH, env.OPENCLAW_STATE_DIR);
   process.env.ZULIP_SUBAGENT_DIAGNOSTICS = "1";
-  if (env.ZULIP_SMOKE_ENABLE_DURABLE === "1") {
+  if (suite === "full" && env.ZULIP_SMOKE_ENABLE_DURABLE === "1") {
     const configPath = env.OPENCLAW_CONFIG_PATH?.trim();
     if (!configPath) throw new Error("OPENCLAW_CONFIG_PATH is required for durable smoke");
     await enableHandledReadForSmokeConfig(configPath);
@@ -1355,22 +1357,19 @@ async function main() {
         }, timeoutMs); }),
       ]);
       currentTurnMarker = undefined;
-      report.push({ name, ok: true, ms: Date.now() - started });
+      report.push({ suite, name, ok: true, ms: Date.now() - started });
     }
     catch (error) {
       const failure = normalizeScenarioError(controller.signal, error);
-      report.push({ name, ok: false, ms: Date.now() - started, error: redactError(failure) });
+      report.push({ suite, name, ok: false, ms: Date.now() - started, error: redactError(failure) });
       throw failure;
     }
     finally { clearTimeout(timeout); controller.abort(); }
   };
   const skipScenario = (name, reason) => {
-    report.push({ name, ok: true, skipped: true, ms: 0, reason });
+    report.push({ suite, name, ok: true, skipped: true, ms: 0, reason });
   };
-  try {
-    await queue.open();
-    await gateway.start();
-
+  const runGeneralScenarios = async () => {
     await scenario("dm-round-trip", async (signal) => {
       const marker = `${runId}:dm-ok`; currentTurnMarker = marker;
       await sendDm(command(`echo ${marker}`), signal);
@@ -1592,9 +1591,16 @@ async function main() {
       "durable-receive-completion-deduplication",
       "skipped because durable smoke is disabled; durable plugin keyed state requires a bundled or trusted official install",
     );
-    await runBindingScenarios({
-      env, actor, queue, gateway, scenario, sendDm, messageIds, actorUserId, botUserId,
-      isPrivateBotEvent, isExactRenderedContent, command, timeoutMs, runId,
+  };
+  try {
+    await queue.open();
+    await gateway.start();
+    await dispatchSmokeSuite(suite, {
+      full: runGeneralScenarios,
+      bindings: async () => runBindingScenarios({
+        env, actor, queue, gateway, scenario, sendDm, messageIds, actorUserId, botUserId,
+        isPrivateBotEvent, isExactRenderedContent, command, timeoutMs, runId,
+      }),
     });
   } catch (error) {
     runError = error;
@@ -1625,8 +1631,9 @@ async function main() {
     const cleanupFailures =
       await countMessageDeletionFailures(bot, messageIds.bot) +
       await countMessageDeletionFailures(actor, messageIds.actor);
+    if (suite === "bindings" && cleanupFailures > 0) cleanupProblems.push("binding smoke messages could not all be deleted");
     try { await queue.close(); } catch { cleanupProblems.push("Zulip event queue could not be closed"); }
-    for (const item of report) console.log(`${item.skipped ? "SKIP" : item.ok ? "PASS" : "FAIL"} ${item.name} (${item.ms}ms)${item.reason ? `: ${item.reason}` : ""}${item.error ? `: ${item.error}` : ""}`);
+    for (const item of report) console.log(`${item.skipped ? "SKIP" : item.ok ? "PASS" : "FAIL"} [suite=${suite}] ${item.name} (${item.ms}ms)${item.reason ? `: ${item.reason}` : ""}${item.error ? `: ${item.error}` : ""}`);
     if (runError && lifecycleInboundId) {
       const evidence = lifecycleEvidenceCounts(queue.events, lifecycleInboundId);
       console.error(`Lifecycle reaction evidence counts: total=${evidence.total} add=${evidence.add} remove=${evidence.remove} other_op=${evidence.otherOp} with_name=${evidence.withName} with_code=${evidence.withCode} robot_name=${evidence.robotName} robot_code=${evidence.robotCode}`);
@@ -1644,7 +1651,8 @@ async function main() {
     if (runError && gateway.diagnostics.length) {
       for (const diagnostic of gateway.diagnostics) console.error(diagnostic);
     }
-    console.log(`Evidence: tested commit ${env.SMOKE_TESTED_SHA}; run identifier ${runId}`);
+    console.log(`Evidence: suite=${suite}; tested commit ${env.SMOKE_TESTED_SHA}; run identifier ${runId}`);
+    if (suite === "bindings") console.log("Scope: binding-only acceptance; general lifecycle/durable scenarios NOT RUN; not full-suite acceptance");
     console.log(`Cleanup: message deletion failures=${cleanupFailures}; Zulip exposes no public API for deleting uploaded files.`);
     if (cleanupFailures > 0) console.warn(`Cleanup warning: ${cleanupFailures} smoke messages could not be deleted through the Zulip API.`);
     if (cleanupProblems.length) {
@@ -1655,6 +1663,7 @@ async function main() {
     }
   }
   if (runError) throw runError;
+  console.log(`Suite complete: suite=${suite}; selected assertions passed`);
 }
 
 if (import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

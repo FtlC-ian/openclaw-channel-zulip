@@ -112,15 +112,34 @@ export async function stageBundledPlugin({
   };
 }
 
+const CLI_ENV_ALLOWLIST = ["PATH", "HOME", "TMPDIR", "CI", "PNPM_HOME", "COREPACK_HOME",
+  "NPM_CONFIG_CACHE", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "NODE_EXTRA_CA_CERTS"];
+
+export function buildOpenClawCliEnv(parentEnv, overrides) {
+  const inherited = Object.fromEntries(CLI_ENV_ALLOWLIST.filter((key) => parentEnv[key] !== undefined)
+    .map((key) => [key, parentEnv[key]]));
+  return { ...inherited, ...overrides };
+}
+
 function runOpenClawCli(args, env) {
-  const allowed = ["PATH", "HOME", "TMPDIR", "CI", "PNPM_HOME", "COREPACK_HOME",
-    "NPM_CONFIG_CACHE", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "NODE_EXTRA_CA_CERTS"];
-  const childEnv = Object.fromEntries(allowed.filter((key) => process.env[key] !== undefined)
-    .map((key) => [key, process.env[key]]));
   return execFileSync("pnpm", ["exec", "openclaw", ...args], {
-    encoding: "utf8", env: { ...childEnv, ...env },
+    encoding: "utf8", env: buildOpenClawCliEnv(process.env, env),
     stdio: ["ignore", "pipe", "pipe"], timeout: 180000, maxBuffer: 4 * 1024 * 1024,
   });
+}
+
+export async function completeOpenClawLifecycle(runnerTemp, runCli = runOpenClawCli) {
+  const root = join(runnerTemp, "openclaw-smoke");
+  const stateDir = join(root, "state");
+  await mkdir(stateDir, { recursive: true, mode: 0o700 });
+  try {
+    runCli(["--version"], {
+      OPENCLAW_CONFIG_PATH: join(root, "lifecycle-unused.json"),
+      OPENCLAW_STATE_DIR: stateDir,
+    });
+  } catch {
+    throw new Error("Protected smoke could not complete the OpenClaw package lifecycle before staging");
+  }
 }
 
 export async function stagePinnedAcpRuntime(runnerTemp, hostVersion, runCli = runOpenClawCli) {
@@ -157,14 +176,16 @@ export async function stagePinnedAcpRuntime(runnerTemp, hostVersion, runCli = ru
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  const protectedRun = process.env.GITHUB_ACTIONS === "true";
+  if (protectedRun && (!process.env.RUNNER_TEMP || !process.env.GITHUB_ENV)) {
+    throw new Error("Protected smoke staging requires runner-local paths");
+  }
+  if (protectedRun) await completeOpenClawLifecycle(process.env.RUNNER_TEMP);
   const result = await stageBundledPlugin({
     ...(args["host-root"] ? { hostRoot: args["host-root"] } : {}),
     ...(args["plugin-root"] ? { pluginRoot: args["plugin-root"] } : {}),
   });
-  if (process.env.GITHUB_ACTIONS === "true") {
-    if (!process.env.RUNNER_TEMP || !process.env.GITHUB_ENV) {
-      throw new Error("Protected smoke staging requires runner-local paths");
-    }
+  if (protectedRun) {
     const acp = await stagePinnedAcpRuntime(process.env.RUNNER_TEMP, result.openclawVersion);
     process.stdout.write(acp.staged
       ? "Staged pinned acpx before protected configuration\n"

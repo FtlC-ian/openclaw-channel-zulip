@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { EventEmitter, once } from "node:events";
 import { readFileSync } from "node:fs";
-import { mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,11 +12,104 @@ import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { assertFinalPrivateTypingStop, assertMessageRemainsExact, authenticatedUserId, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, drainEventQueueUntilQuiet, DURABLE_OFFLINE_DELAY_MS, enableHandledReadForSmokeConfig, eventOccursBefore, EventQueue, extractExactUploadUrl, formatSmokeTurnEvidence, Gateway, hasFinalPrivateTypingStop, hasProvableMinimumMessageDelay, inspectChildTranscripts, inspectLifecycleTurnEvidence, inspectSmokeTurnEvidence, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactPollMessage, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, isUsageCountedTranscriptName, lifecycleDiagnosticSummary, lifecycleEvidenceCounts, lifecycleSummary, normalizeScenarioError, parseZulipChannelTurnDiagnostic, parseZulipChannelTurnResult, parseZulipHandledReadDiagnostic, parseZulipSubagentDiagnostic, probeRunnerLocalGatewayHealth, readZulipMessageFlags, redactError, resolveUploadUrl, signalProcessTree, subagentCompletedBeforeReply, validateEnvironment, verifySmokeAcpRuntime, waitForProcessTreeExit, waitForZulipMessageRead, writeGatewayGeneration } from "./run.mjs";
 import { validateSmokeAcpCapability, validateSmokeBaselineModel } from "./prepare-config.mjs";
-import { resolveInstalledOpenClawRoot, stageBundledPlugin, stagePinnedAcpRuntime } from "./stage-bundled-plugin.mjs";
-import { parseSpawnReceipt, readOrdinaryTranscriptEvidence, readSessionTranscriptEvidence, readZulipBindings, renderedText } from "./bindings.mjs";
+import { buildOpenClawCliEnv, completeOpenClawLifecycle, resolveInstalledOpenClawRoot, stageBundledPlugin, stagePinnedAcpRuntime } from "./stage-bundled-plugin.mjs";
+import { closeTrackedBindings, moveSmokeTopic, parseSpawnReceipt, readOrdinaryTranscriptEvidence, readSessionTranscriptEvidence, readZulipBindings, renderedText } from "./bindings.mjs";
+import { dispatchSmokeSuite, selectSmokeSuite } from "./suites.mjs";
 
 const ACTOR_USER_ID = "42";
 const BOT_USER_ID = "91";
+
+test("binding selection bypasses failing general lifecycle while default preserves failure", async () => {
+  const visited = [];
+  const callbacks = { full: async () => { visited.push("lifecycle"); throw new Error("private child failure"); },
+    bindings: async () => { visited.push("bindings"); } };
+  await dispatchSmokeSuite("bindings", callbacks);
+  assert.deepEqual(visited, ["bindings"]);
+  visited.length = 0;
+  await assert.rejects(dispatchSmokeSuite(undefined, callbacks), /private child failure/);
+  assert.deepEqual(visited, ["lifecycle"]);
+  visited.length = 0;
+  await dispatchSmokeSuite("full", { full: async () => visited.push("general"), bindings: callbacks.bindings });
+  assert.deepEqual(visited, ["general", "bindings"]);
+});
+
+test("unknown suite fails before protected configuration or any callback", async () => {
+  for (const value of ["", "binding", "BINDINGS", " bindings", "full "]) {
+    assert.throws(() => selectSmokeSuite(value), /ZULIP_SMOKE_SUITE/);
+    await assert.rejects(dispatchSmokeSuite(value, { full: () => assert.fail("full ran"),
+      bindings: () => assert.fail("bindings ran") }), /ZULIP_SMOKE_SUITE/);
+  }
+  const result = await runCommand(process.execPath, [fileURLToPath(new URL("./run.mjs", import.meta.url))],
+    { env: { PATH: process.env.PATH, ZULIP_SMOKE_SUITE: "typo" } });
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /ZULIP_SMOKE_SUITE must be/);
+  assert.doesNotMatch(result.stderr, /Missing required protected configuration/);
+});
+
+test("binding cleanup preserves preexisting targets, verifies even closed targets, and continues after failures", async () => {
+  const closed = [];
+  const inspected = [];
+  const sessions = new Map([
+    ["preexisting", { closed: false }], ["broken", { closed: false }],
+    ["stale", { closed: true }], ["unreadable", { closed: true }], ["owned", { closed: false }],
+  ]);
+  const failures = await closeTrackedBindings(sessions, {
+    initialTargets: new Set(["preexisting"]),
+    close: async (target) => { closed.push(target); if (target === "broken") throw new Error("close failed"); },
+    readBindings: (target) => { inspected.push(target); if (target === "unreadable") throw new Error("store failed");
+      return target === "stale" ? [{ target_session_key: target }] : []; },
+  });
+  assert.deepEqual(closed, ["broken", "owned"]);
+  assert.deepEqual(inspected, ["broken", "stale", "unreadable", "owned"]);
+  assert.equal(sessions.get("preexisting").closed, false);
+  assert.equal(failures.length, 4);
+  assert.ok(failures.some((failure) => failure.includes("still owns persisted")));
+  assert.ok(failures.some((failure) => failure.includes("absence could not be verified")));
+  assert.deepEqual(await closeTrackedBindings(new Map([["owned", { closed: false }]]), {
+    initialTargets: new Set(), close: async () => {}, readBindings: () => [],
+  }), []);
+});
+
+test("topic move requires server readback, not a successful PATCH receipt", async () => {
+  const options = { messageId: "42", streamId: "7", oldTopic: "run-old", newTopic: "run-new" };
+  let topic = "run-old";
+  let applyMove = false;
+  const actor = { request: async (path, request = {}) => {
+    assert.equal(path, "messages/42");
+    if (request.method === "PATCH") {
+      assert.equal(request.body.propagate_mode, "change_all");
+      if (applyMove) topic = request.body.topic;
+      return { result: "success" };
+    }
+    return { message: { stream_id: 7, subject: topic } };
+  } };
+  await assert.rejects(moveSmokeTopic(actor, options), /did not move/);
+  applyMove = true;
+  await moveSmokeTopic(actor, options);
+  assert.equal(topic, "run-new");
+});
+
+test("lifecycle priming isolates host CLI from protected configuration and sanitizes failures", async () => {
+  const root = await mkdtemp(join(tmpdir(), "zulip-smoke-prime-"));
+  try {
+    const env = buildOpenClawCliEnv({ PATH: "/safe", OPENCLAW_CONFIG_PATH: "/production",
+      OPENCLAW_STATE_DIR: "/production-state", ZULIP_SMOKE_USER_API_KEY: "secret" },
+    { OPENCLAW_CONFIG_PATH: join(root, "isolated"), OPENCLAW_STATE_DIR: join(root, "state") });
+    assert.deepEqual(env, { PATH: "/safe", OPENCLAW_CONFIG_PATH: join(root, "isolated"),
+      OPENCLAW_STATE_DIR: join(root, "state") });
+    let called = false;
+    await completeOpenClawLifecycle(root, (args, overrides) => {
+      called = true;
+      assert.deepEqual(args, ["--version"]);
+      assert.equal(overrides.OPENCLAW_CONFIG_PATH, join(root, "openclaw-smoke", "lifecycle-unused.json"));
+      assert.equal(overrides.OPENCLAW_STATE_DIR, join(root, "openclaw-smoke", "state"));
+    });
+    assert.equal(called, true);
+    await assert.rejects(stat(join(root, "openclaw-smoke", "lifecycle-unused.json")), /ENOENT/);
+    await assert.rejects(completeOpenClawLifecycle(root, () => { throw new Error("secret"); }),
+      { message: "Protected smoke could not complete the OpenClaw package lifecycle before staging" });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
 
 function runCommand(command, args, { cwd, env = process.env } = {}) {
   return new Promise((resolve, reject) => {
@@ -1691,6 +1784,59 @@ test("stages a built candidate only inside the host bundled extension root", asy
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("protected staging CLI primes lifecycle before guard and stages ACP only after candidate", async () => {
+  const root = await mkdtemp(join(tmpdir(), "zulip-smoke-prime-order-"));
+  const hostRoot = join(root, "host");
+  const pluginRoot = join(root, "candidate");
+  const bin = join(root, "bin");
+  const runnerTemp = join(root, "runner");
+  const log = join(root, "calls.jsonl");
+  try {
+    await mkdir(join(hostRoot, "dist"), { recursive: true });
+    await mkdir(join(pluginRoot, "dist"), { recursive: true });
+    await mkdir(bin);
+    await writeFile(join(hostRoot, "package.json"), JSON.stringify({ name: "openclaw", version: "2026.9.6" }));
+    await writeFile(join(hostRoot, ".openclaw-lifecycle-pending"), "pending");
+    await writeFile(join(hostRoot, "dist", "openclaw-install-guard"), "pending");
+    await writeFile(join(pluginRoot, "package.json"), JSON.stringify({ name: "openclaw-channel-zulip",
+      version: "2026.9.18", openclaw: { extensions: ["./dist/index.js"] } }));
+    await writeFile(join(pluginRoot, "openclaw.plugin.json"), JSON.stringify({ id: "zulip" }));
+    await writeFile(join(pluginRoot, "dist", "index.js"), "export default {};\n");
+    await writeFile(join(bin, "pnpm"), `#!${process.execPath}
+const fs = require('node:fs');
+const path = require('node:path');
+const assert = require('node:assert/strict');
+const args = process.argv.slice(2);
+assert.deepEqual(args.slice(0, 2), ['exec', 'openclaw']);
+assert.equal(process.env.ZULIP_SMOKE_USER_API_KEY, undefined);
+assert.equal(process.env.OPENCLAW_STATE_DIR, ${JSON.stringify(join(runnerTemp, "openclaw-smoke", "state"))});
+fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(args.slice(2)) + '\\n');
+if (args[2] === '--version') {
+  assert.equal(process.env.OPENCLAW_CONFIG_PATH, ${JSON.stringify(join(runnerTemp, "openclaw-smoke", "lifecycle-unused.json"))});
+  assert.equal(fs.existsSync(process.env.OPENCLAW_CONFIG_PATH), false);
+  fs.unlinkSync(${JSON.stringify(join(hostRoot, ".openclaw-lifecycle-pending"))});
+  fs.unlinkSync(${JSON.stringify(join(hostRoot, "dist", "openclaw-install-guard"))});
+} else {
+  assert.equal(process.env.OPENCLAW_CONFIG_PATH, ${JSON.stringify(join(runnerTemp, "openclaw-smoke", "bootstrap.json"))});
+  assert.equal(fs.readFileSync(process.env.OPENCLAW_CONFIG_PATH, 'utf8'), '{}\\n');
+  assert.equal(fs.existsSync(${JSON.stringify(join(hostRoot, "dist", "extensions", "zulip", "dist", "index.js"))}), true);
+  if (args[3] === 'list') console.log(JSON.stringify({ plugins: [{ id: 'acpx', status: 'loaded', version: '2026.9.6' }] }));
+}
+`);
+    await chmod(join(bin, "pnpm"), 0o700);
+    const result = await runCommand(process.execPath, [fileURLToPath(new URL("./stage-bundled-plugin.mjs", import.meta.url)),
+      "--host-root", hostRoot, "--plugin-root", pluginRoot], { env: { PATH: bin,
+      GITHUB_ACTIONS: "true", RUNNER_TEMP: runnerTemp, GITHUB_ENV: join(root, "github-env"),
+      OPENCLAW_CONFIG_PATH: "/production", OPENCLAW_STATE_DIR: "/production-state",
+      ZULIP_SMOKE_USER_API_KEY: "must-not-leak" } });
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual((await readFile(log, "utf8")).trim().split("\n").map(JSON.parse),
+      [["--version"], ["plugins", "install", "@openclaw/acpx@2026.9.6"], ["plugins", "list", "--json"]]);
+    assert.match(await readFile(join(root, "github-env"), "utf8"), /SMOKE_OPENCLAW_VERSION=2026.9.6/);
+    await assert.rejects(stat(join(runnerTemp, "openclaw-smoke", "bootstrap.json")), /ENOENT/);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test("resolves the installed OpenClaw root through its exported CLI entry", () => {

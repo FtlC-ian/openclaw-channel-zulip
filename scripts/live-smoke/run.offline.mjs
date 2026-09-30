@@ -9,7 +9,7 @@ import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { assertFinalPrivateTypingStop, assertMessageRemainsExact, authenticatedUserId, buildApiUrl, captureMessageIds, captureObservedSmokeBotMessageIds, countCompletedChildTranscripts, countMessageDeletionFailures, drainEventQueueUntilQuiet, DURABLE_OFFLINE_DELAY_MS, enableHandledReadForSmokeConfig, eventOccursBefore, EventQueue, extractExactUploadUrl, formatSmokeTurnEvidence, Gateway, hasFinalPrivateTypingStop, hasProvableMinimumMessageDelay, inspectChildTranscripts, inspectLifecycleTurnEvidence, inspectSmokeTurnEvidence, isBotMessage, isChildRunning, isDurableReplyEvent, isExactPoll, isExactPollMessage, isExactRenderedContent, isExactUtf8, isPrivateBotEvent, isPrivateBotMessage, isPrivateTypingEvent, isUsageCountedTranscriptName, lifecycleDiagnosticSummary, lifecycleEvidenceCounts, lifecycleSummary, normalizeScenarioError, parseZulipChannelTurnDiagnostic, parseZulipChannelTurnResult, parseZulipHandledReadDiagnostic, parseZulipSubagentDiagnostic, probeRunnerLocalGatewayHealth, readZulipMessageFlags, redactError, resolveUploadUrl, signalProcessTree, subagentCompletedBeforeReply, validateEnvironment, waitForProcessTreeExit, waitForZulipMessageRead, writeGatewayGeneration } from "./run.mjs";
 import { validateSmokeBaselineModel } from "./prepare-config.mjs";
-import { resolveInstalledOpenClawRoot, stageBundledPlugin } from "./stage-bundled-plugin.mjs";
+import { buildOpenClawCliEnv, completeOpenClawLifecycle, resolveInstalledOpenClawRoot, stageBundledPlugin, stagePinnedAcpRuntime } from "./stage-bundled-plugin.mjs";
 
 const ACTOR_USER_ID = "42";
 const BOT_USER_ID = "91";
@@ -1471,6 +1471,99 @@ test("authorizes only owner-dispatched commits reachable from the requested same
   }
 });
 
+function workflowStep(workflow, name) {
+  const start = workflow.indexOf(`      - name: ${name}\n`);
+  assert.notEqual(start, -1, `Missing workflow step: ${name}`);
+  const rest = workflow.slice(start + 1);
+  const next = rest.search(/^      - /m);
+  const step = next === -1 ? workflow.slice(start) : workflow.slice(start, start + 1 + next);
+  const run = step.match(/        run: \|\n([\s\S]*)$/);
+  assert.ok(run, `Missing executable workflow command: ${name}`);
+  return { step, command: run[1].replace(/^          /gm, "") };
+}
+
+test("workflow suite preflight accepts only exact scopes and emits no output on rejection", async () => {
+  const workflow = await readFile(new URL("../../.github/workflows/zulip-live-smoke.yml", import.meta.url), "utf8");
+  const { step, command } = workflowStep(workflow, "Validate requested smoke suite");
+  assert.match(workflow, /smoke_suite:\n[\s\S]*?type: choice\n\s+default: full\n\s+options:\n\s+- full\n\s+- bindings/);
+  assert.match(step, /REQUESTED_SUITE: \$\{\{ inputs\.smoke_suite \}\}/);
+  assert.doesNotMatch(command, /\$\{\{/);
+  assert.ok(workflow.indexOf(step) < workflow.indexOf("run: scripts/live-smoke/authorize-candidate.sh"));
+  assert.ok(workflow.indexOf(step) < workflow.indexOf("${{ secrets."));
+  const root = await mkdtemp(join(tmpdir(), "zulip-workflow-suite-"));
+  const output = join(root, "output");
+  try {
+    for (const suite of ["full", "bindings", "", "binding", "FULL", "bindings\nfull", "$(touch injected)"]) {
+      await writeFile(output, "");
+      const result = await runCommand("bash", ["-e", "-c", command], {
+        cwd: root, env: { PATH: process.env.PATH, REQUESTED_SUITE: suite, GITHUB_OUTPUT: output },
+      });
+      const accepted = suite === "full" || suite === "bindings";
+      assert.equal(result.code, accepted ? 0 : 1, result.stderr);
+      assert.equal(await readFile(output, "utf8"), accepted ? `suite=${suite}\n` : "");
+      if (!accepted) assert.match(result.stderr, /Smoke suite must be full or bindings/);
+    }
+    await assert.rejects(stat(join(root, "injected")), { code: "ENOENT" });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("workflow blocks binding selection on legacy or incompatible harnesses before secrets", async () => {
+  const workflow = await readFile(new URL("../../.github/workflows/zulip-live-smoke.yml", import.meta.url), "utf8");
+  const { step, command } = workflowStep(workflow, "Require candidate selector support for binding-only smoke");
+  assert.match(step, /ZULIP_SMOKE_SUITE: \$\{\{ needs\.authorize\.outputs\.smoke_suite \}\}/);
+  assert.ok(workflow.indexOf(step) < workflow.indexOf("${{ secrets."));
+  const root = await mkdtemp(join(tmpdir(), "zulip-workflow-probe-"));
+  try {
+    await mkdir(join(root, "scripts/live-smoke"), { recursive: true });
+    const runner = join(root, "scripts/live-smoke/run.mjs");
+    const strictRejection = `console.error("ZULIP_SMOKE_SUITE must be full or bindings (or omitted)"); process.exitCode = 1;`;
+    for (const [source, expected] of [
+      [strictRejection, 0],
+      ["process.exitCode = 0;", 1],
+      ['console.error("Missing protected configuration"); process.exitCode = 1;', 1],
+    ]) {
+      await writeFile(runner, source);
+      const result = await runCommand("bash", ["-e", "-c", command], {
+        cwd: root, env: { PATH: process.env.PATH, ZULIP_SMOKE_SUITE: "bindings" },
+      });
+      assert.equal(result.code, expected, result.stderr);
+      if (expected === 1) assert.match(result.stderr,
+        /requires a candidate harness with strict suite selection before credentials/);
+    }
+    await writeFile(runner, 'throw new Error("Full compatibility must not probe the harness");');
+    const full = await runCommand("bash", ["-e", "-c", command], {
+      cwd: root, env: { PATH: process.env.PATH, ZULIP_SMOKE_SUITE: "full" },
+    });
+    assert.equal(full.code, 0, full.stderr);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("workflow receipt distinguishes binding-only selection from full acceptance", async () => {
+  const workflow = await readFile(new URL("../../.github/workflows/zulip-live-smoke.yml", import.meta.url), "utf8");
+  const { step, command } = workflowStep(workflow, "Record release evidence");
+  assert.match(step, /TESTED_SUITE: \$\{\{ needs\.authorize\.outputs\.smoke_suite \}\}/);
+  const root = await mkdtemp(join(tmpdir(), "zulip-workflow-receipt-"));
+  const summary = join(root, "summary");
+  try {
+    for (const suite of ["full", "bindings"]) {
+      await writeFile(summary, "");
+      const result = await runCommand("bash", ["-e", "-c", command.replace("${{ job.status }}", "success")], {
+        env: { PATH: process.env.PATH, TESTED_SUITE: suite, TESTED_SHA: "a".repeat(40), GITHUB_STEP_SUMMARY: summary },
+      });
+      assert.equal(result.code, 0, result.stderr);
+      const receipt = await readFile(summary, "utf8");
+      assert.ok(receipt.includes(`Selected suite: \`${suite}\``));
+      assert.equal(receipt.includes("not full-suite acceptance"), suite === "bindings");
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("workflow is manual, protected, pinned, and bounded", async () => {
   const workflow = await readFile(new URL("../../.github/workflows/zulip-live-smoke.yml", import.meta.url), "utf8");
   const agentProtocol = await readFile(new URL("./agent-workspace/AGENTS.md", import.meta.url), "utf8");
@@ -1482,9 +1575,10 @@ test("workflow is manual, protected, pinned, and bounded", async () => {
   assert.match(workflow, /REQUESTED_REF.*inputs\.candidate_ref/);
   assert.match(workflow, /run: scripts\/live-smoke\/authorize-candidate\.sh/);
   assert.match(workflow, /permissions:\n\s+contents: read/);
-  assert.match(workflow, /timeout-minutes: 35/);
-  assert.doesNotMatch(workflow, /timeout-minutes: 35\n\s+env:/);
-  assert.match(workflow, /Stage candidate through the bundled-plugin trust path/);
+  assert.match(workflow, /timeout-minutes: 60/);
+  assert.doesNotMatch(workflow, /timeout-minutes: 60\n\s+env:/);
+  assert.match(workflow, /Stage candidate and pinned ACP runtime before protected configuration/);
+  assert.match(workflow, /acpx\.status !== "loaded" \|\| acpx\.version !== "2026\.9\.6"/);
   assert.match(workflow, /node scripts\/live-smoke\/stage-bundled-plugin\.mjs/);
   assert.doesNotMatch(workflow, /plugins install -l/);
   assert.match(workflow, /plugin\.origin !== "bundled"/);
@@ -1502,6 +1596,8 @@ test("workflow is manual, protected, pinned, and bounded", async () => {
     workflow.indexOf("- name: Record release evidence"),
   );
   assert.equal(workflow.match(/secrets\.OPENCLAW_SMOKE_CONFIG_JSON/g)?.length, 1);
+  assert.match(workflow, /smoke_suite: \$\{\{ steps\.suite\.outputs\.suite \}\}/);
+  assert.match(liveStep, /ZULIP_SMOKE_SUITE: \$\{\{ needs\.authorize\.outputs\.smoke_suite \}\}/);
   assert.match(prepareStep, /secrets\.OPENCLAW_SMOKE_CONFIG_JSON/);
   for (const secret of ["ZULIP_URL", "ZULIP_SMOKE_USER_EMAIL", "ZULIP_SMOKE_USER_API_KEY", "ZULIP_SMOKE_BOT_EMAIL", "ZULIP_SMOKE_BOT_API_KEY"]) {
     assert.equal(workflow.match(new RegExp(`secrets\\.${secret}`, "g"))?.length, 1);
@@ -1522,16 +1618,18 @@ test("workflow is manual, protected, pinned, and bounded", async () => {
   assert.match(agentProtocol, /\.smoke-gateway-generation/);
   assert.match(agentProtocol, /at least six\nseconds/);
   const prepareIndex = workflow.indexOf("- name: Prepare isolated OpenClaw state");
-  const stageIndex = workflow.indexOf("- name: Stage candidate through the bundled-plugin trust path");
+  const stageIndex = workflow.indexOf("- name: Stage candidate and pinned ACP runtime before protected configuration");
+  const buildIndex = workflow.indexOf("pnpm run build");
   const verifyIndex = workflow.indexOf("- name: Verify staged bundled candidate");
   const configSetIndex = workflow.indexOf("pnpm exec openclaw config set");
   const configValidateIndex = workflow.indexOf("pnpm exec openclaw config validate");
   const pluginListIndex = workflow.indexOf("pnpm exec openclaw plugins list --json");
   const liveIndex = workflow.indexOf("- name: Run bounded live scenarios");
+  assert.ok(buildIndex < stageIndex);
+  assert.ok(stageIndex < prepareIndex);
   assert.ok(prepareIndex < configSetIndex);
   assert.ok(configSetIndex < configValidateIndex);
-  assert.ok(configValidateIndex < stageIndex);
-  assert.ok(stageIndex < verifyIndex);
+  assert.ok(configValidateIndex < verifyIndex);
   assert.ok(verifyIndex < pluginListIndex);
   assert.ok(pluginListIndex < liveIndex);
   for (const use of workflow.matchAll(/uses:\s+([^\s]+)/g)) assert.match(use[1], /@[0-9a-f]{40}$/);
@@ -1567,6 +1665,80 @@ test("stages a built candidate only inside the host bundled extension root", asy
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("pinned ACP runtime is staged with a bootstrap config that is removed before protected config", async () => {
+  const root = await mkdtemp(join(tmpdir(), "zulip-smoke-acpx-stage-"));
+  try {
+    const calls = [];
+    const result = await stagePinnedAcpRuntime(root, "2026.9.6", (args, env) => {
+      calls.push(args);
+      assert.equal(env.OPENCLAW_STATE_DIR, join(root, "openclaw-smoke", "state"));
+      assert.equal(env.OPENCLAW_CONFIG_PATH, join(root, "openclaw-smoke", "bootstrap.json"));
+      return JSON.stringify({ plugins: [{ id: "acpx", status: "loaded", version: "2026.9.6" }] });
+    });
+    assert.deepEqual(calls, [["plugins", "install", "@openclaw/acpx@2026.9.6"], ["plugins", "list", "--json"]]);
+    assert.equal(result.staged, true);
+    await assert.rejects(stat(join(root, "openclaw-smoke", "bootstrap.json")), { code: "ENOENT" });
+    await assert.rejects(
+      stagePinnedAcpRuntime(root, "2026.9.7", () => { throw new Error("must not run"); }),
+      /requires OpenClaw 2026\.9\.6/,
+    );
+    await writeFile(join(root, "openclaw-smoke", "openclaw.json"), "{}\n");
+    assert.equal((await stagePinnedAcpRuntime(root, "2026.9.6", () => { throw new Error("must not run"); })).staged, false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("pinned ACP staging fails closed without leaking installer output or leaving bootstrap config", async () => {
+  const root = await mkdtemp(join(tmpdir(), "zulip-smoke-acpx-fail-"));
+  try {
+    await assert.rejects(
+      stagePinnedAcpRuntime(root, "2026.9.6", () => { throw new Error("registry token sk-secret"); }),
+      (error) => /could not stage pinned acpx 2026\.9\.6/.test(error.message) && !/sk-secret/.test(error.message),
+    );
+    await assert.rejects(
+      stagePinnedAcpRuntime(root, "2026.9.6", (args) => JSON.stringify({
+        plugins: [{ id: "acpx", status: "loaded", version: args[0] === "plugins" ? "2026.9.5" : "x" }],
+      })),
+      /could not stage pinned acpx/,
+    );
+    await assert.rejects(stat(join(root, "openclaw-smoke", "bootstrap.json")), { code: "ENOENT" });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("package lifecycle is completed in isolated state before bundled staging", async () => {
+  const root = await mkdtemp(join(tmpdir(), "zulip-smoke-lifecycle-prime-"));
+  try {
+    const calls = [];
+    await completeOpenClawLifecycle(root, (args, env) => {
+      calls.push({ args, env });
+      return "2026.9.6\n";
+    });
+    assert.deepEqual(calls.map((call) => call.args), [["--version"]]);
+    assert.equal(calls[0].env.OPENCLAW_STATE_DIR, join(root, "openclaw-smoke", "state"));
+    assert.notEqual(calls[0].env.OPENCLAW_CONFIG_PATH, join(root, "openclaw-smoke", "openclaw.json"));
+    await assert.rejects(
+      completeOpenClawLifecycle(root, () => { throw new Error("boom"); }),
+      /could not complete the OpenClaw package lifecycle/,
+    );
+    const helper = await readFile(new URL("./stage-bundled-plugin.mjs", import.meta.url), "utf8");
+    assert.ok(helper.indexOf("await completeOpenClawLifecycle(") < helper.indexOf("await stageBundledPlugin({"));
+    assert.ok(helper.indexOf("await stageBundledPlugin({") < helper.indexOf("await stagePinnedAcpRuntime("));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("plugin installer subprocess environment excludes smoke credentials", () => {
+  const env = buildOpenClawCliEnv({
+    PATH: "/bin", HOME: "/home/runner", ZULIP_SMOKE_BOT_API_KEY: "secret",
+    OPENCLAW_SMOKE_CONFIG_JSON: "{}", GITHUB_TOKEN: "t", ZULIP_URL: "https://z",
+  }, { OPENCLAW_STATE_DIR: "/state" });
+  assert.deepEqual(env, { PATH: "/bin", HOME: "/home/runner", OPENCLAW_STATE_DIR: "/state" });
 });
 
 test("resolves the installed OpenClaw root through its exported CLI entry", () => {

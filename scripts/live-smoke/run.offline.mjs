@@ -1471,6 +1471,99 @@ test("authorizes only owner-dispatched commits reachable from the requested same
   }
 });
 
+function workflowStep(workflow, name) {
+  const start = workflow.indexOf(`      - name: ${name}\n`);
+  assert.notEqual(start, -1, `Missing workflow step: ${name}`);
+  const rest = workflow.slice(start + 1);
+  const next = rest.search(/^      - /m);
+  const step = next === -1 ? workflow.slice(start) : workflow.slice(start, start + 1 + next);
+  const run = step.match(/        run: \|\n([\s\S]*)$/);
+  assert.ok(run, `Missing executable workflow command: ${name}`);
+  return { step, command: run[1].replace(/^          /gm, "") };
+}
+
+test("workflow suite preflight accepts only exact scopes and emits no output on rejection", async () => {
+  const workflow = await readFile(new URL("../../.github/workflows/zulip-live-smoke.yml", import.meta.url), "utf8");
+  const { step, command } = workflowStep(workflow, "Validate requested smoke suite");
+  assert.match(workflow, /smoke_suite:\n[\s\S]*?type: choice\n\s+default: full\n\s+options:\n\s+- full\n\s+- bindings/);
+  assert.match(step, /REQUESTED_SUITE: \$\{\{ inputs\.smoke_suite \}\}/);
+  assert.doesNotMatch(command, /\$\{\{/);
+  assert.ok(workflow.indexOf(step) < workflow.indexOf("run: scripts/live-smoke/authorize-candidate.sh"));
+  assert.ok(workflow.indexOf(step) < workflow.indexOf("${{ secrets."));
+  const root = await mkdtemp(join(tmpdir(), "zulip-workflow-suite-"));
+  const output = join(root, "output");
+  try {
+    for (const suite of ["full", "bindings", "", "binding", "FULL", "bindings\nfull", "$(touch injected)"]) {
+      await writeFile(output, "");
+      const result = await runCommand("bash", ["-e", "-c", command], {
+        cwd: root, env: { PATH: process.env.PATH, REQUESTED_SUITE: suite, GITHUB_OUTPUT: output },
+      });
+      const accepted = suite === "full" || suite === "bindings";
+      assert.equal(result.code, accepted ? 0 : 1, result.stderr);
+      assert.equal(await readFile(output, "utf8"), accepted ? `suite=${suite}\n` : "");
+      if (!accepted) assert.match(result.stderr, /Smoke suite must be full or bindings/);
+    }
+    await assert.rejects(stat(join(root, "injected")), { code: "ENOENT" });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("workflow blocks binding selection on legacy or incompatible harnesses before secrets", async () => {
+  const workflow = await readFile(new URL("../../.github/workflows/zulip-live-smoke.yml", import.meta.url), "utf8");
+  const { step, command } = workflowStep(workflow, "Require candidate selector support for binding-only smoke");
+  assert.match(step, /ZULIP_SMOKE_SUITE: \$\{\{ needs\.authorize\.outputs\.smoke_suite \}\}/);
+  assert.ok(workflow.indexOf(step) < workflow.indexOf("${{ secrets."));
+  const root = await mkdtemp(join(tmpdir(), "zulip-workflow-probe-"));
+  try {
+    await mkdir(join(root, "scripts/live-smoke"), { recursive: true });
+    const runner = join(root, "scripts/live-smoke/run.mjs");
+    const strictRejection = `console.error("ZULIP_SMOKE_SUITE must be full or bindings (or omitted)"); process.exitCode = 1;`;
+    for (const [source, expected] of [
+      [strictRejection, 0],
+      ["process.exitCode = 0;", 1],
+      ['console.error("Missing protected configuration"); process.exitCode = 1;', 1],
+    ]) {
+      await writeFile(runner, source);
+      const result = await runCommand("bash", ["-e", "-c", command], {
+        cwd: root, env: { PATH: process.env.PATH, ZULIP_SMOKE_SUITE: "bindings" },
+      });
+      assert.equal(result.code, expected, result.stderr);
+      if (expected === 1) assert.match(result.stderr,
+        /requires a candidate harness with strict suite selection before credentials/);
+    }
+    await writeFile(runner, 'throw new Error("Full compatibility must not probe the harness");');
+    const full = await runCommand("bash", ["-e", "-c", command], {
+      cwd: root, env: { PATH: process.env.PATH, ZULIP_SMOKE_SUITE: "full" },
+    });
+    assert.equal(full.code, 0, full.stderr);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("workflow receipt distinguishes binding-only selection from full acceptance", async () => {
+  const workflow = await readFile(new URL("../../.github/workflows/zulip-live-smoke.yml", import.meta.url), "utf8");
+  const { step, command } = workflowStep(workflow, "Record release evidence");
+  assert.match(step, /TESTED_SUITE: \$\{\{ needs\.authorize\.outputs\.smoke_suite \}\}/);
+  const root = await mkdtemp(join(tmpdir(), "zulip-workflow-receipt-"));
+  const summary = join(root, "summary");
+  try {
+    for (const suite of ["full", "bindings"]) {
+      await writeFile(summary, "");
+      const result = await runCommand("bash", ["-e", "-c", command.replace("${{ job.status }}", "success")], {
+        env: { PATH: process.env.PATH, TESTED_SUITE: suite, TESTED_SHA: "a".repeat(40), GITHUB_STEP_SUMMARY: summary },
+      });
+      assert.equal(result.code, 0, result.stderr);
+      const receipt = await readFile(summary, "utf8");
+      assert.ok(receipt.includes(`Selected suite: \`${suite}\``));
+      assert.equal(receipt.includes("not full-suite acceptance"), suite === "bindings");
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("workflow is manual, protected, pinned, and bounded", async () => {
   const workflow = await readFile(new URL("../../.github/workflows/zulip-live-smoke.yml", import.meta.url), "utf8");
   const agentProtocol = await readFile(new URL("./agent-workspace/AGENTS.md", import.meta.url), "utf8");
@@ -1503,6 +1596,8 @@ test("workflow is manual, protected, pinned, and bounded", async () => {
     workflow.indexOf("- name: Record release evidence"),
   );
   assert.equal(workflow.match(/secrets\.OPENCLAW_SMOKE_CONFIG_JSON/g)?.length, 1);
+  assert.match(workflow, /smoke_suite: \$\{\{ steps\.suite\.outputs\.suite \}\}/);
+  assert.match(liveStep, /ZULIP_SMOKE_SUITE: \$\{\{ needs\.authorize\.outputs\.smoke_suite \}\}/);
   assert.match(prepareStep, /secrets\.OPENCLAW_SMOKE_CONFIG_JSON/);
   for (const secret of ["ZULIP_URL", "ZULIP_SMOKE_USER_EMAIL", "ZULIP_SMOKE_USER_API_KEY", "ZULIP_SMOKE_BOT_EMAIL", "ZULIP_SMOKE_BOT_API_KEY"]) {
     assert.equal(workflow.match(new RegExp(`secrets\\.${secret}`, "g"))?.length, 1);

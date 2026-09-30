@@ -3,6 +3,14 @@ name: Zulip live smoke (protected)
 on:
   workflow_dispatch:
     inputs:
+      smoke_suite:
+        description: Scenario scope (bindings is not full-suite acceptance)
+        required: true
+        type: choice
+        default: full
+        options:
+          - full
+          - bindings
       candidate_sha:
         description: Full commit SHA to test
         required: false
@@ -26,7 +34,17 @@ jobs:
     timeout-minutes: 5
     outputs:
       candidate_sha: ${{ steps.candidate.outputs.sha }}
+      smoke_suite: ${{ steps.suite.outputs.suite }}
     steps:
+      - name: Validate requested smoke suite
+        id: suite
+        env:
+          REQUESTED_SUITE: ${{ inputs.smoke_suite }}
+        run: |
+          case "$REQUESTED_SUITE" in
+            full|bindings) printf 'suite=%s\n' "$REQUESTED_SUITE" >> "$GITHUB_OUTPUT" ;;
+            *) echo 'Smoke suite must be full or bindings' >&2; exit 1 ;;
+          esac
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
@@ -60,6 +78,23 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+      - name: Require candidate selector support for binding-only smoke
+        env:
+          ZULIP_SMOKE_SUITE: ${{ needs.authorize.outputs.smoke_suite }}
+        run: |
+          if [ "$ZULIP_SMOKE_SUITE" = bindings ]; then
+            node --input-type=module <<'NODE'
+            import { spawnSync } from "node:child_process";
+            const probe = spawnSync(process.execPath, ["scripts/live-smoke/run.mjs"], {
+              env: { PATH: process.env.PATH, ZULIP_SMOKE_SUITE: "workflow-selector-probe" },
+              encoding: "utf8", timeout: 10000, maxBuffer: 65536,
+            });
+            if (probe.error || probe.status !== 1 ||
+                !probe.stderr.includes("ZULIP_SMOKE_SUITE must be full or bindings (or omitted)")) {
+              throw new Error("Binding-only smoke requires a candidate harness with strict suite selection before credentials");
+            }
+          NODE
+          fi
       - name: Install locked dependencies and build candidate
         run: |
           pnpm install --frozen-lockfile --config.minimumReleaseAge=1440
@@ -134,6 +169,7 @@ jobs:
           NODE
       - name: Run bounded live scenarios
         env:
+          ZULIP_SMOKE_SUITE: ${{ needs.authorize.outputs.smoke_suite }}
           ZULIP_URL: ${{ secrets.ZULIP_URL }}
           ZULIP_SMOKE_USER_EMAIL: ${{ secrets.ZULIP_SMOKE_USER_EMAIL }}
           ZULIP_SMOKE_USER_API_KEY: ${{ secrets.ZULIP_SMOKE_USER_API_KEY }}
@@ -152,11 +188,16 @@ jobs:
         if: always()
         env:
           TESTED_SHA: ${{ needs.authorize.outputs.candidate_sha }}
+          TESTED_SUITE: ${{ needs.authorize.outputs.smoke_suite }}
         run: |
           {
             echo "### Protected Zulip live smoke"
             echo ""
             echo "- Result: ${{ job.status }}"
+            echo "- Selected suite: \`$TESTED_SUITE\`"
+            if [ "$TESTED_SUITE" = bindings ]; then
+              echo "- Scope: binding-only acceptance; general lifecycle/durable scenarios NOT RUN; not full-suite acceptance"
+            fi
             echo "- Tested commit: \`$TESTED_SHA\`"
             echo "- Plugin version: \`$SMOKE_PLUGIN_VERSION\`"
             echo "- OpenClaw version: \`$SMOKE_OPENCLAW_VERSION\`"

@@ -4,7 +4,9 @@ The authorized candidate's harness accepts `ZULIP_SMOKE_SUITE=bindings` or
 `ZULIP_SMOKE_SUITE=full`. Omission means `full`; every other value, including an
 empty string or whitespace, fails before protected configuration or network use.
 Run the existing `node scripts/live-smoke/run.mjs` entrypoint with the selection
-set by the protected runner. No workflow is changed by this patch.
+set by the protected runner. The ancestry-preserving reconciliation incorporates
+main's trusted workflow unchanged, including strict dispatch selection and the
+binding-only precredentials candidate probe.
 
 `bindings` executes all binding scenarios without the general private-child/yield,
 reaction, upload, poll, or durable scenarios. Those assertions are **not run**,
@@ -60,6 +62,40 @@ fault-injected contract tests failed for the intended regressions and all four
 passed repaired. A separate removed-preexisting-owner-guard mutation also failed
 because it attempted to close the preexisting target. Independent parent review
 is still required; these are implementation receipts, not review approval.
+
+## Merge reconciliation receipts (2026-10-01)
+
+Constraints: preserve the exact trusted main workflow, candidate binding
+assertions, credential isolation, and lifecycle-before-staging ordering. No
+production source, package, lock, config, or credential changes are permitted.
+
+The overlapping main and candidate helper-success tests are consolidated into the existing
+candidate staging subprocess owner. Wrong-host rejection and no installation
+after protected config are retained in the ACP failure/security owner. HOME
+preservation and all credential exclusions are consolidated into the existing
+environment-isolation owner. Lifecycle error sanitization and filesystem guards
+remain distinct failure/security proofs, not duplicate orchestration coverage.
+
+| Additional relied-upon owner | Contract / credible regression | Disposition and evidence |
+| --- | --- | --- |
+| Executed workflow suite shell | Only exact full/bindings choices emit output; shell injection or a permissive selector must fail. | Retained distinct dispatch-input boundary; seven accepted/rejected fixtures pass, no injected file exists. |
+| Executed workflow candidate probe | Legacy success or unrelated configuration failure cannot authorize bindings; full remains compatible without probing. | Retained distinct candidate-compatibility boundary; controlled legacy/incompatible runners reject, strict runner accepts; actual candidate probe passes without credentials. |
+| Executed receipt shell | Binding selection must explicitly say it is not full acceptance. | Retained distinct public evidence boundary; full/bindings receipts pass. |
+| ACP failure/security helper | Wrong host never installs; installer errors/version mismatch fail sanitized and remove bootstrap; protected config prevents installation. | Controlled failures reject and success staging subprocess passes. Helpers have real staging-CLI callers; no production seam added/removed. |
+| Existing monitor/channel and binding source tests | Persistence/expiry, canonical identity, concurrent routing, channel policy and monitor lifecycle remain intact. | Unchanged owners retained for distinct production risks; no production changes in this merge. |
+
+Node 26.9.0 verification: offline 89 passed, binding/identity 42 passed,
+monitor/channel (including channel-message) 202 passed; `tsc --noEmit`, all smoke
+module syntax checks, authorization shell syntax, and staged/unstaged whitespace
+checks passed. Existing dependencies were temporarily symlinked, with no install
+or network activity. The standalone invalid-selector entrypoint rejected before
+configuration; the actual workflow binding probe exited zero without credentials.
+Workflow content is byte-identical to main b82c13c4. Existing candidate staging
+and strengthened binding assertions are unchanged. No new product bug fix is
+claimed: controlled failure/pass fixtures establish the reconciliation contracts;
+historical mutation receipts above are not rerun claims. No real OpenClaw lifecycle,
+acpx installer, protected Linux/Node 24, or live realm behavior is proved offline.
+Independent Rex review of the frozen merge remains required.
 
 ## Remaining owner-controlled prerequisites
 

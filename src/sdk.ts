@@ -62,6 +62,10 @@ export {
 } from "openclaw/plugin-sdk/core";
 
 export { buildAgentSessionKey } from "openclaw/plugin-sdk/routing";
+export {
+  ensureConfiguredBindingRouteReady,
+  resolveConfiguredBindingRoute,
+} from "openclaw/plugin-sdk/conversation-runtime";
 
 export { jsonResult } from "openclaw/plugin-sdk/core";
 export { readNumberParam, readStringParam } from "openclaw/plugin-sdk/param-readers";

@@ -11,6 +11,8 @@ import { resolveZulipDestination } from "./zulip/destination.js";
 import { canonicalizeZulipTopic, ZULIP_TOPIC_CASE_VERSION } from "./zulip/topic-case.js";
 
 const TOPIC_MARKER = ":topic:";
+const TOPIC_CONVERSATION_PATTERN = /^(\d+):topic:v2:[0-9a-f]{64}$/;
+const DIRECT_CONVERSATION_PATTERN = /^account-[0-9a-f]{64}:[^\s]+$/;
 
 function canonicalizeZulipRealm(baseUrl: string): string {
   const normalized = normalizeZulipBaseUrl(baseUrl);
@@ -101,6 +103,61 @@ export function buildZulipStreamSessionKey(params: {
     peer: { kind: "channel", id: params.conversationId },
     groupScope: "per-group",
   });
+}
+
+export function resolveZulipConversationRef(params: {
+  conversationId: string;
+  parentConversationId?: string | null;
+}): { conversationId: string; parentConversationId?: string } | null {
+  const conversationId = params.conversationId.trim().toLowerCase();
+  const topicMatch = TOPIC_CONVERSATION_PATTERN.exec(conversationId);
+  if (topicMatch) {
+    return { conversationId, parentConversationId: String(Number(topicMatch[1])) };
+  }
+  if (DIRECT_CONVERSATION_PATTERN.test(conversationId)) {
+    return { conversationId };
+  }
+  return null;
+}
+
+export function resolveZulipCommandConversation(params: {
+  sessionKey?: string;
+  parentSessionKey?: string;
+}): { conversationId: string; parentConversationId?: string } | null {
+  for (const sessionKey of [params.sessionKey, params.parentSessionKey]) {
+    if (!sessionKey) continue;
+    const channelMarker = ":zulip:channel:";
+    const channelIndex = sessionKey.indexOf(channelMarker);
+    if (channelIndex !== -1) {
+      const resolved = resolveZulipConversationRef({
+        conversationId: sessionKey.slice(channelIndex + channelMarker.length),
+      });
+      if (resolved) return resolved;
+    }
+    const directMarker = ":direct:";
+    const directIndex = sessionKey.indexOf(directMarker);
+    if (directIndex !== -1 && sessionKey.slice(0, directIndex).includes(":zulip:")) {
+      const resolved = resolveZulipConversationRef({
+        conversationId: sessionKey.slice(directIndex + directMarker.length),
+      });
+      if (resolved) return resolved;
+    }
+  }
+  return null;
+}
+
+export function matchZulipConfiguredConversation(params: {
+  compiledBinding: { conversationId: string; parentConversationId?: string };
+  conversationId: string;
+  parentConversationId?: string;
+}) {
+  const inbound = resolveZulipConversationRef(params);
+  if (!inbound || inbound.conversationId !== params.compiledBinding.conversationId) return null;
+  if (
+    params.compiledBinding.parentConversationId !== undefined &&
+    inbound.parentConversationId !== params.compiledBinding.parentConversationId
+  ) return null;
+  return { ...inbound, matchPriority: 100 };
 }
 
 export function resolveZulipSessionConversation(params: {

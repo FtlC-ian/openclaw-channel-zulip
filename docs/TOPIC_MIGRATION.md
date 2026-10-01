@@ -16,7 +16,7 @@ non-Zulip sessions, and v2 keys are excluded. Main and active sessions are refus
 
 ## Preview and apply
 
-Requires Node.js and OpenClaw **2026.9.3 or newer**, with access to the intended
+Requires Node.js and OpenClaw **2026.9.6 or newer**, with access to the intended
 gateway and permission to list and patch its sessions. Use the same OpenClaw
 profile/environment throughout. `--openclaw /path/to/openclaw` selects an executable
 or a wrapper for that profile; it is executed with an argument array, without a shell.

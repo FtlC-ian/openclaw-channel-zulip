@@ -3,6 +3,7 @@ import type { OpenClawConfig, RuntimeEnv } from "./sdk.js";
 import { zulipDirectory, zulipResolver } from "./directory.js";
 import { parseZulipTarget } from "./zulip/destination.js";
 import { zulipThreading } from "./threading.js";
+import { zulipLifecycle } from "./lifecycle.js";
 
 vi.mock("openclaw/plugin-sdk/channel-ingress-runtime", () => ({
   readChannelIngressStoreAllowFromForDmPolicy: vi.fn(async () => []),
@@ -43,6 +44,28 @@ const groups = (cfg: OpenClawConfig, extra = {}) => zulipDirectory.listGroups!({
 const resolve = (cfg: OpenClawConfig, kind: "user" | "group", inputs: string[], extra = {}) => zulipResolver.resolveTargets({ cfg, runtime, kind, inputs, ...extra });
 
 describe("Zulip directory and resolver", () => {
+  it("lifecycle metadata hooks invalidate every resource only for the affected account and snapshots", async () => {
+    const prevCfg = config({ accounts: { first: {}, second: {} } });
+    const nextCfg = config({ streams: ["Engineering"], accounts: { first: {}, second: {} } });
+    const load = async (cfg: OpenClawConfig, accountId: string) => {
+      await peers(cfg, { accountId });
+      await groups(cfg, { accountId });
+      await zulipDirectory.self!({ cfg, runtime, accountId });
+    };
+    await load(prevCfg, "first"); await load(prevCfg, "second"); await load(nextCfg, "first");
+    expect(fetchMock).toHaveBeenCalledTimes(9);
+    await zulipLifecycle.onAccountConfigChanged!({ prevCfg, nextCfg, accountId: "first", runtime });
+    await load(prevCfg, "first"); await load(nextCfg, "first"); await load(prevCfg, "second");
+    expect(fetchMock).toHaveBeenCalledTimes(15);
+    await zulipLifecycle.onAccountRemoved!({ prevCfg, accountId: "first", runtime });
+    await load(prevCfg, "first"); await load(prevCfg, "second"); await load(nextCfg, "first");
+    expect(fetchMock).toHaveBeenCalledTimes(18);
+    Object.assign(prevCfg.channels!.zulip!.accounts!.first!, { dmPolicy: "disabled", groupPolicy: "disabled" });
+    expect(await peers(prevCfg, { accountId: "first" })).toEqual([]);
+    expect(await groups(prevCfg, { accountId: "first" })).toEqual([]);
+    expect(fetchMock).toHaveBeenCalledTimes(18);
+  });
+
   it("lists self, active users with sendable emails, and subscribed streams", async () => {
     const cfg = config();
     expect(await zulipDirectory.self!({ cfg, runtime })).toEqual({ kind: "user", id: "user:bot@example.test", name: "Bot", handle: "bot@example.test" });

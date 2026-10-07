@@ -72,12 +72,43 @@ retained and its ID logged rather than destroying the remaining recoverable copy
 Removal clears account stream metadata and volatile dedupe; ordinary replacement retains
 volatile dedupe. Durable journals/completion receipts survive removal deliberately.
 
-## Directory cache follow-up
+## Directory cache invalidation
 
-PR #102's `src/directory.ts` is not present on this base. Add its account-scoped invalidator
-alongside `onAccountRemoved` metadata invalidation, and after stop settles for committed
-removal. Add matching identity-change invalidation if its caches are realm/credential-specific.
-No imports or assumptions about the pending PR are introduced here.
+The merged directory/resolver caches self, users and subscriptions for 60 seconds per
+config object and credential identity. Entries carry their normalized account ID so
+invalidation removes every credential generation of that account without evicting another
+account. Identity/registration-change hooks invalidate both previous and proposed snapshots;
+removal invalidates its previous snapshot. These are reconstructible metadata changes only:
+no hook registers/deletes queues, changes credentials, or aborts a still-configured account.
+
+Committed start and settled teardown invalidate both the monitor's original snapshot and
+the current runtime snapshot. Removal also invalidates its previous snapshot after joining
+teardown, covering loads refilled during drain. Detached in-flight loads cannot reinsert
+their entries. Policy filtering still runs on every cache hit; dynamic policy-only changes
+do not require cache eviction. The 60-second TTL, concurrent-load sharing, bounded cache,
+credential isolation, and live-refresh API semantics remain unchanged.
+
+## Reversible operator policy-reload check (not executed here)
+
+1. On an authorized isolated OG account/stream, record the original stream override
+   `enabled` value (including whether absent), gateway PID, queue generation/registration
+   count and a local/private queue identifier. Keep credentials and legacy `streams`
+   untouched. Confirm the deployed reviewed plugin version before testing.
+2. Through the supported config-writing UI/API, commit just the test stream override
+   `enabled: false`. After committed runtime visibility, send a unique benign marker in
+   the test topic: expect no agent dispatch/reply. Core owns reload; this dynamic noop
+   prefix must keep the same PID and monitor generation, with no queue DELETE/register.
+3. Commit `enabled: true` for that override. Send another unique benign marker: expect
+   exactly one normal dispatch/reply, again the same PID/generation and queue. Capture
+   timestamped committed-setting, dispatch and registration evidence; redact private
+   identifiers from public receipts. Do not use lifecycle hooks as a reload substitute.
+4. In a finally/rollback step, restore the exact original override value or remove the
+   newly introduced key if absent originally. Verify the restored effective policy and
+   unchanged credentials, PID and queue generation. If unexpected replacement or missing
+   reply occurs, restore first and report the evidence; do not restart or rotate secrets.
+
+This minimal test proves dynamic committed policy refresh, not credential replacement,
+durable cancellation, or account removal. Those require separate authorized scenarios.
 
 ## Review / live verification gaps
 
@@ -96,6 +127,8 @@ No imports or assumptions about the pending PR are introduced here.
 
 | Contract / credible regression | Primary owner and evidence | Overlap / proof limits |
 | --- | --- | --- |
+| Lifecycle invalidation of self/users/subscriptions across both config snapshots, without other-account eviction or policy bypass | `directory.test.ts`, actual lifecycle → directory → controlled HTTP fetch | TTL/live-refresh/isolation tests retain distinct cache contracts; no test-only production seam. |
+| Directory refills during committed teardown must not outlive either original/current snapshot | `lifecycle.test.ts`, controlled draining monitor + real directory/cache/HTTP client, observes refreshed self name | Separate settlement-boundary risk; monitor mock cannot prove actual server teardown. |
 | Pre-persistence write/removal failure, hook-plus-committed-core composition, one generation, actual runtime getter, simultaneous/stale starts and environment-only compatibility | `lifecycle.test.ts`, committed runtime getter + controlled monitor boundary | Mocks prove orchestration, not server DELETE. |
 | Accepted-turn cancellation with actual core's serialized repeated-stop path | `monitor.test.ts`, installed pinned core manager → actual adapter → actual monitor → controlled SDK dispatcher | Asserts the turn's reply AbortSignal, not a second direct helper call. Pinned internal manager entry is located from installed SDK; no core code is vendored. |
 | Received batch tail and aborted admission survive restart; delivered records are not replayed | `monitor.test.ts`, actual monitor + durable journal adapter with controlled SDK state/client | Existing durable failure/replay/post-delivery-race tests retain distinct retry and completion risks. |
@@ -117,6 +150,10 @@ restart Zulip; the broad queue lets override enablement refresh dynamically.
 
 No production test-only lifecycle seams remain. The initial split turn-cancellation signal
 and misleading direct repeated-stop test were removed in favor of core's actual contract.
+The two directory regressions fail when only the rebased pre-integration lifecycle adapter
+is restored (missing six refresh requests; stale self name), then pass with invalidation.
+The invalidator is called by production hooks/start/teardown and is not exported from the
+package entry point. Its consumers and cache/resolver call paths were checked.
 
 ## Independent review disposition
 

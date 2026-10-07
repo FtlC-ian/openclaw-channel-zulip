@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "./sdk.js";
 import type { MonitorZulipOpts } from "./zulip/monitor.js";
 import { runZulipAccount, stopZulipAccount, zulipLifecycle } from "./lifecycle.js";
+import { zulipDirectory } from "./directory.js";
 
 const monitor = vi.hoisted(() => ({
   starts: [] as MonitorZulipOpts[], active: 0, maxActive: 0, deleted: 0,
@@ -46,9 +47,34 @@ afterEach(async () => {
   monitor.drain = undefined;
   monitor.clear.mockClear();
   vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
 });
 
 describe("Zulip lifecycle with committed core reload ownership", () => {
+  it("committed teardown evicts directory loads refilled during drain from both runtime snapshots", async () => {
+    const original = config();
+    let committed = original;
+    const fetch = vi.fn(async () => Response.json({ result: "success", email: "bot@example.org", full_name: "Before" }));
+    vi.stubGlobal("fetch", fetch);
+    const self = (cfg: OpenClawConfig) => zulipDirectory.self!({ cfg, runtime: {}, accountId: "default" });
+    const previous = await start(() => committed);
+    await self(original);
+    let release!: () => void;
+    monitor.drain = new Promise<void>((resolve) => { release = resolve; });
+    previous.controller.abort();
+    await self(original);
+    const retained = config();
+    committed = retained;
+    await self(retained);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    release();
+    await previous.done;
+    fetch.mockImplementation(async () => Response.json({ result: "success", email: "bot@example.org", full_name: "After" }));
+    expect((await self(original))?.name).toBe("After");
+    expect((await self(retained))?.name).toBe("After");
+    expect(fetch).toHaveBeenCalledTimes(4);
+  });
+
   it("does not replace live credentials when a pre-persistence write fails", async () => {
     const committed = config();
     await start(() => committed);

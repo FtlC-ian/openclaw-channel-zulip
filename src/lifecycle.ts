@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { ChannelPlugin, OpenClawConfig } from "./sdk.js";
 import { isZulipAccountConfigured, listZulipAccountIds, resolveZulipAccount, type ResolvedZulipAccount } from "./zulip/accounts.js";
 import type { MonitorZulipOpts } from "./zulip/monitor.js";
+import { clearZulipAccountDirectoryCache } from "./directory.js";
 
 function registrationConfig(cfg: OpenClawConfig, accountId: string) {
   const account = resolveZulipAccount({ cfg, accountId });
@@ -66,6 +67,8 @@ async function beginZulipAccount(opts: AccountOptions): Promise<AccountLifetime 
   opts.abortSignal.addEventListener("abort", stop, { once: true });
   accounts.set(opts.accountId, lifetime);
   clearZulipAccountMonitorCaches(opts.accountId);
+  clearZulipAccountDirectoryCache(opts.config, opts.accountId);
+  clearZulipAccountDirectoryCache(current, opts.accountId);
   lifetime.settled = (async () => {
     try {
       await monitorZulipProvider({
@@ -78,6 +81,8 @@ async function beginZulipAccount(opts: AccountOptions): Promise<AccountLifetime 
       opts.abortSignal.removeEventListener("abort", stop);
       if (accounts.get(opts.accountId) === lifetime) {
         accounts.delete(opts.accountId);
+        clearZulipAccountDirectoryCache(opts.config, opts.accountId);
+        clearZulipAccountDirectoryCache(currentConfig(), opts.accountId);
         clearZulipAccountMonitorCaches(opts.accountId, !accountIsActive(currentConfig(), opts.accountId));
       }
     }
@@ -98,12 +103,16 @@ export const zulipLifecycle: NonNullable<ChannelPlugin<ResolvedZulipAccount>["li
     const { clearZulipAccountMonitorCaches } = await import("./zulip/monitor.js");
     // Hooks precede persistence; core's committed reload owns queue replacement.
     clearZulipAccountMonitorCaches(accountId);
+    clearZulipAccountDirectoryCache(prevCfg, accountId);
+    clearZulipAccountDirectoryCache(nextCfg, accountId);
   },
-  onAccountRemoved: async ({ accountId }) => {
+  onAccountRemoved: async ({ prevCfg, accountId }) => {
+    clearZulipAccountDirectoryCache(prevCfg, accountId);
     const { clearZulipAccountMonitorCaches } = await import("./zulip/monitor.js");
     const lifetime = accounts.get(accountId);
     if (lifetime && !accountIsActive(lifetime.currentConfig(), accountId)) {
       await stopZulipAccount(accountId);
+      clearZulipAccountDirectoryCache(prevCfg, accountId);
       clearZulipAccountMonitorCaches(accountId, true);
     } else {
       clearZulipAccountMonitorCaches(accountId);

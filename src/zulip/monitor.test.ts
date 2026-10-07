@@ -4893,4 +4893,34 @@ describe("monitorZulipProvider", () => {
     expect(state.core.channel.inbound.dispatch).toHaveBeenCalledTimes(2);
   });
 
+  it("reads committed next-message DM policy without replacing the registered queue", async () => {
+    state.autoAbort = false;
+    const controller = new AbortController();
+    let committed = { channels: { zulip: { dmPolicy: "open" } } } as any;
+    const { resolveZulipRuntimeAccount } = await import("./accounts.js");
+    vi.mocked(resolveZulipRuntimeAccount).mockImplementation(async ({ cfg }) => ({
+      ...state.account, config: cfg.channels!.zulip as any,
+    }));
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementationOnce(async () => {
+      committed = { channels: { zulip: { dmPolicy: "disabled" } } };
+    });
+    getZulipEventsWithRetryMock.mockImplementationOnce(async () => ({ result: "success", events: [
+      { id: 1, type: "message", message: makePrivateMessage(9595020) },
+      { id: 2, type: "message", message: makePrivateMessage(9595021) },
+    ] }));
+    getZulipEventsWithRetryMock.mockImplementationOnce(async () => {
+      controller.abort();
+      return { result: "success", events: [] };
+    });
+    try {
+      const { monitorZulipProvider } = await import("./monitor.js");
+      await monitorZulipProvider({ config: committed, getConfig: () => committed, abortSignal: controller.signal });
+      expect(state.core.channel.inbound.dispatch).toHaveBeenCalledTimes(1);
+      expect(registerZulipQueueMock).toHaveBeenCalledTimes(1);
+    } finally {
+      controller.abort();
+      vi.mocked(resolveZulipRuntimeAccount).mockImplementation(async () => state.account);
+    }
+  });
+
 });

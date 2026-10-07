@@ -36,7 +36,7 @@ import {
   resolveZulipSessionConversation,
 } from "./session-conversation.js";
 import { zulipSecrets } from "./secret-contract.js";
-import { runZulipAccount, zulipLifecycle } from "./lifecycle.js";
+import { runZulipAccount, stopZulipAccount, zulipLifecycle } from "./lifecycle.js";
 import { zulipThreading } from "./threading.js";
 import { zulipDirectory, zulipResolver } from "./directory.js";
 
@@ -261,6 +261,8 @@ export const zulipPlugin = {
       "streaming", "textChunkLimit", "chunkMode", "blockStreaming",
       "blockStreamingCoalesce", "responsePrefix", "agentReactionGuidance",
       "defaultTopic", "routingDiagnosticsTarget", "enableAdminActions",
+      "streamOverrides.*.requireMention", "streamOverrides.*.allowedTopics",
+      "streamOverrides.*.excludedTopics",
     ].flatMap((key) => [`channels.zulip.${key}`, `channels.zulip.accounts.*.${key}`]),
   },
   configSchema: zulipChannelConfigSchema,
@@ -532,6 +534,7 @@ export const zulipPlugin = {
   },
   lifecycle: zulipLifecycle,
   gateway: {
+    stopAccount: async (ctx) => stopZulipAccount(ctx.accountId, true),
     startAccount: async (ctx) => {
       const account = await resolveZulipRuntimeAccount({ cfg: ctx.cfg, accountId: ctx.account.accountId });
       ctx.setStatus({

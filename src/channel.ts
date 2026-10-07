@@ -36,6 +36,7 @@ import {
   resolveZulipSessionConversation,
 } from "./session-conversation.js";
 import { zulipSecrets } from "./secret-contract.js";
+import { zulipThreading } from "./threading.js";
 
 const meta = {
   id: "zulip",
@@ -344,6 +345,7 @@ export const zulipPlugin = {
     },
   },
   actions: zulipMessageActions,
+  threading: zulipThreading,
   messaging: {
     normalizeTarget: normalizeZulipMessagingTarget,
     resolveSessionConversation: resolveZulipSessionConversation,

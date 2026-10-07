@@ -118,5 +118,5 @@ export function resolveZulipDestination(raw: string, topic?: string | number | n
   const target = parseZulipTarget(raw);
   return target.kind === "user"
     ? target
-    : { ...target, topic: target.topic ?? (topic == null ? defaultTopic?.trim() ?? DEFAULT_TOPIC : String(topic).trim()) };
+    : { ...target, topic: target.topic ?? (topic == null ? defaultTopic?.trim() ?? DEFAULT_TOPIC : String(topic)) };
 }

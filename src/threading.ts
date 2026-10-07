@@ -16,19 +16,26 @@ function parseTarget(raw: string | undefined): ZulipTarget | undefined {
   }
 }
 
+function formatTarget(target: ZulipTarget): string {
+  if (target.kind === "user") return `user:${target.email}`;
+  return target.topic === undefined ? `stream:${target.stream}` : `stream:${target.stream}:${target.topic}`;
+}
+
 // The monitor labels topics the way Zulip displays them: "#stream > topic".
 // The topic comes from the route, so the stream name is whatever precedes it.
-function parseThreadLabel(label: string | undefined, target: ZulipTarget | undefined): ZulipTarget | undefined {
+// Returns a name alias only when it reparses to the same stream and topic;
+// names with separators (":", "/", "#") or all digits would misroute.
+function parseThreadLabel(label: string | undefined, target: ZulipTarget | undefined): string | undefined {
   if (target?.kind !== "stream" || target.topic === undefined || !label?.startsWith("#")) return undefined;
   const suffix = ` > ${target.topic}`;
   if (!label.endsWith(suffix)) return undefined;
   const stream = label.slice(1, -suffix.length);
-  return stream ? { kind: "stream", stream, topic: target.topic } : undefined;
-}
-
-function formatTarget(target: ZulipTarget): string {
-  if (target.kind === "user") return `user:${target.email}`;
-  return target.topic === undefined ? `stream:${target.stream}` : `stream:${target.stream}:${target.topic}`;
+  if (!stream || /^\d+$/.test(stream)) return undefined;
+  const alias = formatTarget({ kind: "stream", stream, topic: target.topic });
+  const reparsed = parseTarget(alias);
+  return reparsed?.kind === "stream" && reparsed.stream === stream && reparsed.topic === target.topic
+    ? alias
+    : undefined;
 }
 
 function sameStream(left: string, right: string): boolean {
@@ -70,8 +77,7 @@ export const zulipThreading: ChannelThreadingAdapter = {
     const target = parseTarget(currentChannelId);
     // Core forwards ThreadLabel, but not GroupChannel/StreamId, to this hook.
     // The monitor's label carries the stream name alongside the ID route.
-    const label = parseThreadLabel(context.ThreadLabel, target);
-    const namedTarget = label ? formatTarget(label) : currentChannelId;
+    const namedTarget = parseThreadLabel(context.ThreadLabel, target) ?? currentChannelId;
     return {
       currentChannelId,
       currentMessagingTarget: namedTarget,

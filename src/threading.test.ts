@@ -34,6 +34,12 @@ describe("Zulip threading adapter", () => {
     expect(build({ cfg, context: { To: "stream:42:Real", ThreadLabel: "# > Real" } })?.currentMessagingTarget).toBe("stream:42:Real");
   });
 
+  it.each(["ops:prod", "ops/prod", "ops#prod", "2024", " ops"])("keeps the ID route when stream name %j cannot round-trip as an alias", (stream) => {
+    const context = build({ cfg, context: { To: "stream:42:Deploy", MessageThreadId: "Deploy", ThreadLabel: `#${stream} > Deploy` } })!;
+    expect(context).toMatchObject({ currentChannelId: "stream:42:Deploy", currentMessagingTarget: "stream:42:Deploy" });
+    expect(matches({ target: "stream:ops:prod:Deploy", toolContext: context })).toBe(false);
+  });
+
   it.each(["stream:42:release a / b", "#ENGINEERING:release a / b", "42:topic:RELEASE A / B", "stream:042", "Engineering"])("matches equivalent current stream/topic %s", (target) => {
     expect(matches({ target, toolContext: topicContext() })).toBe(true);
   });

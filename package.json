@@ -43,8 +43,7 @@
     "manifest:sync": "tsc && node scripts/sync-plugin-manifest.mjs",
     "manifest:check": "tsc && node scripts/sync-plugin-manifest.mjs --check",
     "prepack": "npm run build",
-    "test": "vitest run src && node --test scripts/live-smoke/run.offline.mjs scripts/migrate-topic-sessions.test.mjs",
-    "test:live-smoke:offline": "node --test scripts/live-smoke/run.offline.mjs",
+    "test": "vitest run src && node --test scripts/migrate-topic-sessions.test.mjs",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {

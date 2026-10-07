@@ -1,6 +1,6 @@
 # Release checklist
 
-## 2026.9.18 stable release gate
+## 2026.10.7 stable release gate
 
 This release requires **OpenClaw >=2026.9.3** and **Node.js >=24.16.0 <25 or
 >=26.1.0**. Verify public question runtime exports, build/typecheck, all

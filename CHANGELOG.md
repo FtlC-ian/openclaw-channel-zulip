@@ -2,11 +2,21 @@
 
 ## Unreleased
 
+## 2026.10.7
+
+### Features
+- **Current-topic threading**: Register OpenClaw's channel threading adapter. A topicless message-tool send to the active stream, by name or numeric ID, inherits the current topic. Explicit topics, other streams, DMs, and explicit top-level or null-thread opt-outs are unchanged, and opaque session identities are never matched.
+- **Inbound topic metadata**: Send the canonical Zulip topic in OpenClaw's `TopicName` inbound field, preserving empty topics and omitting the field for direct messages. Routing, session keys, and `GroupChannel`/`ThreadLabel` are unchanged.
+
 ### Documentation
 - **Stream scope**: Clarify that omitted or empty `streams` monitors all public streams, just like `["*"]`. Document `groupPolicy: "disabled"` for DM-only inbound handling and an allowlisted single-stream setup, with matching configuration UI help.
 
 ### Compatibility
 - **OpenClaw SDK baseline**: Pin development and lockfile resolution to OpenClaw 2026.9.6. The minimum supported host remains 2026.9.3 because all SDK subpaths used by the plugin are public in both versions.
+- **CLI-backed agents**: On current OpenClaw releases, CLI runtimes such as claude-cli drop the stream-name alias before the message tool runs, so a topicless send to the active stream *by name* lands in the stream's default topic. The core fix is openclaw/openclaw#166702. Until it ships, those agents should target the numeric stream or pass the topic explicitly.
+
+### Maintenance
+- **Protected binding-only smoke**: Add a binding-only suite to the protected live-smoke workflow with fail-closed input validation, pinned acpx staging, and scope-specific receipts.
 
 ## 2026.9.18
 

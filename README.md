@@ -148,7 +148,8 @@ Add the plugin id to `plugins.allow` in `~/.openclaw/openclaw.json`:
       // Or store the API key in an OpenClaw SecretRef:
       // "apiKey": { "source": "env", "provider": "zulip", "id": "ZULIP_API_KEY" },
 
-      // Which streams to monitor ("*" = all)
+      // Which streams to monitor. Omitted, [], or ["*"] = all public streams.
+      // For DM-only inbound handling, use groupPolicy: "disabled".
       "streams": ["general", "bot-testing"],
 
       // Optional inbound topic filters for monitored streams.
@@ -251,6 +252,37 @@ Then restart the Gateway:
 ```sh
 openclaw gateway restart
 ```
+
+### Stream scope and DM-only mode
+
+Omitting `streams`, setting it to `[]`, or including `"*"` monitors all public
+streams. An empty list does not mean DM-only. Stream messages still have to pass
+the group, sender, mention, and topic policies before the bot responds.
+
+For DM-only inbound handling, set `groupPolicy: "disabled"`. This drops all
+stream messages regardless of `streams` or wildcard group settings. Keep
+`dmPolicy` and `allowFrom` configured for the DMs you want to accept.
+
+To accept stream messages only from selected senders in one stream, set these
+fields under `channels.zulip` or the relevant account:
+
+```json
+{
+  "streams": ["bot-testing"],
+  "groupPolicy": "allowlist",
+  "groupAllowFrom": ["sender@example.com"]
+}
+```
+
+Replace `bot-testing` with the stream name and `sender@example.com` with an allowed
+sender's Zulip email address (`sender_email`), not their numeric user ID. Mention
+and topic policies still apply. A `streamOverrides` rule
+with `enabled: true` can activate another stream, so remove such overrides if
+you want a strict single-stream scope.
+
+These settings filter inbound handling, not event-queue subscriptions. The
+plugin still registers for all public stream events to receive DMs alongside
+stream events. They do not disable outbound stream actions.
 
 ### Handled-message read state
 

@@ -563,6 +563,7 @@
         },
         "streams": {
           "label": "Streams to Monitor",
+          "description": "Omitted, empty, or including \"*\" monitors all public streams. For DM-only inbound handling, set groupPolicy to \"disabled\".",
           "placeholder": "[\"general\", \"random\"]"
         },
         "topics": {

@@ -139,8 +139,8 @@ durable cancellation, or account removal. Those require separate authorized scen
 | Typing and terminal-hold cleanup | Existing terminal-hold monitor test now asserts typing cleanup | Independent progress/reaction retry/subagent tests remain. |
 | Fetch abort does not retry; listeners removed on success/abort | `client.test.ts`, actual client/retry/poll transport with fault-injected fetch | Proves local signal propagation/cleanup, not remote cancellation. |
 
-The two failed-persistence regressions fail against c5b314a, then pass after committed-core
-ownership fixes. Restoring 6b7e476's adapter/monitor reproduces the real core cancellation
+The two failed-persistence regressions fail against the initial lifecycle adapter, then pass
+after committed-core ownership fixes. Restoring the pre-cancellation-fix adapter/monitor reproduces the real core cancellation
 and received-batch-tail regressions; the final implementation passes. Earlier original-code
 checks also reproduced startup replay queue leakage and aborted-fetch retry timeout.
 A real monitor test changes committed DM policy between received messages and proves one

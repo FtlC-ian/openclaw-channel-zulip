@@ -8,6 +8,7 @@ dist/
 *.js
 *.d.ts
 *.d.ts.map
+!src/openclaw-conversation-binding-runtime.d.ts
 *.js.map
 
 # Except config files that should be .js

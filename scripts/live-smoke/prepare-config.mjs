@@ -23,3 +23,30 @@ export function validateSmokeBaselineModel(config) {
   }
   return config;
 }
+
+export function validateSmokeAcpCapability(config) {
+  if (config?.acp?.enabled === false) throw new Error("Protected smoke config disables ACP");
+  const backend = String(config?.acp?.backend ?? "").trim().toLowerCase();
+  if (!config?.acp || !(config.acp.enabled === true || backend === "acpx" ||
+    config.acp.dispatch?.enabled === true)) {
+    throw new Error("Protected smoke config does not request the acpx ACP runtime");
+  }
+  if (config?.acp?.dispatch?.enabled === false) throw new Error("Protected smoke config disables ACP dispatch");
+  if (backend && backend !== "acpx") {
+    throw new Error("Protected smoke config must select the acpx ACP backend");
+  }
+  const allowed = config?.acp?.allowedAgents;
+  if (Array.isArray(allowed) && allowed.length &&
+    !allowed.some((agent) => String(agent).trim().toLowerCase() === "codex")) {
+    throw new Error("Protected smoke config does not allow the codex ACP target");
+  }
+  if (config?.plugins?.enabled === false || config?.plugins?.entries?.acpx?.enabled === false) {
+    throw new Error("Protected smoke config disables the acpx plugin");
+  }
+  const pluginAllow = config?.plugins?.allow;
+  if (Array.isArray(pluginAllow) && pluginAllow.length &&
+    !pluginAllow.some((plugin) => String(plugin).trim().toLowerCase() === "acpx")) {
+    throw new Error("Protected smoke config omits acpx from plugins.allow");
+  }
+  return config;
+}

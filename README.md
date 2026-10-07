@@ -54,12 +54,12 @@ harness does not claim combined live acceptance or soak coverage.
 
 ## Installation
 
-This release requires **OpenClaw >=2026.9.3** and **Node.js >=24.16.0 <25 or
+This release requires **OpenClaw >=2026.9.6** and **Node.js >=24.16.0 <25 or
 >=26.1.0**. The development SDK and lockfile are pinned to OpenClaw 2026.9.6.
-The minimum host remains 2026.9.3 because every SDK subpath used by the plugin,
-including its asynchronous outbound session-routing hook, is public in that
-version. Protected live acceptance for the exact release commit remains a release
-gate.
+The minimum host is 2026.9.6 because the conversation-binding contract, including
+its awaited generic persistence and asynchronous outbound session-routing APIs,
+is public in that version. Protected live acceptance for the exact release commit
+remains a release gate.
 
 Durable inbound handling uses the shared ingress queue API. When upgrading an existing installation,
 pending records and
@@ -344,6 +344,35 @@ public plugin hooks, so they cannot truthfully drive this indicator.
 Topic-scoped conversations now resolve through the SDK session-conversation hook, plus the plugin ships a bootstrap-safe `session-key-api.ts` export for core fallbacks.
 
 Basic approval authorization is now wired through `approvalCapability`, using normalized Zulip identities from `allowFrom` as the first pass.
+
+### Durable conversation bindings
+
+OpenClaw 2026.9.6 or newer can bind the current Zulip topic or one-to-one DM to
+an ACP/session target. Use `/acp spawn --bind here` in the conversation; ordinary
+messages then route to the bound session while replies keep the original
+`stream:<numeric-id>:<raw-topic>` or `user:<email>` delivery target. Core owns the
+durable record and lifecycle operations; this plugin does not maintain a second
+binding database. Release acceptance must live-test restart recovery, `/acp close`,
+`/session unbind`, `/session idle`, `/session max-age`, `/new`, `/reset`, and
+`/agents` against the declared minimum OpenClaw host.
+
+Topic identities are the existing opaque v2 IDs. They include normalized account,
+realm, bot, numeric stream, and Unicode-canonical topic identity, while the raw
+topic remains delivery context only. DM identities include realm, bot, and sender;
+delivery remains `user:<email>`. Account, realm, bot, stream, and peer boundaries
+therefore cannot share a binding accidentally. Case-only topic changes retain the
+same identity. A substantive topic rename creates a new identity and must be bound
+explicitly; the plugin does not alias old and new topic names.
+
+Configured ACP bindings use the canonical opaque conversation ID in
+`bindings[].match.peer.id`. The ID is visible in the ordinary Zulip session key
+and `/agents` binding output. Exact account matching still applies through
+`match.accountId`. When no configured or live binding matches, routing is unchanged
+and uses the ordinary topic/DM session.
+
+Top-level stream messages without a topic are not bindable. Zulip topics are the
+current conversation, so binding placement defaults to `current`; no synthetic
+child topic is created.
 
 ### Topic isolation and migration
 

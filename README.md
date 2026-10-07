@@ -396,6 +396,32 @@ starts fresh. No legacy history is imported automatically. Use the included
 through the gateway API while all Zulip accounts remain stopped. Archives follow
 ordinary OpenClaw history and retention policy.
 
+### Directory and name resolution
+
+The channel directory lists the bot identity, active DM peers, and subscribed
+streams. User targets are `user:email`; stream targets are `stream:ID`.
+Names and emails resolve case-insensitively with exact matching. Numeric selectors
+match only IDs (leading zeroes are ignored); user email selectors match only real
+email addresses, and other selectors match only names. Numeric stream names are
+not name selectors. Duplicate matches within a field return an ambiguity error;
+use an email/user ID or stream ID to disambiguate. Active bots with sendable emails
+are included under the same DM policy as humans; inactive or addressless bots are
+excluded. Bot status is not needed for this directory choice.
+Explicit stream topics are preserved and checked against the account's topic policy.
+
+Listings respect the selected account's DM policy and allowlist (including scoped
+pairing approvals), stream selection and overrides, and disabled group policy.
+Group sender allowlists govern inbound senders, not stream membership. Unsubscribed
+streams are not exposed or resolved, even if public. API failures remain failures;
+missing or disallowed targets return an unresolved result without hidden metadata.
+
+API data is cached for 60 seconds per config/account/credential identity, with at
+most 32 resource entries per config. Every lookup sweeps expired identities before
+returning a cache hit; capacity evicts the oldest inserted resource. Policies
+are checked on every call. Live directory variants refresh the cache. Resolving a
+stream name to its numeric ID also permits the existing threading adapter to match
+the current numeric stream route; threading behavior itself is unchanged.
+
 ### Delivery fallback
 
 If OpenClaw loses a saved delivery route and supplies only an opaque Zulip session

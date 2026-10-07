@@ -57,7 +57,7 @@ describe("Zulip lifecycle with committed core reload ownership", () => {
     await start();
     await remove();
     expect(monitor.active).toBe(1);
-    expect(monitor.starts[0].messageAbortSignal!.aborted).toBe(false);
+    expect(monitor.starts[0].abortSignal!.aborted).toBe(false);
     expect(monitor.clear).toHaveBeenLastCalledWith("default");
   });
 
@@ -93,14 +93,14 @@ describe("Zulip lifecycle with committed core reload ownership", () => {
     expect(monitor.starts).toHaveLength(1);
   });
 
-  it("drains accepted work on committed transport reload before core can register replacement", async () => {
+  it("cancels work and joins teardown before committed core replacement can register", async () => {
     let committed = config();
     const previous = await start(() => committed);
     let release!: () => void;
     monitor.drain = new Promise<void>((resolve) => { release = resolve; });
     committed = config({ url: "https://new.example" });
     previous.controller.abort();
-    expect(monitor.starts[0].messageAbortSignal!.aborted).toBe(false);
+    expect(monitor.starts[0].abortSignal!.aborted).toBe(true);
     const replacement = runZulipAccount({ config: committed, getConfig: () => committed, accountId: "default", abortSignal: new AbortController().signal });
     await Promise.resolve();
     expect(monitor.starts).toHaveLength(1);
@@ -112,7 +112,7 @@ describe("Zulip lifecycle with committed core reload ownership", () => {
     await replacement;
   });
 
-  it("committed removal cancels both signals and cleans caches idempotently", async () => {
+  it("committed removal cancels account work and cleans caches idempotently", async () => {
     let committed = config();
     const previous = await start(() => committed);
     committed = {};
@@ -120,7 +120,6 @@ describe("Zulip lifecycle with committed core reload ownership", () => {
     await previous.done;
     expect(monitor.active).toBe(0);
     expect(monitor.starts[0].abortSignal!.aborted).toBe(true);
-    expect(monitor.starts[0].messageAbortSignal!.aborted).toBe(true);
     expect(monitor.clear).toHaveBeenLastCalledWith("default", true);
     await remove();
     expect(monitor.deleted).toBe(1);
@@ -153,22 +152,7 @@ describe("Zulip lifecycle with committed core reload ownership", () => {
     await second;
     expect(monitor.maxActive).toBe(1);
     expect(monitor.active).toBe(0);
-    expect(monitor.starts[1].messageAbortSignal!.aborted).toBe(true);
-  });
-  it("a repeated core stop cancels a transport drain even though its poll signal already aborted", async () => {
-    let committed = config();
-    const previous = await start(() => committed);
-    let release!: () => void;
-    monitor.drain = new Promise<void>((resolve) => { release = resolve; });
-    committed = config({ url: "https://replacement.example" });
-    previous.controller.abort();
-    const reloading = stopZulipAccount("default", true);
-    expect(monitor.starts[0].messageAbortSignal!.aborted).toBe(false);
-    const shuttingDown = stopZulipAccount("default", true);
-    expect(monitor.starts[0].messageAbortSignal!.aborted).toBe(true);
-    release();
-    await Promise.all([reloading, shuttingDown, previous.done]);
-    expect(monitor.deleted).toBe(1);
+    expect(monitor.starts[1].abortSignal!.aborted).toBe(true);
   });
 
 });

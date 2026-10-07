@@ -30,11 +30,8 @@ type AccountOptions = MonitorZulipOpts & {
   abortSignal: AbortSignal;
 };
 type AccountLifetime = {
-  config: OpenClawConfig;
-  gatewayStops: number;
   currentConfig: () => OpenClawConfig;
-  poll: AbortController;
-  messages: AbortController;
+  abort: AbortController;
   settled: Promise<void>;
 };
 const accounts = new Map<string, AccountLifetime>();
@@ -55,10 +52,7 @@ export async function runZulipAccount(opts: AccountOptions): Promise<void> {
 async function beginZulipAccount(opts: AccountOptions): Promise<AccountLifetime | undefined> {
   const previous = accounts.get(opts.accountId);
   if (previous) {
-    if (!previous.poll.signal.aborted) {
-      previous.messages.abort();
-      previous.poll.abort();
-    }
+    previous.abort.abort();
     await previous.settled;
   }
   if (opts.abortSignal.aborted) return;
@@ -68,20 +62,11 @@ async function beginZulipAccount(opts: AccountOptions): Promise<AccountLifetime 
   if (opts.abortSignal.aborted || !accountIsActive(current, opts.accountId)
     || !isDeepStrictEqual(registrationConfig(current, opts.accountId), registrationConfig(opts.config, opts.accountId))) return;
   const lifetime: AccountLifetime = {
-    config: opts.config,
-    gatewayStops: 0,
     currentConfig,
-    poll: new AbortController(),
-    messages: new AbortController(),
+    abort: new AbortController(),
     settled: Promise.resolve(),
   };
-  const stop = () => {
-    const current = currentConfig();
-    const transportReload = accountIsActive(current, opts.accountId)
-      && !isDeepStrictEqual(registrationConfig(opts.config, opts.accountId), registrationConfig(current, opts.accountId));
-    if (!transportReload) lifetime.messages.abort();
-    lifetime.poll.abort();
-  };
+  const stop = () => lifetime.abort.abort();
   opts.abortSignal.addEventListener("abort", stop, { once: true });
   accounts.set(opts.accountId, lifetime);
   clearZulipAccountMonitorCaches(opts.accountId);
@@ -91,8 +76,7 @@ async function beginZulipAccount(opts: AccountOptions): Promise<AccountLifetime 
         ...opts,
         config: opts.config,
         getConfig: currentConfig,
-        abortSignal: lifetime.poll.signal,
-        messageAbortSignal: lifetime.messages.signal,
+        abortSignal: lifetime.abort.signal,
       });
     } finally {
       opts.abortSignal.removeEventListener("abort", stop);
@@ -105,15 +89,10 @@ async function beginZulipAccount(opts: AccountOptions): Promise<AccountLifetime 
   return lifetime;
 }
 
-export async function stopZulipAccount(accountId: string, allowTransportDrain = false): Promise<void> {
+export async function stopZulipAccount(accountId: string): Promise<void> {
   const lifetime = accounts.get(accountId);
   if (!lifetime) return;
-  const current = lifetime.currentConfig();
-  const transportDrain = allowTransportDrain && lifetime.gatewayStops++ === 0
-    && accountIsActive(current, accountId)
-    && !isDeepStrictEqual(registrationConfig(lifetime.config, accountId), registrationConfig(current, accountId));
-  if (!transportDrain) lifetime.messages.abort();
-  lifetime.poll.abort();
+  lifetime.abort.abort();
   await lifetime.settled;
 }
 

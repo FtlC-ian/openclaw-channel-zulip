@@ -94,7 +94,6 @@ export type MonitorZulipOpts = {
   config?: OpenClawConfig;
   runtime?: RuntimeEnv;
   abortSignal?: AbortSignal;
-  messageAbortSignal?: AbortSignal;
   getConfig?: () => OpenClawConfig;
   statusSink?: (patch: Partial<ChannelAccountSnapshot>) => void;
 };
@@ -652,7 +651,6 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     throw new Error("monitorZulipProvider requires resolved runtime config");
   }
   const cfg = opts.config;
-  const messageAbortSignal = opts.messageAbortSignal ?? opts.abortSignal;
   const runtime = resolveRuntime(opts);
   const account = await resolveZulipRuntimeAccount({
     cfg,
@@ -834,7 +832,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     const thinkingPlaceholderText = thinkingPlaceholderConfig?.text?.trim() || "Thinking…";
     const thinkingPlaceholderErrorText =
       thinkingPlaceholderConfig?.errorText?.trim() || "I couldn't complete that response.";
-    if (messageAbortSignal?.aborted || monitorReactionShutdownStarted) {
+    if (opts.abortSignal?.aborted || monitorReactionShutdownStarted) {
       return ABORTED_INBOUND_MESSAGE;
     }
     const messageId = String(message.id ?? "");
@@ -1657,7 +1655,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       await progressUpdateInFlight;
       await deleteProgressDraft();
     };
-    if (messageAbortSignal?.aborted || monitorReactionShutdownStarted) {
+    if (opts.abortSignal?.aborted || monitorReactionShutdownStarted) {
       return ABORTED_INBOUND_MESSAGE;
     }
     const statusReactions = createStatusReactionController({
@@ -1716,7 +1714,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       subagentLifecycleSettled = true;
       releaseReactionCleanupIfSettled();
     });
-    if (messageAbortSignal?.aborted || monitorReactionShutdownStarted) {
+    if (opts.abortSignal?.aborted || monitorReactionShutdownStarted) {
       await cancelReactionLifecycle();
       opts.statusSink?.({ lastInboundAt: Date.now() });
       return ABORTED_INBOUND_MESSAGE;
@@ -1774,7 +1772,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       !progressDraftActive &&
       !reactionLifecycleCancelled &&
       !monitorReactionShutdownStarted &&
-      !messageAbortSignal?.aborted
+      !opts.abortSignal?.aborted
     ) {
       placeholderCreationPromise = (async () => {
         try {
@@ -1793,7 +1791,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         }
       })();
       await placeholderCreationPromise;
-      if (reactionLifecycleCancelled || monitorReactionShutdownStarted || messageAbortSignal?.aborted) {
+      if (reactionLifecycleCancelled || monitorReactionShutdownStarted || opts.abortSignal?.aborted) {
         await cancelReactionLifecycle();
         opts.statusSink?.({ lastInboundAt: Date.now() });
         return ABORTED_INBOUND_MESSAGE;
@@ -1946,7 +1944,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
           replyOptions: {
             disableBlockStreaming:
               typeof messageAccount.blockStreaming === "boolean" ? !messageAccount.blockStreaming : undefined,
-            abortSignal: messageAbortSignal,
+            abortSignal: opts.abortSignal,
             allowToolLifecycleWhenProgressHidden:
               statusReactionConfig.enabled || progressDraftActive ? true : undefined,
             suppressDefaultToolProgressMessages:
@@ -2044,7 +2042,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     const abortOutcome = () =>
       replyDeliveryCommitted ? undefined : ABORTED_INBOUND_MESSAGE;
 
-    if (reactionLifecycleCancelled || messageAbortSignal?.aborted) {
+    if (reactionLifecycleCancelled || opts.abortSignal?.aborted) {
       await cleanupProgressDraft();
       await deletePlaceholder();
       await cancelReactionLifecycle();
@@ -2053,7 +2051,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     }
 
     await subagentContext.finish();
-    if (reactionLifecycleCancelled || messageAbortSignal?.aborted) {
+    if (reactionLifecycleCancelled || opts.abortSignal?.aborted) {
       await cleanupProgressDraft();
       await deletePlaceholder();
       await cancelReactionLifecycle();
@@ -2111,7 +2109,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     } else {
       await statusReactions.setDone();
     }
-    if (reactionLifecycleCancelled || messageAbortSignal?.aborted) {
+    if (reactionLifecycleCancelled || opts.abortSignal?.aborted) {
       await cleanupProgressDraft();
       await deletePlaceholder();
       await cancelReactionLifecycle();
@@ -2166,6 +2164,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
   let queueId = queue.queueId;
   let lastEventId = queue.lastEventId;
   let pollBackoffMs = 0;
+  let persistingStoppedBatch = false;
 
   runtime.log?.(`zulip event queue registered: ${queueId}`);
 
@@ -2235,6 +2234,9 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         streamDecision: options.streamDecision,
         acceptInbound: options.acceptInbound,
       });
+      if (outcome === ABORTED_INBOUND_MESSAGE && options.acceptInbound && options.durableAccepted?.() !== true) {
+        await options.acceptInbound();
+      }
       const manageDurableRecord =
         Boolean(durableId) &&
         (!options.acceptInbound || options.durableAccepted?.() === true);
@@ -2549,7 +2551,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
   const handleMonitorAbort = () => {
     void cleanupActiveReactionLifecycles();
   };
-  messageAbortSignal?.addEventListener("abort", handleMonitorAbort, { once: true });
+  opts.abortSignal?.addEventListener("abort", handleMonitorAbort, { once: true });
 
   const replayPendingDurableInboundMessages = async (): Promise<void> => {
     if (!durableInboundJournal) {
@@ -2630,8 +2632,29 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         resetPollBackoff();
 
         // Process messages with staggered start times for more natural feel
-        for (const event of events) {
-          if (messageAbortSignal?.aborted) {
+        for (const [eventIndex, event] of events.entries()) {
+          if (opts.abortSignal?.aborted) {
+            if (durableInboundJournal) {
+              persistingStoppedBatch = true;
+              for (const pendingEvent of events.slice(eventIndex)) {
+                if (pendingEvent.type !== "message" || !pendingEvent.message) continue;
+                const pendingMessage = pendingEvent.flags
+                  ? { ...pendingEvent.message, flags: [...pendingEvent.flags] }
+                  : pendingEvent.message;
+                const messageId = String(pendingMessage.id ?? "");
+                if (!messageId) continue;
+                const eventId = Number(pendingEvent.id);
+                await durableInboundJournal.accept(
+                  createZulipDurableInboundMessageId({ accountId: account.accountId, messageId }),
+                  { message: serializeZulipDurableInboundMessage(pendingMessage), receivedAt: Date.now() },
+                  {
+                    receivedAt: Date.now(),
+                    ...(Number.isFinite(eventId) && eventId >= 0 ? { metadata: { queueEventId: eventId } } : {}),
+                  },
+                );
+              }
+              persistingStoppedBatch = false;
+            }
             break;
           }
           const nextEventId = Number((event as { id?: unknown })?.id);
@@ -2683,6 +2706,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         }
       } catch (err) {
         if (opts.abortSignal?.aborted) {
+          if (persistingStoppedBatch) throw err;
           break;
         }
         const errStr = String(err);
@@ -2717,8 +2741,8 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       }
     }
   } finally {
-    messageAbortSignal?.removeEventListener("abort", handleMonitorAbort);
-    if (messageAbortSignal?.aborted) await cleanupActiveReactionLifecycles();
+    opts.abortSignal?.removeEventListener("abort", handleMonitorAbort);
+    if (opts.abortSignal?.aborted) await cleanupActiveReactionLifecycles();
     await Promise.allSettled(Array.from(activeMessageTasks));
     await cleanupActiveReactionLifecycles();
     activeMonitorReactionCleanups.delete(cleanupActiveReactionLifecycles);

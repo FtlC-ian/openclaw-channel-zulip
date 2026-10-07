@@ -534,7 +534,7 @@ export const zulipPlugin = {
   },
   lifecycle: zulipLifecycle,
   gateway: {
-    stopAccount: async (ctx) => stopZulipAccount(ctx.accountId, true),
+    stopAccount: async (ctx) => stopZulipAccount(ctx.accountId),
     startAccount: async (ctx) => {
       const account = await resolveZulipRuntimeAccount({ cfg: ctx.cfg, accountId: ctx.account.accountId });
       ctx.setStatus({

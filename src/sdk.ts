@@ -5,6 +5,7 @@ export type {
   ChannelMessageActionAdapter,
   ChannelMessageActionName,
   ChannelMessageToolSchemaContribution,
+  ChannelThreadingToolContext,
 } from "openclaw/plugin-sdk/channel-contract";
 export type { ReplyPayload } from "openclaw/plugin-sdk/reply-runtime";
 export type { MessagePresentation } from "openclaw/plugin-sdk/interactive-runtime";
@@ -68,3 +69,5 @@ export { readNumberParam, readStringParam } from "openclaw/plugin-sdk/param-read
 export { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/temp-path";
 
 export { createChannelPairingController } from "openclaw/plugin-sdk/channel-pairing";
+
+export type ChannelThreadingAdapter = NonNullable<import("openclaw/plugin-sdk/core").ChannelPlugin["threading"]>;

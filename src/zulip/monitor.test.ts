@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildChannelInboundEventContext } from "openclaw/plugin-sdk/channel-inbound";
 import type { RuntimeEnv } from "../sdk.js";
+import { zulipThreading } from "../threading.js";
 
 const questionRuntimeMocks = vi.hoisted(() => ({
   registerChannelDelivery: vi.fn(),
@@ -713,6 +714,12 @@ describe("monitorZulipProvider", () => {
     }));
     const ctx = state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mock.calls[0]?.[0]?.ctx;
     expect(ctx).toMatchObject({ ReplyToId: "9100002", MessageThreadId: "Release A / B" });
+    expect(ctx.ThreadLabel).toBe("#debbie > Release A / B");
+    const toolContext = zulipThreading.buildToolContext!({
+      cfg: {}, context: { To: ctx.To, MessageThreadId: ctx.MessageThreadId, ThreadLabel: ctx.ThreadLabel },
+    })!;
+    expect(zulipThreading.matchesToolContextTarget!({ target: "#DEBBIE:release a / b", toolContext })).toBe(true);
+    expect(zulipThreading.resolveAutoThreadId!({ cfg: {}, to: "#debbie", toolContext })).toBe("Release A / B");
   });
 
   it("dispatches colliding legacy slugs and the empty topic into separate fresh sessions", async () => {

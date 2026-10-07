@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Documentation
+- **Stream scope**: Clarify that omitted or empty `streams` monitors all public streams, just like `["*"]`. Document `groupPolicy: "disabled"` for DM-only inbound handling and an allowlisted single-stream setup, with matching configuration UI help.
+
 ### Compatibility
 - **OpenClaw SDK baseline**: Pin development and lockfile resolution to OpenClaw 2026.9.6. The minimum supported host remains 2026.9.3 because all SDK subpaths used by the plugin are public in both versions.
 

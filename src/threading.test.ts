@@ -11,7 +11,7 @@ const auto = threading.resolveAutoThreadId!;
 const resolve = threading.resolveCurrentChannelId!;
 const topicContext = () => build({ cfg, context: {
   To: "stream:42:Release A / B", MessageThreadId: "Release A / B",
-  ThreadLabel: "stream:Engineering:Release A / B", ChatType: "channel", CurrentMessageId: "99",
+  ThreadLabel: "#Engineering > Release A / B", ChatType: "channel", CurrentMessageId: "99",
 } })!;
 
 describe("Zulip threading adapter", () => {
@@ -29,7 +29,9 @@ describe("Zulip threading adapter", () => {
     expect(topicContext()).toMatchObject({ currentChannelId: "stream:42:Release A / B", currentMessagingTarget: "stream:Engineering:Release A / B", currentThreadTs: "Release A / B" });
     expect(build({ cfg, context: { To: "42:topic:v2:opaque", MessageThreadId: "Real" } })?.currentChannelId).toBeUndefined();
     expect(build({ cfg, context: {} })?.currentChannelId).toBeUndefined();
-    expect(build({ cfg, context: { To: "stream:42:Real", ThreadLabel: "stream:Other:Wrong" } })?.currentMessagingTarget).toBe("stream:42:Real");
+    expect(build({ cfg, context: { To: "stream:42:Real", ThreadLabel: "#Other > Wrong" } })?.currentMessagingTarget).toBe("stream:42:Real");
+    expect(build({ cfg, context: { To: "stream:42:Real", ThreadLabel: "stream:Other:Real" } })?.currentMessagingTarget).toBe("stream:42:Real");
+    expect(build({ cfg, context: { To: "stream:42:Real", ThreadLabel: "# > Real" } })?.currentMessagingTarget).toBe("stream:42:Real");
   });
 
   it.each(["stream:42:release a / b", "#ENGINEERING:release a / b", "42:topic:RELEASE A / B", "stream:042", "Engineering"])("matches equivalent current stream/topic %s", (target) => {
@@ -56,10 +58,8 @@ describe("Zulip threading adapter", () => {
     expect(auto({ cfg, to, toolContext })).toBeUndefined();
   });
 
-  it("supports numeric DM peers and direct-only From fallback", () => {
-    const toolContext = build({ cfg, context: { To: "user:123", ChatType: "direct" } })!;
-    expect(matches({ target: "dm:123", toolContext })).toBe(true);
-    expect(matches({ target: "stream:123", toolContext })).toBe(false);
+  it("uses the direct-only From fallback and does not treat numeric IDs as DM peers", () => {
+    expect(build({ cfg, context: { To: "user:123", ChatType: "direct" } })?.currentChannelId).toBeUndefined();
     expect(build({ cfg, context: { From: "zulip:peer@example.com", ChatType: "direct" } })?.currentChannelId).toBe("user:peer@example.com");
     expect(build({ cfg, context: { From: "zulip:channel:42", ChatType: "channel" } })?.currentChannelId).toBeUndefined();
   });
@@ -74,11 +74,16 @@ describe("Zulip threading adapter", () => {
     expect(auto({ cfg, to, toolContext: topicContext() })).toBeUndefined();
   });
 
-  it.each(["", " Topic ", "ΟΣ"])("preserves the raw auto-topic through destination resolution: %s", (topic) => {
+  it.each(["", "ΟΣ"])("preserves the inherited auto-topic through destination resolution: %s", (topic) => {
     const toolContext = build({ cfg, context: { To: `stream:42:${topic}`, MessageThreadId: topic } })!;
     const threadId = auto({ cfg, to: "stream:42", toolContext });
     expect(threadId).toBe(topic);
     expect(resolveZulipDestination("stream:42", threadId, "general")).toMatchObject({ topic });
+  });
+
+  it("trims surrounding whitespace the way Zulip stores topics", () => {
+    expect(resolveZulipDestination("stream:42", " Topic ", "general")).toMatchObject({ topic: "Topic" });
+    expect(resolveZulipDestination("stream:42", "   ", "general")).toMatchObject({ topic: "" });
   });
 
   it("does not inherit from another provider or absent context", () => {

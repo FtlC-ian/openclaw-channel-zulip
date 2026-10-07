@@ -1242,7 +1242,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         HistoryPublicToSubscribers: streamMetadata?.historyPublicToSubscribers,
         SubscriberCount: streamMetadata?.subscriberCount,
         StreamId: kind !== "dm" ? streamId : undefined,
-        ThreadLabel: kind !== "dm" && streamName ? `stream:${streamName}:${topic}` : undefined,
+        ThreadLabel: kind !== "dm" && streamName ? `#${streamName} > ${topic}` : undefined,
         GroupSubject: kind !== "dm" ? roomLabel : undefined,
         GroupChannel: streamName ? `#${streamName}` : undefined,
       },

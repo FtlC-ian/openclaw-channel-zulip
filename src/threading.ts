@@ -7,9 +7,6 @@ function parseTarget(raw: string | undefined): ZulipTarget | undefined {
   if (!raw || isZulipSessionTarget(raw)) return undefined;
   const normalized = normalizeZulipMessagingTarget(raw);
   if (!normalized) return undefined;
-  if (/^user:\d+$/.test(normalized)) {
-    return { kind: "user", email: normalized.slice("user:".length) };
-  }
   try {
     const target = parseZulipTarget(normalized);
     if (target.kind === "stream" && target.topic !== undefined) canonicalizeZulipTopic(target.topic);
@@ -17,6 +14,16 @@ function parseTarget(raw: string | undefined): ZulipTarget | undefined {
   } catch {
     return undefined;
   }
+}
+
+// The monitor labels topics the way Zulip displays them: "#stream > topic".
+// The topic comes from the route, so the stream name is whatever precedes it.
+function parseThreadLabel(label: string | undefined, target: ZulipTarget | undefined): ZulipTarget | undefined {
+  if (target?.kind !== "stream" || target.topic === undefined || !label?.startsWith("#")) return undefined;
+  const suffix = ` > ${target.topic}`;
+  if (!label.endsWith(suffix)) return undefined;
+  const stream = label.slice(1, -suffix.length);
+  return stream ? { kind: "stream", stream, topic: target.topic } : undefined;
 }
 
 function formatTarget(target: ZulipTarget): string {
@@ -62,12 +69,9 @@ export const zulipThreading: ChannelThreadingAdapter = {
         : undefined;
     const target = parseTarget(currentChannelId);
     // Core forwards ThreadLabel, but not GroupChannel/StreamId, to this hook.
-    // The monitor supplies the name-addressed topic label alongside the ID route.
-    const label = context.ThreadLabel?.startsWith("stream:") ? parseTarget(context.ThreadLabel) : undefined;
-    const namedTarget = target?.kind === "stream" && label?.kind === "stream"
-      && target.topic !== undefined && label.topic !== undefined
-      && canonicalizeZulipTopic(target.topic) === canonicalizeZulipTopic(label.topic)
-      ? formatTarget(label) : currentChannelId;
+    // The monitor's label carries the stream name alongside the ID route.
+    const label = parseThreadLabel(context.ThreadLabel, target);
+    const namedTarget = label ? formatTarget(label) : currentChannelId;
     return {
       currentChannelId,
       currentMessagingTarget: namedTarget,

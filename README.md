@@ -48,9 +48,7 @@ mobile numeric/text/list fallback. Controls are bound to account, sender and act
 sent conversation, and intercepted before ordinary dispatch. Terminal replacement
 is sent before deleting the widget; failed deletion rolls back the replacement
 where possible. Bindings are bounded and in memory: expiry/restart do not guarantee
-visual cleanup or persistent recovery. Protected desktop/mobile/cleanup live
-acceptance remains a release gate for the exact release commit; the offline
-harness does not claim combined live acceptance or soak coverage.
+visual cleanup or persistent recovery.
 
 ## Installation
 
@@ -58,8 +56,7 @@ This release requires **OpenClaw >=2026.9.3** and **Node.js >=24.16.0 <25 or
 >=26.1.0**. The development SDK and lockfile are pinned to OpenClaw 2026.9.6.
 The minimum host remains 2026.9.3 because every SDK subpath used by the plugin,
 including its asynchronous outbound session-routing hook, is public in that
-version. Protected live acceptance for the exact release commit remains a release
-gate.
+version.
 
 Durable inbound handling uses the shared ingress queue API. When upgrading an existing installation,
 pending records and
@@ -511,22 +508,6 @@ openclaw gateway restart
 ## Continuous integration
 
 Pull requests and pushes to `main` run the release-blocking **CI** workflow on Node 24.16 and Node 26.x, matching the supported runtime ranges. Each run installs from `pnpm-lock.yaml` with `--frozen-lockfile`, builds, runs the full test suite, checks whitespace errors with `git diff --check`, packs the release artifact, installs it with the locked OpenClaw host in a clean temporary project, and imports its public package entry point. The workflow has read-only repository permissions and does not receive repository or Zulip secrets.
-
-Release candidates also have a manual **Zulip live smoke (protected)** workflow.
-Its workflow definition can run only from `main`. By default it accepts a full
-commit SHA reachable from `main`; the repository owner may instead name a
-same-repository candidate branch so live-only fixes can be tested repeatedly
-before one final pull request is opened. Dedicated-realm credentials remain
-unavailable until approval through the protected `zulip-live-smoke` GitHub Environment. See
-[the release checklist](docs/RELEASE_CHECKLIST.md) for setup and evidence rules.
-The workflow stages the already-authorized, exact-SHA candidate inside the
-locked OpenClaw package's bundled extension directory. It verifies that the
-host reports Zulip as a loaded bundled plugin before credentials are used, then
-runs durable receive interruption, replay, completion, and deduplication with
-plugin keyed state enabled. It also proves that the durable command remains
-unread while accepted but unfinished, then becomes read only after successful
-reply settlement and journal completion. This staging exists only in the ephemeral runner;
-release installation remains the separately published plugin package.
 
 The scheduled **OpenClaw compatibility (advisory)** workflow is intentionally separate from release gating. Once a week it chooses the first eligible release from OpenClaw's `latest` and `extended-stable` npm channels that has been published for at least 24 hours, then installs and tests it in a temporary copy of the plugin. That temporary install and the packed-artifact smoke test enforce pnpm's 24-hour release-age rule and may update only disposable lockfiles; they never change or commit this repository's lockfile. A failure identifies compatibility work to investigate; it does not replace the locked CI evidence required for a release.
 

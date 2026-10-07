@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Maintenance
+- **Remove protected live smoke**: Delete the manual live-smoke workflow and its `scripts/live-smoke` harness and offline harness tests. Releases are gated on CI (build, full test suite, and packed-artifact install on Node 24 and 26) plus manual testing on a real gateway.
+
 ## 2026.10.7
 
 ### Features

@@ -698,28 +698,31 @@ describe("monitorZulipProvider", () => {
     expect(output).not.toContain("protected-detail");
   });
 
-  it("keeps the raw topic and reply message ID in their SDK fields", async () => {
+  it.each(["Release A / B", ""])("keeps the raw topic %j and reply message ID in their SDK fields", async (topic) => {
+    const messageId = topic ? 9100002 : 9100004;
     state.pollResponses = [{
       result: "success",
       events: [{ id: 1, type: "message", message: {
-        ...makeChannelMessage(9100002), subject: "Release A / B",
+        ...makeChannelMessage(messageId), subject: topic,
       } }],
     }];
 
     await runMonitorOnce();
 
     expect(state.core.channel.inbound.buildContext).toHaveBeenCalledWith(expect.objectContaining({
-      conversation: expect.objectContaining({ threadId: "Release A / B" }),
-      reply: expect.objectContaining({ replyToId: "9100002", messageThreadId: "Release A / B" }),
+      conversation: expect.objectContaining({ threadId: topic }),
+      reply: expect.objectContaining({ replyToId: String(messageId), messageThreadId: topic }),
     }));
     const ctx = state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mock.calls[0]?.[0]?.ctx;
-    expect(ctx).toMatchObject({ ReplyToId: "9100002", MessageThreadId: "Release A / B" });
-    expect(ctx.ThreadLabel).toBe("#debbie > Release A / B");
+    expect(ctx).toMatchObject({
+      ReplyToId: String(messageId), MessageThreadId: topic, TopicName: topic, GroupChannel: "#debbie",
+    });
+    expect(ctx.ThreadLabel).toBe(`#debbie > ${topic}`);
     const toolContext = zulipThreading.buildToolContext!({
       cfg: {}, context: { To: ctx.To, MessageThreadId: ctx.MessageThreadId, ThreadLabel: ctx.ThreadLabel },
     })!;
-    expect(zulipThreading.matchesToolContextTarget!({ target: "#DEBBIE:release a / b", toolContext })).toBe(true);
-    expect(zulipThreading.resolveAutoThreadId!({ cfg: {}, to: "#debbie", toolContext })).toBe("Release A / B");
+    expect(zulipThreading.matchesToolContextTarget!({ target: `#DEBBIE:${topic.toLowerCase()}`, toolContext })).toBe(true);
+    expect(zulipThreading.resolveAutoThreadId!({ cfg: {}, to: "#debbie", toolContext })).toBe(topic);
   });
 
   it("dispatches colliding legacy slugs and the empty topic into separate fresh sessions", async () => {
@@ -2833,6 +2836,9 @@ describe("monitorZulipProvider", () => {
         OriginatingTo: "user:user8@zlp.pubnerd.app",
       }),
     );
+    const ctx = state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mock.calls[0]?.[0]?.ctx;
+    expect(ctx).toMatchObject({ ChatType: "direct", To: "user:user8@zlp.pubnerd.app" });
+    expect(ctx).not.toHaveProperty("TopicName");
     expect(state.core.channel.inbound.dispatch).toHaveBeenCalledWith(expect.objectContaining({
       route: {
         agentId: "debbie",

@@ -387,6 +387,7 @@ vi.mock("./uploads.js", () => ({
 const typingCallbacksMock = vi.fn(() => ({
   onReplyStart: vi.fn(),
   onIdle: vi.fn(),
+  onCleanup: vi.fn(),
 }));
 
 vi.mock("../sdk.js", async (importOriginal) => ({
@@ -1447,6 +1448,7 @@ describe("monitorZulipProvider", () => {
     state.abortController?.abort();
     await monitorPromise;
 
+    expect(typingCallbacksMock.mock.results[0]?.value.onCleanup).toHaveBeenCalledTimes(1);
     const addedNames = state.addZulipReaction.mock.calls.map((call) => call[1].emojiName);
     expect(addedNames).toEqual(expect.arrayContaining([
       "eyes",
@@ -4828,4 +4830,67 @@ describe("monitorZulipProvider", () => {
     expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(1);
     expect(state.core.system.enqueueSystemEvent).not.toHaveBeenCalled();
   });
+
+  it("drains a received batch and durable completion before deleting a refreshed queue", async () => {
+    enableDurableInboundJournal();
+    state.autoAbort = false;
+    const poll = new AbortController();
+    const messages = new AbortController();
+    let release!: () => void;
+    const delivery = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementationOnce(async ({ dispatcherOptions }: any) => {
+      entered();
+      await delivery;
+      await dispatcherOptions.deliver({ text: "Drained final" }, { kind: "final" });
+      return { counts: { tool: 0, block: 0, final: 1 } };
+    });
+    state.pollResponses = [{ result: "success", events: [
+      { id: 20, type: "message", message: makeChannelMessage(9595001) },
+      { id: 21, type: "message", message: makeChannelMessage(9595002) },
+    ] }];
+    const { monitorZulipProvider } = await import("./monitor.js");
+    const running = monitorZulipProvider({ config: state.core.config, abortSignal: poll.signal, messageAbortSignal: messages.signal });
+    await started;
+    poll.abort();
+    expect(deleteZulipQueueMock).not.toHaveBeenCalled();
+    expect(messages.signal.aborted).toBe(false);
+    release();
+    await running;
+    expect(deleteZulipQueueMock).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(2);
+    const { createZulipDurableInboundReceiveJournal } = await import("./durable-receive.js");
+    await expect(createZulipDurableInboundReceiveJournal(state.account.accountId).pending()).resolves.toEqual([]);
+    state.autoAbort = true;
+    await runMonitorOnce();
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(2);
+  });
+
+  it("deletes the event queue when startup durable replay fails", async () => {
+    enableDurableInboundJournal();
+    // Open the production journal first so its backing queue exists.
+    const { createZulipDurableInboundReceiveJournal } = await import("./durable-receive.js");
+    createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const queue = Array.from(state.durableQueues.values())[0];
+    queue.listPending.mockRejectedValueOnce(new Error("replay storage failure"));
+    await expect(runMonitorOnce()).rejects.toThrow("replay storage failure");
+    expect(deleteZulipQueueMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears removed-account volatile dedupe without erasing restart protection", async () => {
+    const message = makeChannelMessage(9595010);
+    state.pollResponses = [{ result: "success", events: [{ id: 1, type: "message", message }] }];
+    await runMonitorOnce();
+    const { clearZulipAccountMonitorCaches } = await import("./monitor.js");
+    clearZulipAccountMonitorCaches(state.account.accountId);
+    state.pollResponses = [{ result: "success", events: [{ id: 1, type: "message", message }] }];
+    await runMonitorOnce();
+    expect(state.core.channel.inbound.dispatch).toHaveBeenCalledTimes(1);
+    clearZulipAccountMonitorCaches(state.account.accountId, true);
+    state.pollResponses = [{ result: "success", events: [{ id: 1, type: "message", message }] }];
+    await runMonitorOnce();
+    expect(state.core.channel.inbound.dispatch).toHaveBeenCalledTimes(2);
+  });
+
 });

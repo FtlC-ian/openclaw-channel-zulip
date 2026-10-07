@@ -39,6 +39,7 @@ export function formatInboundFromLabel(params: {
 }
 
 type DedupeCache = {
+  clearPrefix: (prefix: string) => void;
   check: (key: string | undefined | null, now?: number) => boolean;
 };
 
@@ -75,6 +76,11 @@ export function createDedupeCache(options: { ttlMs: number; maxSize: number }): 
   };
 
   return {
+    clearPrefix: (prefix) => {
+      for (const key of cache.keys()) {
+        if (key.startsWith(prefix)) cache.delete(key);
+      }
+    },
     check: (key, now = Date.now()) => {
       if (!key) {
         return false;

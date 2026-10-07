@@ -342,6 +342,17 @@ export async function fetchZulipUser(client: ZulipClient, userId: string): Promi
   };
 }
 
+export async function fetchZulipUsers(client: ZulipClient): Promise<ZulipUser[]> {
+  const payload = await client.request<ZulipApiResponse & {
+    members?: Array<{ user_id: number; email?: string; full_name?: string; is_active?: boolean }>;
+  }>("/users");
+  assertSuccess(payload, "Zulip /users failed");
+  return (payload.members ?? []).map(user => ({
+    id: String(user.user_id), email: user.email ?? null,
+    full_name: user.full_name ?? null, is_active: user.is_active,
+  }));
+}
+
 export async function fetchZulipMemberInfo(
   client: ZulipClient,
   userId?: string | null,

@@ -473,6 +473,12 @@ async function saveZulipMediaBuffer(params: {
   return { path: filePath, contentType };
 }
 
+class ZulipAbortPreservationError extends Error {
+  constructor(cause: unknown) {
+    super(`Zulip aborted receive preservation failed: ${String(cause)}`, { cause });
+  }
+}
+
 const ABORTED_INBOUND_MESSAGE = Symbol("aborted-inbound-message");
 const RETRYABLE_INBOUND_MESSAGE = Symbol("retryable-inbound-message");
 const RETRYABLE_STREAM_POLICY = Symbol("retryable-stream-policy");
@@ -690,6 +696,8 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
   });
 
   const activeMessageTasks = new Set<Promise<void>>();
+  let abortedMessagePreservationFailed = false;
+  let abortedMessagePreservationError: unknown;
   const activeReactionCleanups = new Set<() => Promise<void>>();
   let reactionCleanupChain = Promise.resolve();
   const cleanupActiveReactionLifecycles = (): Promise<void> => {
@@ -2157,6 +2165,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       return undefined;
     }
   })();
+  const pendingReceiveCheckpoints = new Set<Promise<void>>();
   const queue = await registerZulipQueue(client, {
     eventTypes: ["message"],
     streams: registrationStreams,
@@ -2282,6 +2291,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       }
       return "settled";
     } catch (err) {
+      if (err instanceof ZulipAbortPreservationError) throw err;
       if (
         durableInboundJournal &&
         durableId &&
@@ -2458,8 +2468,9 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
 
   const processMessage = async (
     message: ZulipMessage,
-    queueEventId?: number,
-    streamResolution?: InboundStreamResolution,
+    queueEventId: number | undefined,
+    streamResolution: InboundStreamResolution | undefined,
+    onReceiveCheckpoint: () => void,
   ): Promise<void> => {
     const messageId = String(message.id ?? "");
     const metadata: ZulipDurableInboundMetadata | undefined =
@@ -2495,8 +2506,12 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
           ) {
             schedulePendingDurableReplay(acceptedDurableId);
           }
+          onReceiveCheckpoint();
           return durableAccepted;
         } catch (err) {
+          if (opts.abortSignal?.aborted || monitorReactionShutdownStarted) {
+            throw new ZulipAbortPreservationError(err);
+          }
           runtime.log?.(`zulip: failed persisting durable inbound; delivering live: ${String(err)}`);
           return true;
         }
@@ -2587,6 +2602,10 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
 
     // Long-poll at 90s — nginx proxy_read_timeout is now 120s
     while (!opts.abortSignal?.aborted) {
+      // The next poll acknowledges lastEventId; wait for receive admission, not agent completion.
+      await Promise.all(Array.from(pendingReceiveCheckpoints));
+      if (abortedMessagePreservationFailed) throw abortedMessagePreservationError;
+      if (opts.abortSignal?.aborted) break;
       try {
         const response = await getZulipEventsWithRetry(client, {
           queueId,
@@ -2691,11 +2710,20 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
               }
             }
             // Start processing without awaiting (fire-and-forget with error handling)
-            const messageTask = processMessage(inboundMessage, validEventId, streamResolution).catch(
+            let receiveCheckpoint!: () => void;
+            const checkpoint = new Promise<void>((resolve) => { receiveCheckpoint = resolve; });
+            pendingReceiveCheckpoints.add(checkpoint);
+            void checkpoint.then(() => pendingReceiveCheckpoints.delete(checkpoint));
+            if (!durableInboundJournal) receiveCheckpoint();
+            const messageTask = processMessage(inboundMessage, validEventId, streamResolution, receiveCheckpoint).catch(
               (err) => {
+                if (err instanceof ZulipAbortPreservationError || opts.abortSignal?.aborted) {
+                  abortedMessagePreservationFailed = true;
+                  abortedMessagePreservationError ??= err;
+                }
                 runtime.error?.(`zulip: message processing failed: ${String(err)}`);
               },
-            );
+            ).finally(receiveCheckpoint);
             activeMessageTasks.add(messageTask);
             void messageTask.finally(() => {
               activeMessageTasks.delete(messageTask);
@@ -2746,7 +2774,12 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     await Promise.allSettled(Array.from(activeMessageTasks));
     await cleanupActiveReactionLifecycles();
     activeMonitorReactionCleanups.delete(cleanupActiveReactionLifecycles);
-    await deleteZulipQueue(client, queueId);
+    if (abortedMessagePreservationFailed || persistingStoppedBatch) {
+      runtime.error?.(`zulip: retaining unacknowledged queue ${queueId} after failed durable shutdown preservation`);
+    } else {
+      await deleteZulipQueue(client, queueId);
+    }
   }
+  if (abortedMessagePreservationFailed) throw abortedMessagePreservationError;
   runtime.log?.("zulip monitor stopped");
 }

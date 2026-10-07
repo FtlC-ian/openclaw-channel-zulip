@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "./sdk.js";
 import type { MonitorZulipOpts } from "./zulip/monitor.js";
 import { runZulipAccount, stopZulipAccount, zulipLifecycle } from "./lifecycle.js";
@@ -34,12 +34,18 @@ const start = async (getConfig: () => OpenClawConfig = () => config()) => {
   await vi.waitFor(() => expect(monitor.active).toBe(1));
   return { controller, done };
 };
+beforeEach(() => {
+  vi.stubEnv("ZULIP_API_KEY", undefined);
+  vi.stubEnv("ZULIP_EMAIL", undefined);
+  vi.stubEnv("ZULIP_URL", undefined);
+});
 afterEach(async () => {
   await stopZulipAccount("default");
   monitor.starts = [];
   monitor.active = monitor.maxActive = monitor.deleted = 0;
   monitor.drain = undefined;
   monitor.clear.mockClear();
+  vi.unstubAllEnvs();
 });
 
 describe("Zulip lifecycle with committed core reload ownership", () => {
@@ -153,6 +159,17 @@ describe("Zulip lifecycle with committed core reload ownership", () => {
     expect(monitor.maxActive).toBe(1);
     expect(monitor.active).toBe(0);
     expect(monitor.starts[1].abortSignal!.aborted).toBe(true);
+  });
+
+  it("preserves the supported environment-only default account without a channel section", async () => {
+    vi.stubEnv("ZULIP_API_KEY", ["fixture", "environment"].join("-"));
+    vi.stubEnv("ZULIP_EMAIL", "bot@example.org");
+    vi.stubEnv("ZULIP_URL", "https://zulip.example");
+    const previous = await start(() => ({}));
+    expect(monitor.starts).toHaveLength(1);
+    previous.controller.abort();
+    await previous.done;
+    expect(monitor.deleted).toBe(1);
   });
 
 });

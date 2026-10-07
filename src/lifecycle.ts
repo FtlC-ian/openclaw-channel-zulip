@@ -1,7 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import type { ChannelPlugin, OpenClawConfig } from "./sdk.js";
 import { isZulipAccountConfigured, listZulipAccountIds, resolveZulipAccount, type ResolvedZulipAccount } from "./zulip/accounts.js";
-import { zulipStreamOverridesExpandLegacySelection } from "./zulip/stream-policy.js";
 import type { MonitorZulipOpts } from "./zulip/monitor.js";
 
 function registrationConfig(cfg: OpenClawConfig, accountId: string) {
@@ -11,16 +10,13 @@ function registrationConfig(cfg: OpenClawConfig, accountId: string) {
     url: account.baseUrl,
     email: account.email,
     apiKey: account.apiKey ?? account.apiKeyRef,
-    streams: zulipStreamOverridesExpandLegacySelection({
-      streams: account.streams,
-      streamOverrides: account.config.streamOverrides,
-    }) ? ["*"] : account.streams ?? ["*"],
+    streams: account.streams ?? ["*"],
   };
 }
 
 function accountIsActive(cfg: OpenClawConfig, accountId: string): boolean {
   const account = resolveZulipAccount({ cfg, accountId });
-  return Boolean(cfg.channels?.zulip) && listZulipAccountIds(cfg).includes(accountId)
+  return listZulipAccountIds(cfg).includes(accountId)
     && account.enabled && isZulipAccountConfigured(account);
 }
 

@@ -32,13 +32,19 @@ Only one monitor generation can exist per account. The runner serializes prepara
 then rechecks the current committed account, configured/enabled state and transport
 fingerprint immediately before registration. A stale start queued across removal/disable
 cannot resurrect the account. Explicit re-addition with matching committed config can start.
+Admission uses the channel's configured/enabled/account-list contract, not mere presence
+of a config section; the supported environment-only default account still works.
 
 Dynamic settings are published through `reload.noopPrefixes` for root and named-account
-keys, including per-stream mention/topic leaves. Gateway-started monitors obtain the
+keys, including the entire stream-override map. Gateway-started monitors obtain the
 current runtime config; explicitly scoped standalone monitors retain their snapshot.
-Streams and stream enablement remain restart settings. `registerZulipQueue` receives
+Legacy `streams` changes remain core restart settings. `registerZulipQueue` receives
 selection arguments but intentionally registers broad public/subscribed/DM events without
-a stream narrow; stream/topic policy itself is enforced locally.
+a stream narrow. All stream overrides, including enablement, therefore refresh the local
+per-message policy without replacing the unchanged server queue. Declaring the whole map
+also covers dotted stream-name selectors, which SDK single-segment wildcard leaves cannot.
+A real monitor regression enables a dotted-name stream between received messages using
+one queue registration.
 
 ## Cancellation and durable receive
 
@@ -47,7 +53,11 @@ secondary turn signal or grace period waiting for a second core stop: pinned cor
 repeated stops behind the first stop promise. `gateway.stopAccount` joins the same teardown.
 
 The monitor waits for owned message tasks and durable completion/release before deleting
-its queue. If cancellation raced acceptance, the message is durably admitted before being
+its queue. Zulip's [`last_event_id`](https://zulip.com/api/get-events) acknowledges received
+events: with a durable journal, the next poll waits for admission checkpoints or terminal
+handling/drop, not ordinary agent completion. Pending admission is not acknowledged past
+before its recovery copy exists. Without a journal, existing live-fallback polling remains
+unchanged and has no durable-receive guarantee. If cancellation raced acceptance, the message is durably admitted before being
 released. The untouched tail of an already-received poll batch is journaled without new
 remote policy/metadata lookups, then replayed under the next monitor. Visible replies keep
 their durable completion protection; aborted no-send turns remain retryable. Replacement
@@ -55,8 +65,10 @@ registration cannot overlap the prior monitor's settlement and queue deletion.
 
 Queue deletion runs in `finally`, including failed durable startup replay. The HTTP retry
 layer removes abort listeners, aborts backoff, and does not retry an aborted fetch.
-A durable-storage error while preserving a stopped batch is surfaced as a real monitor
-failure, not mistaken for ordinary polling cancellation.
+Durable admission during cancellation is strict: it cannot use the normal live-delivery
+fallback. A failure in either aborted admission or untouched-tail preservation rejects
+the monitor. Local polling/turn state is cleaned, but the unacknowledged server queue is
+retained and its ID logged rather than destroying the remaining recoverable copy.
 Removal clears account stream metadata and volatile dedupe; ordinary replacement retains
 volatile dedupe. Durable journals/completion receipts survive removal deliberately.
 
@@ -73,7 +85,9 @@ No imports or assumptions about the pending PR are introduced here.
   transaction/rollback handle. Hosts must apply committed core reload after a successful
   write. The adapter intentionally does not add a second replacement.
 - Server queue DELETE remains best-effort. Failed DELETE can leave an inert server queue
-  until Zulip expiry, not a local poll.
+  until Zulip expiry, not a local poll. Failed durable shutdown preservation deliberately
+  retains that unacknowledged queue for operator recovery before server expiry; it does
+  not silently report successful shutdown or run a second local poll.
 - Registration is not an atomic server-side handoff. Durable guarantees apply to received
   work when the durable journal is available, not events arriving during registration gaps
   or unavailable/failed durable storage. No live reload/OG verification is claimed.
@@ -82,9 +96,11 @@ No imports or assumptions about the pending PR are introduced here.
 
 | Contract / credible regression | Primary owner and evidence | Overlap / proof limits |
 | --- | --- | --- |
-| Pre-persistence write/removal failure, hook-plus-committed-core composition, one generation, actual runtime getter, simultaneous/stale starts | `lifecycle.test.ts`, committed runtime getter + controlled monitor boundary | Mocks prove orchestration, not server DELETE. |
+| Pre-persistence write/removal failure, hook-plus-committed-core composition, one generation, actual runtime getter, simultaneous/stale starts and environment-only compatibility | `lifecycle.test.ts`, committed runtime getter + controlled monitor boundary | Mocks prove orchestration, not server DELETE. |
 | Accepted-turn cancellation with actual core's serialized repeated-stop path | `monitor.test.ts`, installed pinned core manager → actual adapter → actual monitor → controlled SDK dispatcher | Asserts the turn's reply AbortSignal, not a second direct helper call. Pinned internal manager entry is located from installed SDK; no core code is vendored. |
 | Received batch tail and aborted admission survive restart; delivered records are not replayed | `monitor.test.ts`, actual monitor + durable journal adapter with controlled SDK state/client | Existing durable failure/replay/post-delivery-race tests retain distinct retry and completion risks. |
+| Abort-admission/stopped-tail storage failure must reject, not use live fallback or destroy the remote recovery copy | `monitor.test.ts`, cancellation at policy lookup + fault-injected journal enqueue, observes rejection/no delivery/no DELETE and retained-queue diagnostic | Separate from ordinary live fallback and healthy teardown. |
+| Next poll cannot acknowledge pending durable admission | `monitor.test.ts`, blocked durable enqueue and fake-clock pacing, observes actual poll calls/cursor | This proves the plugin's API-call ordering, not Zulip's implementation; official acknowledgment contract linked above. |
 | Startup replay failure cannot bypass DELETE | `monitor.test.ts`, finalization boundary | Distinct from ordinary shutdown. |
 | Removal clears volatile dedupe; replacement preserves it | `monitor.test.ts`, repeat dispatch observation | `clearPrefix` has a production caller, not a test-only seam. |
 | Typing and terminal-hold cleanup | Existing terminal-hold monitor test now asserts typing cleanup | Independent progress/reaction retry/subagent tests remain. |
@@ -97,7 +113,7 @@ checks also reproduced startup replay queue leakage and aborted-fetch retry time
 A real monitor test changes committed DM policy between received messages and proves one
 queue registration and only the policy-eligible dispatch. An isolated pinned-core planner
 check confirmed dynamic root/named/per-stream leaves are no-ops while credentials, streams
-and stream enablement restart Zulip.
+restart Zulip; the broad queue lets override enablement refresh dynamically.
 
 No production test-only lifecycle seams remain. The initial split turn-cancellation signal
 and misleading direct repeated-stop test were removed in favor of core's actual contract.
@@ -107,7 +123,9 @@ and misleading direct repeated-stop test were removed in favor of core's actual 
 Hawk's initial pre-persistence mutation and stale-start findings are resolved. Its next
 review found that core serializes repeated stops, invalidating an assumed second-call
 cancellation route. The implementation now uses immediate core cancellation and durable
-receive replay rather than attempting an uncancellable grace period.
+receive replay rather than attempting an uncancellable grace period. A further review
+identified cancellation-before-admission using the normal live fallback; strict admission,
+monitor error propagation, and retaining the remote recovery queue resolve that failure.
 
 The mandatory `test-value-audit` skill was not advertised to implementer or reviewer.
 This manual contract/proof record is not represented as a skill invocation; the procedural

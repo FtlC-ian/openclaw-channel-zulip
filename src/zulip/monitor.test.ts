@@ -5015,7 +5015,105 @@ describe("monitorZulipProvider", () => {
       { id: 2, type: "message", message: makeChannelMessage(9595041) },
     ] }];
     await expect(runMonitorOnce(controller)).rejects.toThrow("stopped batch storage failure");
+    expect(deleteZulipQueueMock).not.toHaveBeenCalled();
+  });
+
+  it("strictly preserves cancellation-before-admission instead of silently falling back to live delivery", async () => {
+    enableDurableInboundJournal();
+    state.autoAbort = false;
+    const controller = new AbortController();
+    state.streamSubscriptions = [];
+    fetchZulipStreamMock.mockImplementationOnce(async () => {
+      controller.abort();
+      return { stream_id: 7, name: "debbie" };
+    });
+    const { createZulipDurableInboundReceiveJournal } = await import("./durable-receive.js");
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const queue = state.durableQueues.get(state.account.accountId);
+    queue.enqueue.mockRejectedValue(new Error("abort admission storage failure"));
+    state.pollResponses = [{ result: "success", events: [{
+      id: 1, type: "message", message: { ...makeChannelMessage(9595050), stream_id: 7, display_recipient: "" },
+    }] }];
+    const runtime = { log: vi.fn(), error: vi.fn() };
+    await expect(runMonitorOnce(controller, runtime as any)).rejects.toThrow("abort admission storage failure");
+    expect(queue.enqueue).toHaveBeenCalledTimes(1);
+    expect(state.core.channel.inbound.dispatch).not.toHaveBeenCalled();
+    expect(state.sendMessageZulip).not.toHaveBeenCalled();
+    expect(deleteZulipQueueMock).not.toHaveBeenCalled();
+    await expect(journal.pending()).resolves.toEqual([]);
+    expect(runtime.error).toHaveBeenCalledWith(expect.stringContaining("retaining unacknowledged queue queue-1"));
+  });
+
+  it("does not acknowledge a received event while its durable admission is pending", async () => {
+    vi.useFakeTimers();
+    enableDurableInboundJournal();
+    state.autoAbort = false;
+    const controller = new AbortController();
+    const { createZulipDurableInboundReceiveJournal } = await import("./durable-receive.js");
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const queue = state.durableQueues.get(state.account.accountId);
+    const enqueue = queue.enqueue.getMockImplementation();
+    let release!: () => void;
+    const admission = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    queue.enqueue.mockImplementationOnce(async (...args: any[]) => {
+      entered();
+      await admission;
+      return enqueue(...args);
+    });
+    state.pollResponses = [{ result: "success", events: [{ id: 10, type: "message", message: makeChannelMessage(9595060) }] }];
+    const running = runMonitorOnce(controller);
+    try {
+      await started;
+      await vi.advanceTimersByTimeAsync(250);
+      expect(getZulipEventsWithRetryMock).toHaveBeenCalledTimes(1);
+      expect(getZulipEventsWithRetryMock.mock.calls[0][1].lastEventId).toBe(0);
+    } finally {
+      controller.abort();
+      release();
+      await running;
+    }
+    expect(getZulipEventsWithRetryMock).toHaveBeenCalledTimes(1);
+    await expect(journal.pending()).resolves.toHaveLength(1);
     expect(deleteZulipQueueMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("refreshes dotted-name stream override enablement between messages without replacing the broad queue", async () => {
+    state.autoAbort = false;
+    const controller = new AbortController();
+    let committed = { channels: { zulip: {
+      streams: ["debbie"], groupPolicy: "open", dmPolicy: "open", requireMention: false,
+      reactions: { enabled: false }, streamOverrides: {},
+    } } } as any;
+    state.streamSubscriptions.push({ stream_id: 7, name: "outside.group", invite_only: false,
+      is_web_public: false, history_public_to_subscribers: true, subscribers: [999, 123] });
+    const { resolveZulipRuntimeAccount } = await import("./accounts.js");
+    vi.mocked(resolveZulipRuntimeAccount).mockImplementation(async ({ cfg }) => ({
+      ...state.account, streams: (cfg.channels!.zulip as any).streams, config: cfg.channels!.zulip as any,
+    }));
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementationOnce(async () => {
+      committed = { channels: { zulip: { ...committed.channels.zulip,
+        streamOverrides: { "outside.group": { enabled: true } },
+      } } };
+    });
+    getZulipEventsWithRetryMock.mockImplementationOnce(async () => ({ result: "success", events: [
+      { id: 1, type: "message", message: makeChannelMessage(9595070) },
+      { id: 2, type: "message", message: { ...makeChannelMessage(9595071), stream_id: 7, display_recipient: "outside.group" } },
+    ] }));
+    getZulipEventsWithRetryMock.mockImplementationOnce(async () => {
+      controller.abort();
+      return { result: "success", events: [] };
+    });
+    try {
+      const { monitorZulipProvider } = await import("./monitor.js");
+      await monitorZulipProvider({ config: committed, getConfig: () => committed, abortSignal: controller.signal });
+      expect(state.core.channel.inbound.dispatch).toHaveBeenCalledTimes(2);
+      expect(registerZulipQueueMock).toHaveBeenCalledTimes(1);
+    } finally {
+      controller.abort();
+      vi.mocked(resolveZulipRuntimeAccount).mockImplementation(async () => state.account);
+    }
   });
 
 });

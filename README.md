@@ -270,12 +270,13 @@ fields under `channels.zulip` or the relevant account:
 {
   "streams": ["bot-testing"],
   "groupPolicy": "allowlist",
-  "groupAllowFrom": ["12345"]
+  "groupAllowFrom": ["sender@example.com"]
 }
 ```
 
-Replace `bot-testing` with the stream name and `12345` with an allowed sender's
-Zulip user ID. Mention and topic policies still apply. A `streamOverrides` rule
+Replace `bot-testing` with the stream name and `sender@example.com` with an allowed
+sender's Zulip email address (`sender_email`), not their numeric user ID. Mention
+and topic policies still apply. A `streamOverrides` rule
 with `enabled: true` can activate another stream, so remove such overrides if
 you want a strict single-stream scope.
 

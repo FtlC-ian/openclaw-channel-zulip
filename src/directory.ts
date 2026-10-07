@@ -6,7 +6,7 @@ import { normalizeZulipMessagingTarget } from "./normalize.js";
 import { resolveDefaultZulipAccountId, resolveZulipRuntimeAccount, listZulipAccountIds, type ResolvedZulipAccount } from "./zulip/accounts.js";
 import { createZulipClient, fetchZulipMe, fetchZulipSubscriptions, fetchZulipUsers, type ZulipClient } from "./zulip/client.js";
 import { parseZulipTarget, isZulipSessionTarget } from "./zulip/destination.js";
-import { resolveZulipInboundStreamPolicy, isZulipTopicAllowed } from "./zulip/stream-policy.js";
+import { resolveZulipInboundStreamPolicy, isZulipTopicAllowed, normalizeZulipStreamIdSelector, normalizeZulipStreamName } from "./zulip/stream-policy.js";
 
 type Directory = NonNullable<ChannelPlugin["directory"]>;
 type Resolver = NonNullable<ChannelPlugin["resolver"]>;
@@ -16,6 +16,7 @@ type Entry = ChannelDirectoryEntry & { userId?: string };
 type CacheEntry = { expires: number; value: Promise<Entry[]> };
 const cache = new WeakMap<OpenClawConfig, Map<string, CacheEntry>>();
 const CACHE_TTL_MS = 60_000;
+const MAX_CACHE_ENTRIES = 32;
 
 async function context(params: Scope) {
   const accountId = params.accountId?.trim() ? normalizeAccountId(params.accountId) : resolveDefaultZulipAccountId(params.cfg);
@@ -33,9 +34,12 @@ async function cached(params: Scope, identity: string, kind: string, live: boole
   let entries = cache.get(params.cfg);
   if (!entries) cache.set(params.cfg, entries = new Map());
   const key = `${identity}:${kind}`;
+  const now = Date.now();
+  for (const [oldKey, entry] of entries) if (entry.expires <= now) entries.delete(oldKey);
   const existing = entries.get(key);
-  if (!live && existing && existing.expires > Date.now()) return existing.value;
-  for (const [oldKey, entry] of entries) if (entry.expires <= Date.now()) entries.delete(oldKey);
+  if (!live && existing) return existing.value;
+  entries.delete(key);
+  while (entries.size >= MAX_CACHE_ENTRIES) entries.delete(entries.keys().next().value!);
   const entry: CacheEntry = { expires: Date.now() + CACHE_TTL_MS, value: load() };
   entries.set(key, entry);
   try {
@@ -131,9 +135,19 @@ export const zulipResolver: Resolver = {
           if (/^(stream:|#)/i.test(input.trim())) throw new Error("Expected a Zulip user target");
           selector = input.trim().replace(/^(user|dm|zulip):/i, "").replace(/^@/, "");
         }
-        const matches = entries.filter(entry => [entry.id.slice(entry.id.indexOf(":") + 1), entry.name, entry.handle,
-          params.kind === "user" ? entry.userId : undefined]
-          .some(value => value !== undefined && normalize(value) === normalize(selector)));
+        const selectorId = normalizeZulipStreamIdSelector(selector);
+        const field = selectorId !== undefined ? "id" : params.kind === "user" && selector.includes("@") ? "email" : "name";
+        const matches = entries.filter(entry => {
+          if (field === "id") {
+            const id = params.kind === "user" ? entry.userId : entry.id.slice(7);
+            return id !== undefined && normalizeZulipStreamIdSelector(id) === selectorId;
+          }
+          if (field === "email") return entry.handle !== undefined && normalize(entry.handle) === normalize(selector);
+          if (!entry.name) return false;
+          return params.kind === "group"
+            ? normalizeZulipStreamName(entry.name) === normalizeZulipStreamName(selector)
+            : normalize(entry.name) === normalize(selector);
+        });
         if (matches.length !== 1) return { input, resolved: false, note: matches.length > 1
           ? `Ambiguous Zulip ${params.kind} "${selector}"; use an exact ${params.kind === "user" ? "email or user ID" : "stream ID"}`
           : `Zulip ${params.kind} not found or not permitted: ${selector}` };

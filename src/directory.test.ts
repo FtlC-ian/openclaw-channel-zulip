@@ -157,6 +157,80 @@ describe("Zulip directory and resolver", () => {
     expect((await resolve(cfg, "group", ["stream:4"]))[0].id).toBe("stream:4");
   });
 
+  it("matches user emails and IDs only against their intended fields", async () => {
+    fetchMock.mockResolvedValueOnce(Response.json({ result: "success", members: [
+      users[0], { ...users[1], full_name: "alice@example.test" },
+      { user_id: 11, email: "id-name@example.test", full_name: "7" },
+      { user_id: 12, email: "missing-name@example.test", full_name: "victim@example.test" },
+      { user_id: 13, email: "missing-id@example.test", full_name: "99" },
+    ] }));
+    const results = await resolve(config(), "user", ["user:alice@example.test", "user:7", "user:007", "user:victim@example.test", "user:99"]);
+    expect(results.map(result => result.id)).toEqual(["user:alice@example.test", "user:alice@example.test", "user:alice@example.test", undefined, undefined]);
+    expect(results.map(result => result.resolved)).toEqual([true, true, true, false, false]);
+  });
+
+  it("matches zero-normalized stream IDs only against IDs, never numeric names", async () => {
+    fetchMock.mockResolvedValueOnce(Response.json({ result: "success", subscriptions: [
+      subscriptions[0], { stream_id: 11, name: "4" }, { stream_id: 12, name: "004" }, { stream_id: 13, name: "099" },
+    ] }));
+    const results = await resolve(config(), "group", ["stream:4", "stream:004", "#004:Planning", "stream:099"]);
+    expect(results.map(result => result.id)).toEqual(["stream:4", "stream:4", "stream:4:Planning", undefined]);
+    expect(results.map(result => result.resolved)).toEqual([true, true, true, false]);
+  });
+
+  it("refuses duplicate real emails and IDs within their own fields", async () => {
+    fetchMock.mockResolvedValueOnce(Response.json({ result: "success", members: [users[0], { ...users[1], email: users[0].email }, { ...users[1], user_id: 7 }] }));
+    const cfg = config();
+    expect((await resolve(cfg, "user", ["user:alice@example.test", "user:007"])).every(result => !result.resolved && result.note?.includes("Ambiguous"))).toBe(true);
+    fetchMock.mockResolvedValueOnce(Response.json({ result: "success", subscriptions: [subscriptions[0], { ...subscriptions[1], stream_id: 4 }] }));
+    expect((await resolve(cfg, "group", ["stream:004"]))[0]).toMatchObject({ resolved: false, note: expect.stringContaining("Ambiguous") });
+  });
+
+  it("includes active bots with sendable emails under the same DM policy as humans", async () => {
+    fetchMock.mockResolvedValueOnce(Response.json({ result: "success", members: [
+      users[0], { user_id: 20, email: "helper@example.test", full_name: "Helper", is_bot: true, is_active: true },
+      { user_id: 21, email: "retired@example.test", full_name: "Retired", is_bot: true, is_active: false },
+      { user_id: 22, full_name: "Addressless bot", is_bot: true, is_active: true },
+    ] }));
+    const cfg = config();
+    expect((await peers(cfg)).map(entry => entry.id)).toEqual(["user:alice@example.test", "user:helper@example.test"]);
+    expect((await resolve(cfg, "user", ["Helper", "user:20", "helper@example.test"])).map(result => result.id)).toEqual(Array(3).fill("user:helper@example.test"));
+    Object.assign(cfg.channels!.zulip!, { dmPolicy: "allowlist", allowFrom: [7] });
+    expect((await resolve(cfg, "user", ["helper@example.test"]))[0].resolved).toBe(false);
+  });
+
+  it("sweeps expired credential identities even when the current identity is a cache hit", async () => {
+    vi.useFakeTimers();
+    const cfg = config();
+    await peers(cfg);
+    vi.advanceTimersByTime(30_000);
+    Object.assign(cfg.channels!.zulip!, { apiKey: "rotated" });
+    await peers(cfg);
+    vi.advanceTimersByTime(30_000);
+    const deletedKeys: unknown[] = [];
+    const originalDelete = Map.prototype.delete;
+    const spy = vi.spyOn(Map.prototype, "delete").mockImplementation(function (this: Map<unknown, unknown>, key: unknown) {
+      deletedKeys.push(key);
+      return originalDelete.call(this, key);
+    });
+    try { await peers(cfg); } finally { spy.mockRestore(); }
+    expect(deletedKeys.filter(key => typeof key === "string" && /^[a-f0-9]{64}:users$/.test(key))).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("bounds cached credential identities per config during rapid rotation", async () => {
+    const cfg = config();
+    for (let index = 0; index < 33; index++) {
+      Object.assign(cfg.channels!.zulip!, { apiKey: `rotation-${index}` });
+      await peers(cfg);
+    }
+    await peers(cfg);
+    expect(fetchMock).toHaveBeenCalledTimes(33);
+    Object.assign(cfg.channels!.zulip!, { apiKey: "rotation-0" });
+    await peers(cfg);
+    expect(fetchMock).toHaveBeenCalledTimes(34);
+  });
+
   it("returns clear missing/invalid results without leaking hidden names", async () => {
     const cfg = config({ streams: ["General"] });
     const results = await resolve(cfg, "group", ["Missing", "Secret", "user:alice@example.test", "stream:", "agent:main:zulip:group:4"]);

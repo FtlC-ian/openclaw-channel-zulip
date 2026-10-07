@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Features
+- **Account-scoped directory and resolver** (#93): List active, sendable DM peers (including bots), bot identity, and subscribed streams under current account policies. Resolve names, emails, and zero-normalized IDs only within their intended fields, reject ambiguity, preserve permitted topics, and bound credential-scoped caches with expiry cleanup on cache hits.
+
 ### Maintenance
 - **Remove protected live smoke**: Delete the manual live-smoke workflow and its `scripts/live-smoke` harness and offline harness tests. Releases are gated on CI (build, full test suite, and packed-artifact install on Node 24 and 26) plus manual testing on a real gateway.
 

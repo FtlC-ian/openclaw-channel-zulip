@@ -611,6 +611,17 @@ describe("monitorZulipProvider", () => {
     typingCallbacksMock.mockClear();
   });
 
+  it("routes reaction events with live account identity without dispatching an agent turn", async () => {
+    const { zulipApprovalReactions } = await import("./approval-reactions.js");
+    const react = vi.spyOn(zulipApprovalReactions, "react").mockResolvedValue(undefined);
+    try {
+      const event = { id: 1, type: "reaction", op: "add", message_id: 10, user_id: 2, emoji_name: "check", reaction_type: "unicode_emoji" };
+      state.pollResponses = [{ result: "success", events: [event] }];
+      await runMonitorOnce();
+      expect(react).toHaveBeenCalledWith(expect.objectContaining({ accountId: state.account.accountId, botUserId: String(state.botUser.id), event, client: state.client }));
+      expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+    } finally { react.mockRestore(); }
+  });
   it("dispatches an accepted inbound message through the channel-turn lifecycle", async () => {
     state.pollResponses = [
       {
@@ -3210,7 +3221,7 @@ describe("monitorZulipProvider", () => {
 
     expect(registerZulipQueueMock).toHaveBeenCalledTimes(2);
     for (const call of registerZulipQueueMock.mock.calls) {
-      expect(call[1]).toEqual({ eventTypes: ["message"], streams: ["*"] });
+      expect(call[1]).toEqual({ eventTypes: ["message", "reaction"], streams: ["*"] });
     }
   });
 
@@ -3226,7 +3237,7 @@ describe("monitorZulipProvider", () => {
 
     expect(registerZulipQueueMock).toHaveBeenCalledWith(
       state.client,
-      { eventTypes: ["message"], streams: ["general"] },
+      { eventTypes: ["message", "reaction"], streams: ["general"] },
     );
   });
 

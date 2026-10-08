@@ -205,6 +205,7 @@ const ZulipAccountSchemaBase = z
     groupPolicy: GroupPolicySchema.optional(),
     mediaMaxMb: z.number().int().positive().optional(),
     markHandledRead: z.boolean().optional(),
+    approvalReactions: z.object({ approve: ZulipReactionEmojiSchema.min(1).optional(), deny: ZulipReactionEmojiSchema.min(1).optional() }).strict().optional(),
     reactions: z
       .object({
         enabled: z.boolean().optional(),

@@ -27,6 +27,14 @@ const loadPackagedChannelSchema = (): JsonSchema => {
 };
 
 describe("Zulip lifecycle reaction config", () => {
+  it("supports account-scoped approval emoji in runtime and packaged schemas", () => {
+    expect(zulipChannelConfigSchema.runtime.safeParse({ approvalReactions: { approve: "✅", deny: "cross_mark" }, accounts: { work: { approvalReactions: { approve: "eyes", deny: "❌" } } } }).success).toBe(true);
+    for (const approve of ["", "🦄"]) expect(zulipChannelConfigSchema.runtime.safeParse({ approvalReactions: { approve } }).success).toBe(false);
+    expect(zulipChannelConfigSchema.runtime.safeParse({ approvalReactions: { allowAlways: "eyes" } }).success).toBe(false);
+    const schema = loadPackagedChannelSchema();
+    expect(schema.properties?.approvalReactions).toEqual(zulipChannelConfigSchema.schema.properties.approvalReactions);
+    expect(schema.$defs?.zulipAccount.properties?.approvalReactions).toEqual(schema.properties?.approvalReactions);
+  });
   it("accepts explicit routing diagnostics topics consistently across account and packaged schemas", () => {
     const config = { routingDiagnosticsTarget: "stream:private-ops:openclaw-diagnostics" };
     expect(zulipChannelConfigSchema.runtime.safeParse({ ...config, accounts: { work: config } }).success).toBe(true);

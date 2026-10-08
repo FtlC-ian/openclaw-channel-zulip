@@ -1,3 +1,6 @@
+import { readApprovalBinding } from "./approval-sdk.js";
+import { resolveZulipApprovers } from "../approval-auth.js";
+import { zulipApprovalReactions } from "./approval-reactions.js";
 import fs from "node:fs";
 import fsPromises from "node:fs/promises";
 import path from "node:path";
@@ -362,6 +365,15 @@ export async function sendMessageZulip(
   }
 
   message = prependZulipRoutingNotice(message, fallback);
+  const approvalBinding = readApprovalBinding({ payload: { presentation: opts.presentation, channelData: opts.channelData } });
+  if (approvalBinding && resolveZulipApprovers(opts.cfg, account.accountId).length > 0) {
+    const emojis = account.config.approvalReactions;
+    const controls = [
+      approvalBinding.allowedDecisions.includes("allow-once") ? `${emojis?.approve ?? "✅"} = Allow once` : undefined,
+      approvalBinding.allowedDecisions.includes("deny") ? `${emojis?.deny ?? "❌"} = Deny` : undefined,
+    ].filter(Boolean);
+    message += `\n\nAuthorized approvers can also react: ${controls.join("; ")}.`;
+  }
 
   const preflightTargetSummary = (() => {
     if (target.kind === "user") {
@@ -474,6 +486,8 @@ export async function sendMessageZulip(
       });
     }
   }
+
+  await zulipApprovalReactions.register({ cfg: opts.cfg, accountId: account.accountId, messageId, client, sourceText: message, payload: { presentation: opts.presentation, channelData: opts.channelData } });
 
   core.channel.activity.record({
     channel: "zulip",

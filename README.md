@@ -560,3 +560,21 @@ The plugin id is `zulip` (defined in `openclaw.plugin.json`). Use this id in `pl
 ## License
 
 MIT © FtlC-ian
+
+## Approval reactions
+
+Exec and plugin approval messages retain their zform buttons and also offer
+✅ **Allow once** and ❌ **Deny** reactions. Only explicit account `allowFrom`
+email identities may use reactions; an empty list does **not** make reaction
+approvals public. Bot reactions, removal events and unrelated messages are ignored.
+
+Set `channels.zulip.approvalReactions.approve` / `.deny` (or the same keys under
+`accounts.<id>`) to supported Unicode or named Zulip emoji. Empty values are invalid;
+colliding emoji disable the binding rather than create an ambiguous approval.
+There is deliberately no reaction for **Allow always**. Typed `/approve` remains
+available, and zform buttons use the same canonical first-wins resolver.
+
+The web client implements zform; desktop embeds the web client. Flutter currently
+supports poll submessages but explicitly leaves zform unsupported. See
+[approval implementation and verification notes](docs/APPROVAL_REACTIONS.md)
+for source references, lifecycle details and limitations.

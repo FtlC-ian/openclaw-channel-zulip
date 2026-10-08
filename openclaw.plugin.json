@@ -125,6 +125,20 @@
               "groupPolicy": { "type": "string", "enum": ["open", "disabled", "allowlist"] },
               "mediaMaxMb": { "type": "integer", "minimum": 1 },
               "markHandledRead": { "type": "boolean" },
+              "approvalReactions": {
+                "type": "object",
+                "properties": {
+                  "approve": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "deny": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "additionalProperties": false
+              },
               "reactions": {
                 "type": "object",
                 "additionalProperties": false,
@@ -355,6 +369,20 @@
           "groupPolicy": { "type": "string", "enum": ["open", "disabled", "allowlist"] },
           "mediaMaxMb": { "type": "integer", "minimum": 1 },
           "markHandledRead": { "type": "boolean" },
+          "approvalReactions": {
+            "type": "object",
+            "properties": {
+              "approve": {
+                "type": "string",
+                "minLength": 1
+              },
+              "deny": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "additionalProperties": false
+          },
           "reactions": {
             "type": "object",
             "additionalProperties": false,

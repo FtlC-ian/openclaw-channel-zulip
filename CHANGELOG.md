@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Features
+- **Reaction approvals** (#92): Keep zform buttons and seed ✅ (allow once) / ❌ (deny) on the same approval message for mobile and web. Require explicit account `allowFrom` approvers, bind canonical approval ownership/expiry to the exact sent message, settle through the shared Gateway resolver, and edit terminal outcomes. Configure `approvalReactions.approve` / `approvalReactions.deny` per account.
+
 ## 2026.10.8
 
 ### Features

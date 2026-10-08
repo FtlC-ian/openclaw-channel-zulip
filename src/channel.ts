@@ -257,7 +257,7 @@ export const zulipPlugin = {
     noopPrefixes: [
       "name", "dmPolicy", "allowFrom", "groupPolicy", "groupAllowFrom",
       "chatmode", "oncharPrefixes", "requireMention", "topics", "streamTopics",
-      "mediaMaxMb", "markHandledRead", "reactions", "thinkingPlaceholder",
+      "mediaMaxMb", "markHandledRead", "approvalReactions", "reactions", "thinkingPlaceholder",
       "streaming", "textChunkLimit", "chunkMode", "blockStreaming",
       "blockStreamingCoalesce", "responsePrefix", "agentReactionGuidance",
       "defaultTopic", "routingDiagnosticsTarget", "enableAdminActions",

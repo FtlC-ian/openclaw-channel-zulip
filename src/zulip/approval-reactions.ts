@@ -9,13 +9,14 @@ import { resolveZulipReactionSpec } from "./status-reactions.js";
 type Binding = ApprovalBindingMetadata & {
   accountId: string; messageId: string; client: ZulipClient; sourceText: string;
   widgetMessageId?: string;
+  resolvingActor?: { id: string; name: string };
   seeding?: Promise<PromiseSettledResult<void>[]>;
   expiresAtMs: number; emojis: Map<string, ApprovalDecision>; resolving: boolean;
 };
 type Terminal = { outcome: string; actor?: string; elsewhere?: boolean };
 
 function escapeStatusValue(value: string): string {
-  return value.replace(/[\r\n\u0000-\u001f\u007f]/gu, " ").replace(/[\\`*_\[\]<>@~]/gu, "\\$&");
+  return value.replace(/[\r\n\u0000-\u001f\u007f]/gu, " ").replace(/@/gu, "@\u200b").replace(/[\\`*_\[\]<>~]/gu, "\\$&");
 }
 
 function renderTerminal(entry: Binding, terminal: Terminal): string {
@@ -29,9 +30,11 @@ function renderTerminal(entry: Binding, terminal: Terminal): string {
     : outcome === "deny" ? "❌ Denied" : "Resolved";
   const actor = terminal.actor && ["allow-once", "allow-always", "deny"].includes(outcome) ? ` by ${escapeStatusValue(terminal.actor)}` : "";
   // Retain only the command already displayed, never Gateway result metadata.
-  const command = entry.sourceText.match(/^(?:\*\*)?(?:Pending command|Command):(?:\*\*)?[ \t]*\n(?:[ \t]*\n)*(`{3,}|~{3,})[^\n]*\n([\s\S]*?)\n\1[ \t]*(?:\n|$)/imu)?.[2]
+  const displayedCommand = entry.sourceText.match(/^(?:\*\*)?(?:Pending command|Command):(?:\*\*)?[ \t]*\n(?:[ \t]*\n)*(`{3,}|~{3,})[^\n]*\n([\s\S]*?)\n\1[ \t]*(?:\n|$)/imu)?.[2]
     ?? entry.sourceText.match(/^(?:\*\*)?Command:(?:\*\*)?[ \t]*(\S[^\n]*)$/imu)?.[1];
-  return `${status}${actor}\n\nID: ${escapeStatusValue(entry.approvalId)}${command ? `\nCommand:\n\`\`\`\n${command.replace(/```/gu, "`\u200b`\u200b`")}\n\`\`\`` : ""}`;
+  const command = displayedCommand?.replace(/^`(?!`)([\s\S]*?)(?<!`)`$/u, "$1");
+  const fence = "`".repeat(Math.max(3, ...[...(command ?? "").matchAll(/`+/gu)].map(([run]) => run.length + 1)));
+  return `${status}${actor}\n\nID: ${escapeStatusValue(entry.approvalId)}${command ? `\nCommand:\n${fence}\n${command}\n${fence}` : ""}`;
 }
 const TARGET_TTL_MS = 24 * 60 * 60 * 1000;
 const loadResolver = createLazyRuntimeSurface(
@@ -142,7 +145,7 @@ export class ZulipApprovalReactions {
     if (params.abortSignal?.aborted || !user.email || user.is_bot || user.is_active === false) return;
     await this.decide({ ...params, cfg: params.getConfig?.() ?? params.cfg, binding, senderId: user.email, senderName: user.full_name ?? undefined, decision });
   }
-  async command(params: { abortSignal?: AbortSignal; getConfig?: () => OpenClawConfig; cfg: OpenClawConfig; accountId: string; senderId: string; text: string; botUserId?: string; botEmail?: string }): Promise<boolean> {
+  async command(params: { abortSignal?: AbortSignal; getConfig?: () => OpenClawConfig; cfg: OpenClawConfig; accountId: string; senderId: string; senderName?: string; text: string; botUserId?: string; botEmail?: string }): Promise<boolean> {
     this.prune();
     const match = stripLeadingZulipApprovalBotMention(params.text, { userId: params.botUserId, email: params.botEmail }).match(/^\/approve\s+(\S+)\s+(allow-once|allow-always|deny)$/u);
     if (!match) return false;
@@ -161,7 +164,9 @@ export class ZulipApprovalReactions {
     if (outcome !== "expired" && outcome !== "cancelled" && outcome !== "allow-once" && outcome !== "allow-always" && outcome !== "deny") return;
     const key = JSON.stringify([accountId, kind, payload.id]);
     if (this.terminals.has(key)) return;
-    const terminal: Terminal = { outcome, actor: typeof payload.resolvedBy === "string" ? payload.resolvedBy.trim() || undefined : undefined, elsewhere: true };
+    const actorId = typeof payload.resolvedBy === "string" ? payload.resolvedBy.trim() || undefined : undefined;
+    const knownActor = [...this.bindings.values()].find((entry) => entry.accountId === accountId && entry.approvalId === payload.id && entry.approvalKind === kind && entry.resolvingActor?.id === actorId)?.resolvingActor;
+    const terminal: Terminal = { outcome, actor: knownActor?.name || actorId, elsewhere: true };
     this.terminals.set(key, { ...terminal, expiresAtMs: Date.now() + TARGET_TTL_MS });
     while (this.terminals.size > this.maxEntries) this.terminals.delete(this.terminals.keys().next().value!);
     if (![...this.bindings.values()].some((entry) => entry.accountId === accountId && entry.approvalId === payload.id && entry.approvalKind === kind)) return;
@@ -197,7 +202,10 @@ export class ZulipApprovalReactions {
     if (binding.resolving || !binding.allowedDecisions.includes(params.decision) || !this.canSettle(params)) return;
     const siblings = [...this.bindings.values()].filter((entry) => entry.accountId === binding.accountId && entry.approvalId === binding.approvalId);
     if (siblings.some((entry) => entry.resolving)) return;
-    for (const entry of siblings) entry.resolving = true;
+    for (const entry of siblings) {
+      entry.resolving = true;
+      entry.resolvingActor = { id: params.senderId, name: params.senderName?.trim() || params.senderId };
+    }
     try {
       let terminal: Terminal = { outcome: "resolved" };
       let retired: Binding[] = [];
@@ -230,7 +238,10 @@ export class ZulipApprovalReactions {
         await this.finish(retired, terminal);
       }
     } finally {
-      for (const entry of siblings) entry.resolving = false;
+      for (const entry of siblings) {
+        entry.resolving = false;
+        entry.resolvingActor = undefined;
+      }
     }
   }
 }

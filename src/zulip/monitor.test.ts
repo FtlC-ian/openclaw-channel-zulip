@@ -665,6 +665,7 @@ describe("monitorZulipProvider", () => {
       await monitorZulipProvider({ config: initial, getConfig: () => committed, abortSignal: controller.signal });
       expect(readPairingAllowFromMock).toHaveBeenCalledTimes(1);
       expect(approvalGatewayMocks.resolve).toHaveBeenCalledTimes(change === "unchanged" ? 1 : 0);
+      if (change === "unchanged") expect(command).toHaveBeenCalledWith(expect.objectContaining({ senderId: email, senderName: "Ian F" }));
       expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
     } finally {
       controller.abort(); command.mockRestore(); approvalModule.zulipApprovalReactions.clearAccount("default");

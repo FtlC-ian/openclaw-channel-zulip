@@ -1063,6 +1063,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       abortSignal: opts.abortSignal,
       accountId: account.accountId,
       senderId: senderIdentity,
+      senderName: message.sender_full_name?.trim() || undefined,
       text: approvalCommandText,
       botUserId: String(botUserId),
       botEmail,

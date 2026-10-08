@@ -78,8 +78,8 @@ describe("approval reaction control boundary", () => {
     else if (surface === "manual" || surface === "zform") await command();
     else await store.observeTerminal("default", { event: "exec.approval.resolved", payload: { id: "req-1", decision: "deny", ...(["expired", "cancelled"].includes(surface) ? { terminalStatus: surface, decision: undefined } : {}) } });
     const edit = new URLSearchParams(request.mock.calls.find(([, init]) => init?.method === "PATCH")![1].body).get("content");
-    const header = surface === "reaction" ? "✅ Approved (allow once) by ian\\@test"
-      : surface === "manual" || surface === "zform" ? "❌ Denied by ian\\@test"
+    const header = surface === "reaction" ? "✅ Approved (allow once) by ian@\u200btest"
+      : surface === "manual" || surface === "zform" ? "❌ Denied by ian@\u200btest"
       : surface === "expired" ? "⌛ Expired" : surface === "cancelled" ? "🚫 Cancelled" : "Resolved elsewhere: deny";
     expect(edit).toBe(`${header}\n\nID: req-1`);
     expect(request).toHaveBeenCalledWith("/messages/11", expect.objectContaining({ method: "DELETE" }));
@@ -233,7 +233,7 @@ describe("approval reaction control boundary", () => {
 
   it.each(["sdk", "live-inline"])("retains only the already displayed ID and command from %s prompts", async (format) => {
     const pending = buildTypedExecApprovalPendingReplyPayload({ approvalId: "req-1", approvalSlug: "req-1", command: "printf 'hello'", host: "gateway", cwd: "/private/path", agentId: "private-agent", expiresAtMs: Date.now() + 60000, allowedDecisions: ["allow-once", "deny"] });
-    const sourceText = format === "sdk" ? pending.text! : "🔒 Exec approval required\nID: req-1\nCommand: printf 'hello'\nCWD: /private/path\nEnv: SECRET=hidden\nHost: gateway\nAgent: private-agent\nSecurity: allowlist\nAsk: always\nExpiry: 60s\nMode: foreground\nBackground note: wait\nReply with: /approve req-1 allow-once\nReact ✅ to approve";
+    const sourceText = format === "sdk" ? pending.text! : "🔒 Exec approval required\nID: req-1\nCommand: `printf 'hello'`\nCWD: /private/path\nEnv: SECRET=hidden\nHost: gateway\nAgent: private-agent\nSecurity: allowlist\nAsk: always\nExpiry: 60s\nMode: foreground\nBackground note: wait\nReply with: /approve req-1 allow-once\nReact ✅ to approve";
     await store.register({ cfg, accountId: "default", messageId: "10", client, sourceText: `${sourceText}\nReact ✅ to approve`, payload: pending });
     // The result contains additional data that must not enter the edited prompt.
     mocks.resolve.mockResolvedValue({ applied: true, approval: { status: "allowed", decision: "allow-once", presentation: { commandText: "SECRET=extra-data" }, resolver: { kind: "device", id: "private-device" } } });
@@ -241,19 +241,62 @@ describe("approval reaction control boundary", () => {
     const edit = new URLSearchParams(request.mock.calls.find(([, init]) => init?.method === "PATCH")![1].body).get("content");
     expect(edit).toBe("✅ Approved (allow once) by Ian F\n\nID: req-1\nCommand:\n```\nprintf 'hello'\n```");
   });
-  it("escapes observed actor and ID, neutralizes command fences, and caches the winner before delivery", async () => {
+  it.each(["reaction", "command", "observer-race"])("renders the live denial with the known display name via %s", async (surface) => {
+    const id = "3982e4af-9ed0-41a4-b044-71509476981b";
+    const email = "user8@zlp.pubnerd.app";
+    const liveCfg = { channels: { zulip: { ...cfg.channels!.zulip, allowFrom: [email] } } } as OpenClawConfig;
+    await store.register({ cfg: liveCfg, accountId: "default", messageId: "10", client, sourceText: "Command: `printf 'zulip-92-desktop-must-not-run\\n'`", payload: payload(id) });
+    request.mockImplementation(async (path) => path.startsWith("/users/") ? { result: "success", user: { email, full_name: "Ian F" } } : { result: "success" });
+    if (surface === "observer-race") mocks.resolve.mockImplementation(async () => {
+      await store.observeTerminal("default", { event: "exec.approval.resolved", payload: { id, decision: "deny", resolvedBy: email } });
+      return { applied: true, approval: { status: "denied", decision: "deny" } };
+    });
+    if (surface === "reaction") await react({ emoji_name: "cross_mark" }, liveCfg);
+    else await store.command({ cfg: liveCfg, accountId: "default", senderId: email, senderName: "Ian F", text: `/approve ${id} deny` });
+    const edit = new URLSearchParams(request.mock.calls.find(([, init]) => init?.method === "PATCH")![1].body).get("content");
+    expect(edit).toBe(`❌ Denied by Ian F\n\nID: ${id}\nCommand:\n\`\`\`\nprintf 'zulip-92-desktop-must-not-run\\n'\n\`\`\``);
+  });
+  it.each([
+    ["`echo ``` @**all**`", "echo ``` @**all**", "````"],
+    ["``echo``", "``echo``", "```"],
+    ["echo `date`", "echo `date`", "```"],
+    ["` echo `x` `", " echo `x` ", "```"],
+  ])("preserves command bytes other than a single inline wrapper: %s", async (source, expected, fence) => {
+    await store.register({ cfg, accountId: "default", messageId: "10", client, sourceText: `Command: ${source}`, payload: payload() });
+    await react();
+    const edit = new URLSearchParams(request.mock.calls.find(([, init]) => init?.method === "PATCH")![1].body).get("content");
+    expect(edit).toBe(`✅ Approved (allow once) by Ian F\n\nID: req-1\nCommand:\n${fence}\n${expected}\n${fence}`);
+  });
+  it("escapes user-controlled command sender names without changing authorization identity", async () => {
+    await register();
+    await store.command({ cfg, accountId: "default", senderId: "ian@test", senderName: "Ian **F**\n@**all** [link](url) `code` \\slash", text: "/approve req-1 deny" });
+    const edit = new URLSearchParams(request.mock.calls.find(([, init]) => init?.method === "PATCH")![1].body).get("content");
+    expect(edit).toBe("❌ Denied by Ian \\*\\*F\\*\\* @\u200b\\*\\*all\\*\\* \\[link\\](url) \\`code\\` \\\\slash\n\nID: req-1");
+    expect(mocks.resolve).toHaveBeenCalledWith(expect.objectContaining({ senderId: "ian@test" }));
+  });
+  it("does not attribute a different observed winner to the pending command sender", async () => {
+    await register();
+    mocks.resolve.mockImplementation(async () => {
+      await store.observeTerminal("default", { event: "exec.approval.resolved", payload: { id: "req-1", decision: "deny", resolvedBy: "other@test" } });
+      return { applied: false, approval: { status: "denied", decision: "deny" } };
+    });
+    await store.command({ cfg, accountId: "default", senderId: "ian@test", senderName: "Ian F", text: "/approve req-1 deny" });
+    const edit = new URLSearchParams(request.mock.calls.find(([, init]) => init?.method === "PATCH")![1].body).get("content");
+    expect(edit).toBe("❌ Denied by other@\u200btest\n\nID: req-1");
+  });
+  it("escapes observed actor and ID, preserves command text with longer fences, and caches the winner before delivery", async () => {
     const id = "req-*_[id]";
     await store.observeTerminal("default", { event: "exec.approval.resolved", payload: { id, decision: "allow-always", resolvedBy: "Ian **F**\n@**all** [link](url)", request: { env: "hidden" } } });
     await store.register({ cfg, accountId: "default", messageId: "10", client, sourceText: "Command:\n````sh\necho ``` @**all**\n````\nEnv: hidden", payload: payload(id) });
     const edit = new URLSearchParams(request.mock.calls.find(([, init]) => init?.method === "PATCH")![1].body).get("content");
-    expect(edit).toBe("✅ Approved (allow always) by Ian \\*\\*F\\*\\* \\@\\*\\*all\\*\\* \\[link\\](url)\n\nID: req-\\*\\_\\[id\\]\nCommand:\n```\necho `\u200b`\u200b` @**all**\n```");
+    expect(edit).toBe("✅ Approved (allow always) by Ian \\*\\*F\\*\\* @\u200b\\*\\*all\\*\\* \\[link\\](url)\n\nID: req-\\*\\_\\[id\\]\nCommand:\n````\necho ``` @**all**\n````");
   });
   it.each(["channel", "device"])("attributes an external %s winner without crediting the losing reactor or leaking device IDs", async (kind) => {
     await register();
     mocks.resolve.mockResolvedValue({ applied: false, approval: { status: "denied", decision: "deny", resolver: { kind, id: "winner@test" } } });
     await react();
     const edit = new URLSearchParams(request.mock.calls.find(([, init]) => init?.method === "PATCH")![1].body).get("content");
-    expect(edit).toBe(`${kind === "channel" ? "❌ Denied by winner\\@test" : "Resolved elsewhere: deny"}\n\nID: req-1`);
+    expect(edit).toBe(`${kind === "channel" ? "❌ Denied by winner@\u200btest" : "Resolved elsewhere: deny"}\n\nID: req-1`);
   });
   it("locks sibling deliveries of the same approval", async () => {
     await register(); await register("req-1", "11"); await Promise.all([react(), react({ message_id: 11 })]);

@@ -11,8 +11,12 @@ export type ApprovalBindingMetadata = {
 };
 // 2026.9.6 ships this public runtime subpath without its declaration file.
 // @ts-expect-error Upstream package explicitly excludes this .d.ts.
-import { readApprovalReactionPresentationBinding, readApprovalReactionDeliveryMetadata, settleApprovalReaction as settle, createApprovalReactionTargetStore, listApprovalReactionBindings } from "openclaw/plugin-sdk/approval-reaction-runtime";
+import { readApprovalReactionPresentationBinding, readApprovalReactionDeliveryMetadata, readApprovalReactionDeliveredBinding, buildApprovalReactionDeliveredBindingMarker, settleApprovalReaction as settle, createApprovalReactionTargetStore, listApprovalReactionBindings } from "openclaw/plugin-sdk/approval-reaction-runtime";
 export { createApprovalReactionTargetStore, listApprovalReactionBindings };
+const DELIVERED_BINDING_KEY = "zulipApprovalBinding";
+export function markRenderedApproval(payload: ReplyPayload, binding: ApprovalBindingMetadata): ReplyPayload {
+  return { ...payload, channelData: { ...payload.channelData, [DELIVERED_BINDING_KEY]: buildApprovalReactionDeliveredBindingMarker(binding) } };
+}
 type Payload = Pick<ReplyPayload, "channelData" | "presentation">;
 const readTyped = readApprovalReactionPresentationBinding as (params: { payload: Payload }) => ApprovalBindingMetadata | null;
 const readMetadata = readApprovalReactionDeliveryMetadata as (payload: Payload) => ApprovalBindingMetadata | null;
@@ -25,6 +29,9 @@ export function readApprovalBinding({ payload }: { payload: Payload }): Approval
   if (replyMetadata && (replyMetadata.approvalId !== metadata.approvalId || replyMetadata.approvalKind !== metadata.approvalKind)) return null;
   const typed = readTyped({ payload });
   if (typed) return typed;
+  if (!payload.presentation) {
+    return readApprovalReactionDeliveredBinding({ payload, channelDataKey: DELIVERED_BINDING_KEY }) as ApprovalBindingMetadata | null;
+  }
   const actions = payload.presentation?.blocks.flatMap((block) => block.type === "buttons" ? block.buttons.map((button) => button.action) : []) ?? [];
   const commands = actions.map((action) => action?.type === "command" ? resolveMessagePresentationActionValue(action) : undefined);
   if (commands.length !== metadata.allowedDecisions.length || new Set(commands).size !== commands.length) return null;

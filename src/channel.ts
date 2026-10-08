@@ -28,6 +28,7 @@ import {
   type ResolvedZulipAccount,
 } from "./zulip/accounts.js";
 import { zulipApprovalAuth } from "./approval-auth.js";
+import { renderZulipApprovalPresentation } from "./zulip/approval-presentation.js";
 import { normalizeZulipBaseUrl } from "./zulip/client.js";
 import { sendMessageZulip, sendPollZulip, type ZulipSendResult } from "./zulip/send.js";
 import type { ZulipRoutingFallback } from "./zulip/routing-fallback.js";
@@ -79,6 +80,8 @@ function zulipSendReceipt(
 
 export const zulipOutboundAdapter: ChannelOutboundAdapter = {
   deliveryMode: "direct",
+  presentationCapabilities: { buttons: true, selects: false },
+  renderPresentation: renderZulipApprovalPresentation,
   chunker: (text, limit) => getZulipRuntime().channel.text.chunkMarkdownText(text, limit),
   chunkerMode: "markdown",
   textChunkLimit: 4000,

@@ -568,6 +568,19 @@ Exec and plugin approval messages retain their zform buttons and also offer
 email identities may use reactions; an empty list does **not** make reaction
 approvals public. Bot reactions, removal events and unrelated messages are ignored.
 
+For the claude-cli runtime (which blocks inside Bash), enable core forwarding:
+
+```json
+{ "approvals": { "exec": { "enabled": true, "mode": "session" } } }
+```
+
+Merge this into existing config; keep explicit Zulip `allowFrom` approver emails.
+No Zulip native-client config is required. Core forwarding and structured same-chat
+prompts use the public outbound presentation renderer to retain zforms and bind
+reactions; plain assistant `/approve` text is never inferred as an approval.
+`targets`/`both` forwarding modes are also supported; no separate Zulip native
+prompt delivery or forwarding suppression is installed.
+
 Set `channels.zulip.approvalReactions.approve` / `.deny` (or the same keys under
 `accounts.<id>`) to supported Unicode or named Zulip emoji. Empty values are invalid;
 colliding emoji disable the binding rather than create an ambiguous approval.

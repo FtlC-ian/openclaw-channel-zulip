@@ -17,6 +17,88 @@
   after lazy resolver loading, immediately before the Gateway call. Account teardown
   clears only that account, including in-flight bindings. No persistent state.
 
+## Prompt routing and the live delivery gap
+
+The live failure was **not missing approval metadata at the producer**. Core already
+builds typed buttons plus `channelData.execApproval`. Zulip was missing the public
+outbound `renderPresentation` hook: core's delivery preparation consumes shared
+presentation and falls back to readable text when that hook is absent. The remaining
+metadata alone did not satisfy Zulip's strict owner/control admission check. Adding a
+native approval handler would introduce a second delivery owner without fixing this
+boundary.
+
+The minimal supported implementation declares `outbound.presentationCapabilities`
+(`buttons: true`, `selects: false`) and implements `outbound.renderPresentation` for
+validated approvals. The declaration describes adaptation; **the renderer returning a
+payload** decides whether core keeps native UI instead of flattening it. The renderer
+translates canonical typed approval actions into full-ID `/approve` zform commands,
+stores `zulip.widgetContent`, and stamps the SDK's delivered-binding marker. Core
+removes presentation afterward; the actual sender revalidates marker owner, kind,
+decisions and pending state against `execApproval` before binding/seeding the returned
+message ID. Command-backed controls remain supported. No text is parsed and no
+approval owner is invented.
+
+### Core trace (tagged source, fetched through `gh api`)
+
+Both beta tags have the following source paths/line ranges:
+
+- **Same chat:** `src/agents/embedded-agent-subscribe.handlers.tools.results.ts:505-512`
+  recognizes a structured `approval-pending` tool result and passes
+  `buildTypedExecApprovalPendingReplyPayload` to `onToolResult`. Pinned 2026.9.6:
+  `:556-563`. This path requires the runtime to return a pending tool result;
+  claude-cli blocked inside Bash cannot emit it, so use forwarding on OG.
+- **Forwarding:** `src/infra/exec-approval-forwarder.ts:391-401` gates on
+  `approvals.exec.enabled` and filters; `:329-367` chooses session, explicit targets
+  or both and deduplicates identical destinations. `:517-537` builds pending payloads;
+  `:293-320` delivers them through durable outbound delivery. The default destination
+  mode is session, not implicit enablement.
+- **Payload production:** `src/infra/exec-approval-forwarder.messages.ts:112-154`
+  uses `approvalCapability.render.exec.buildPendingPayload` if provided, otherwise
+  the typed shared builder. `src/plugin-sdk/approval-renderers.ts:39-85` creates
+  controls and `channelData.execApproval` in either case. The generic forwarder is
+  already rich; a channel-native capability is not required.
+- **Native UI vs plain fallback:**
+  `src/channels/plugins/outbound/presentation-delivery.ts:12-33,58-93` normalizes and
+  adapts controls, invokes the outbound renderer, consumes presentation, then uses
+  native channelData or plain fallback. The pinned npm 9.6 module
+  `dist/presentation-delivery-*.mjs:332-363` has the same behavior. Pinned
+  `dist/server-aux-handlers-C8HKJelB.mjs:129-144,280-320` shows the actual
+  shared forwarder builder and outbound handoff. A chat-type/channel
+  capability boolean named "shared interactive replies" does not select this path.
+- **Independent native delivery:**
+  `src/channels/plugins/native-approval-prompt.ts:10-15` detects
+  `approvalCapability.native` / `.nativeRuntime`.
+  Signal's `extensions/signal/src/approval-native.ts` builds forwarding-backed routing,
+  a lazy native runtime and channel renderers; its runtime owns Gateway-event prompts.
+  `src/infra/approval-native-delivery.ts:29-105` plans/deduplicates native destinations.
+  `src/infra/exec-approval-forwarder.ts:175-216` suppresses generic fallback only when
+  the adapter requests suppression **and** an active native route owns that account.
+  Zulip deliberately registers neither native surface nor suppression, so enabling
+  another channel's native client cannot create a second Zulip prompt. Core-owned
+  same-chat/forwarding overlap is not altered by this rendering-only fix.
+
+### OG live-test configuration
+
+Read-only OG inspection confirmed this configuration is **already set**; keep it:
+
+```json
+{
+  "approvals": { "exec": { "enabled": true, "mode": "session" } },
+  "channels": { "zulip": { "allowFrom": ["user8@zlp.pubnerd.app"] } },
+  "tools": { "exec": { "mode": "ask" } }
+}
+```
+
+This is a merge fragment: preserve the existing Zulip URL/email/API key and all
+other settings. No `channels.zulip.execApprovals`, native-client flag, or special
+reaction-enable switch is needed. Installing this updated plugin build is the
+remaining live-test prerequisite. `approvals.exec.mode: "targets"` with explicit
+`targets` also works; `"both"` forwards to both routes, deduplicating an identical
+session/explicit destination. With forwarding disabled, only runtimes that emit
+structured same-chat pending results can show an approval. Arbitrary assistant text
+containing `/approve` never becomes a bound prompt. On claude-cli, retain session
+forwarding even though the Zulip sender now supports interactive presentation.
+
 ## Delivery, TTL and outcomes
 
 Default reactions are **✅ (`check`) = allow-once** and **❌ (`cross_mark`) = deny**.
@@ -26,7 +108,7 @@ new deliveries use current config. Sender hints and registration share normalize
 control eligibility: unsupported-only decisions and collisions neither advertise nor
 bind reactions, while zform/manual fallback controls remain. No allow-always reaction.
 
-The sender keeps zform and readable fallback commands, adds reaction instructions
+The outbound renderer keeps zform and readable fallback commands, adds reaction instructions
 for explicit approvers, and registers/seeds controls against the returned message ID.
 No native prompt planner is added, so forwarding is neither duplicated nor suppressed.
 The monitor routes reactions without creating an agent turn and clears account state
@@ -96,9 +178,15 @@ OPENCLAW_HOST_FIXTURES=/path/to/npm-extracted-hosts npm run test:hosts
 ```
 
 Fixtures are `<version>/package` for all four matrix versions. The test imports the
-built index/setup using each real npm host, asserts helper functions, then delivers
-an actual SDK-built approval payload without observation and verifies two seeded
-controls, reaction actor lookup, denied-actor binding retention and account cleanup.
+built index/setup using each real npm host and asserts helper functions. A test-only
+copy exposes the private **real core forwarder factory**, rewriting only relative
+import URLs and adding an export (no production seam or host mutation). Real routing
+proves disabled/session/targets/both modes and exact-target dedupe. Its output and
+the actual same-chat typed builder pass through the host's real presentation-delivery
+module and the plugin's actual outbound/send/client path. Wire assertions verify one
+message, zform full-ID commands, two reaction POSTs and a registered binding. Running
+without the renderer reproduces the stripped-presentation/unbound-prompt regression.
+Actor lookup, denied-actor binding retention and account cleanup remain covered.
 This verifies enabled plugin behavior, not live Gateway RPC. Scratch hosts use matching
 beta `@openclaw/ai` packages with remaining dependencies resolved from the existing
 pinned development tree; these are not full clean installations.
@@ -133,6 +221,8 @@ this manual ledger is the required gate for independent Hawk review.
 | Terminal/retry: exact outcome content, not-found retirement, real-failure retry, failed-edit inertness | Settlement/control boundary; removed observer-only external-event tests because no production observer exists; canonical losing-result test owns external decision truth |
 | Bounds/config/cleanup: emoji overrides/collisions, capped admission and TTL freeing, in-flight removal | Channel target boundary; real sender/monitor own exact delivery ID and account teardown wiring |
 | Host artifact compatibility: real npm host helper functions and exports, built index/setup load, active seed/lookup/cleanup without observation | Built artifact boundary on all four hosts; replaces beta feature-disablement test; it would fail pre-rework because no observed request exists |
+| Core delivery regression: actual forwarding routes, same-chat builder, native rendering vs plain fallback, one zform prompt and two seeded reactions on all four hosts | Real core-to-built-plugin outbound boundary; replaces direct SDK-builder-only matrix evidence; without-renderer negative control fails binding on every host |
+| Rendered marker integrity: mismatched owner/kind/decisions/version/terminal state must remain unbound; typed actions become full-ID commands without losing text/data | Channel renderer/SDK validation boundary; focused tamper coverage independently protects the new consumed-presentation boundary; no new test-only production seam |
 | Sender fallback: zform preservation, exact returned ID, explicit approvers; unsupported-only decisions and normalized emoji collisions must not advertise or bind | Real sender boundary; new cases fail before shared eligibility fix and pass after; real registration retained, no test-only seam |
 | Emitted import checker: absent dynamic import rejected then complete fixture accepted | Real checker CLI; fixture infra-runtime string tests generic dynamic scanning, not a production observer dependency |
 

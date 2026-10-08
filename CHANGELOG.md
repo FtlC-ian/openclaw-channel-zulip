@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2026.10.9
+
 ### Features
 - **Heartbeat transport** (#94): Account-generation readiness and bounded, cancellable stream/topic and DM typing. Inbound monitor typing remains the sole owner during inbound turns; core typing cannot bypass the user’s typing mode or duplicate its indicators.
 - **Doctor and allowlist adapters** (#96): Add account-scoped policy previews with manual fix hints, safe exact-duplicate sender repairs, and config-backed DM/group sender and stream-selector edits. Stream removal writes an explicit deny; last-group-sender and open-DM-wildcard removal fail closed. Built-plugin adapter smoke tests run on all four supported SDK hosts. See `docs/POLICY_ADAPTERS.md`.

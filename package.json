@@ -41,11 +41,12 @@
     "CHANGELOG.md"
   ],
   "scripts": {
-    "build": "tsc && node scripts/sync-plugin-manifest.mjs --check",
+    "build": "tsc && node scripts/sync-plugin-manifest.mjs --check && node scripts/check-sdk-exports.mjs",
+    "sdk:check": "node scripts/check-sdk-exports.mjs",
     "manifest:sync": "tsc && node scripts/sync-plugin-manifest.mjs",
     "manifest:check": "tsc && node scripts/sync-plugin-manifest.mjs --check",
     "prepack": "npm run build",
-    "test": "vitest run src && node --test scripts/migrate-topic-sessions.test.mjs",
+    "test": "vitest run src && node --test scripts/migrate-topic-sessions.test.mjs scripts/check-sdk-exports.test.mjs",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {

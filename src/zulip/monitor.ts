@@ -2577,7 +2577,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     }
   };
 
-  const approvalObserver = createZulipApprovalObserver(() => opts.getConfig?.() ?? cfg, account.accountId);
+  const approvalObserver = await createZulipApprovalObserver(() => opts.getConfig?.() ?? cfg, account.accountId, (message) => runtime.log?.(message));
   const handleMonitorAbort = () => {
     void cleanupActiveReactionLifecycles();
   };

@@ -5,6 +5,9 @@
 ### Features
 - **Reaction approvals** (#92): Keep zform buttons and seed ✅ (allow once) / ❌ (deny) on the same approval message for mobile and web. Require explicit account `allowFrom` approvers, bind canonical approval ownership/expiry to the exact sent message, settle through the shared Gateway resolver, and edit terminal outcomes. Configure `approvalReactions.approve` / `approvalReactions.deny` per account.
 
+### Compatibility
+- **Reaction observer SDK** (#92): Guard the optional public observer import so OpenClaw 2026.10.1-beta.1/beta.2 can still load Zulip. Those hosts do not export the passive observer SDK, so reaction approvals disable with one log while zforms and `/approve` remain available. Build now checks all emitted SDK specifiers against the pinned package's exports; release checks also target the newest host.
+
 ## 2026.10.8
 
 ### Features

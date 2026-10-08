@@ -4066,7 +4066,9 @@ describe("monitorZulipProvider", () => {
     const startedAt = Date.now();
     const monitorPromise = runMonitorOnce(controller);
     try {
-      await vi.advanceTimersByTimeAsync(0);
+      await vi.waitFor(() => {
+        expect(state.durableQueues.get(state.account.accountId)?.release).toHaveBeenCalledTimes(1);
+      }, { interval: 0 });
       const queue = state.durableQueues.get(state.account.accountId);
       expect(queue?.release).toHaveBeenCalledExactlyOnceWith(retryableDurableId, {
         lastError: "Zulip stream metadata unavailable during durable replay",

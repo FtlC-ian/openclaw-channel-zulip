@@ -366,7 +366,7 @@ export async function sendMessageZulip(
 
   message = prependZulipRoutingNotice(message, fallback);
   const approvalBinding = readApprovalBinding({ payload: { presentation: opts.presentation, channelData: opts.channelData } });
-  if (approvalBinding && resolveZulipApprovers(opts.cfg, account.accountId).length > 0) {
+  if (approvalBinding && zulipApprovalReactions.hasPendingObservation(account.accountId, approvalBinding.approvalId, approvalBinding.approvalKind) && resolveZulipApprovers(opts.cfg, account.accountId).length > 0) {
     const emojis = account.config.approvalReactions;
     const controls = [
       approvalBinding.allowedDecisions.includes("allow-once") ? `${emojis?.approve ?? "✅"} = Allow once` : undefined,

@@ -202,7 +202,7 @@ describe("approval reaction control boundary", () => {
 
 describe("gateway approval observer", () => {
   it("uses SDK lifecycle events, account selection and authoritative expiry", async () => {
-    createZulipApprovalObserver(() => cfg, "default");
+    await createZulipApprovalObserver(() => cfg, "default");
     const adapter = mocks.create.mock.calls[0][0];
     const approval = { id: "req-1", approvalKind: "exec", createdAtMs: Date.now(), expiresAtMs: Date.now() + 60000, request: { command: "true", turnSourceChannel: "zulip", turnSourceAccountId: "default" } };
     expect(adapter.shouldHandle(approval)).toBe(true);
@@ -214,5 +214,30 @@ describe("gateway approval observer", () => {
     await zulipApprovalReactions.react({ cfg, accountId: "default", client, botUserId: "1", event: event() });
     expect(mocks.resolve).not.toHaveBeenCalled(); expect(request).toHaveBeenCalledWith("/messages/10", expect.objectContaining({ method: "PATCH" }));
     await adapter.onStopped();
+  });
+});
+
+describe("unavailable public observer SDK", () => {
+  it("disables reactions once without blocking startup or binding controls", async () => {
+    vi.resetModules();
+    vi.doMock("openclaw/plugin-sdk/infra-runtime", () => ({}));
+    try {
+      const module = await import("./approval-reactions.js");
+      const log = vi.fn();
+      for (const accountId of ["default", "other"]) {
+        const observer = await module.createZulipApprovalObserver(() => cfg, accountId, log);
+        await observer.start();
+        await module.zulipApprovalReactions.register({ cfg, accountId, messageId: "10", client, sourceText: "Approval", payload: payload() });
+        expect(await module.zulipApprovalReactions.command({ cfg, accountId, senderId: "ian@test", text: "/approve req-1 deny" })).toBe(false);
+        await observer.stop();
+      }
+      expect(log).toHaveBeenCalledTimes(1);
+      expect(log).toHaveBeenCalledWith(expect.stringContaining("zform and /approve remain available"));
+      expect(request).not.toHaveBeenCalled();
+      expect(mocks.resolve).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock("openclaw/plugin-sdk/infra-runtime");
+      vi.resetModules();
+    }
   });
 });

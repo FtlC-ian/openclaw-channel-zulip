@@ -1,6 +1,5 @@
 import { doesApprovalRequestSelectChannelAccount } from "openclaw/plugin-sdk/approval-native-runtime";
 import { listZulipAccountIds } from "./accounts.js";
-import { createExecApprovalChannelRuntime } from "openclaw/plugin-sdk/infra-runtime";
 import { resolveApprovalOverGateway } from "openclaw/plugin-sdk/approval-gateway-runtime";
 import { resolveZulipApprovers, zulipApprovalAuth } from "../approval-auth.js";
 import type { OpenClawConfig, ReplyPayload } from "../sdk.js";
@@ -24,6 +23,11 @@ export class ZulipApprovalReactions {
     const now = Date.now();
     for (const [key, binding] of this.bindings) if (binding.expiresAtMs <= now) this.bindings.delete(key);
     for (const [key, request] of this.observed) if (request.expiresAtMs <= now) this.observed.delete(key);
+  }
+  hasPendingObservation(accountId: string, id: string, kind: "exec" | "plugin"): boolean {
+    this.prune();
+    const request = this.observed.get(this.key(accountId, id));
+    return !!request && request.kind === kind && !request.terminal;
   }
   canObserve(): boolean { this.prune(); return this.observed.size < this.maxEntries; }
   observe(accountId: string, id: string, kind: "exec" | "plugin", expiresAtMs: number): boolean {
@@ -116,7 +120,20 @@ export class ZulipApprovalReactions {
   }
 }
 export const zulipApprovalReactions = new ZulipApprovalReactions();
-export function createZulipApprovalObserver(getConfig: () => OpenClawConfig, accountId: string) {
+let observerUnavailableLogged = false;
+export async function createZulipApprovalObserver(getConfig: () => OpenClawConfig, accountId: string, log: (message: string) => void = console.warn) {
+  let createExecApprovalChannelRuntime: typeof import("openclaw/plugin-sdk/infra-runtime").createExecApprovalChannelRuntime;
+  try {
+    ({ createExecApprovalChannelRuntime } = await import("openclaw/plugin-sdk/infra-runtime"));
+    if (typeof createExecApprovalChannelRuntime !== "function") throw new Error("SDK observer export unavailable");
+  } catch {
+    if (!observerUnavailableLogged) {
+      observerUnavailableLogged = true;
+      log("zulip: reaction approvals disabled: this host does not expose the public approval observer SDK; zform and /approve remain available.");
+    }
+    zulipApprovalReactions.clearAccount(accountId);
+    return { start: async () => {}, stop: async () => { zulipApprovalReactions.clearAccount(accountId); } };
+  }
   return createExecApprovalChannelRuntime<string>({
     cfg: getConfig(), label: "zulip", clientDisplayName: "Zulip approval reactions", eventKinds: ["exec", "plugin"],
     isConfigured: () => resolveZulipApprovers(getConfig(), accountId).length > 0,

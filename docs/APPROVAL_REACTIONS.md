@@ -82,9 +82,70 @@ reaction approval sources. They use the same shared approval-reaction and gatewa
 resolver helpers. [v2026.10.1-beta.1 reaction runtime](https://github.com/openclaw/openclaw/blob/v2026.10.1-beta.1/src/plugin-sdk/approval-reaction-runtime.ts),
 [binding validators](https://github.com/openclaw/openclaw/blob/v2026.10.1-beta.1/src/plugin-sdk/approval-reaction-binding.ts)
 and [observer contracts](https://github.com/openclaw/openclaw/blob/v2026.10.1-beta.1/src/infra/exec-approval-channel-runtime.types.ts)
-retain these consumed signatures/semantics. This is source-level compatibility,
-not a claimed live host test. The same runtime subpaths and validators also exist
-in tagged v2026.9.3, preserving the current minimum-host declaration.
+retain the consumed validator/resolver signatures, but source signatures alone
+are not package-export compatibility. OG's installed beta.1 export map matches
+its tagged package.json and does **not** export `infra-runtime`; beta.2 also omits
+it. The direct observer has no public export in either beta. `approval-runtime`
+exports `createChannelNativeApprovalRuntime` on all four hosts, but that adapter
+plans/delivers native prompts and reports routing, so it is not a passive observer
+replacement: using it could duplicate or suppress the existing forwarding path.
+
+The passive observer is now a guarded dynamic import of the public
+`infra-runtime` subpath. On hosts without it, reaction approvals disable with one
+process-wide log; startup, zforms and core `/approve` continue normally. Without
+canonical observation, the sender neither advertises nor seeds reaction controls.
+Actual observer startup/transport failures on supported hosts still propagate.
+No non-exported core internals are imported.
+
+The full source audit includes type-only imports, test imports and mocks. Every
+subpath except `infra-runtime` is exported by all four npm packages:
+
+| Subpath (openclaw/plugin-sdk/) | 9.3 | 9.6 | beta.1 | beta.2 |
+|---|---|---|---|---|
+| allow-from | yes | yes | yes | yes |
+| approval-gateway-runtime | yes | yes | yes | yes |
+| approval-native-runtime | yes | yes | yes | yes |
+| approval-reaction-runtime | yes | yes | yes | yes |
+| approval-reply-runtime | yes | yes | yes | yes |
+| approval-runtime | yes | yes | yes | yes |
+| channel-config-schema | yes | yes | yes | yes |
+| channel-contract | yes | yes | yes | yes |
+| channel-feedback | yes | yes | yes | yes |
+| channel-inbound | yes | yes | yes | yes |
+| channel-ingress-runtime | yes | yes | yes | yes |
+| channel-outbound | yes | yes | yes | yes |
+| channel-pairing | yes | yes | yes | yes |
+| channel-secret-basic-runtime | yes | yes | yes | yes |
+| channel-send-result | yes | yes | yes | yes |
+| command-auth-native | yes | yes | yes | yes |
+| core | yes | yes | yes | yes |
+| directory-runtime | yes | yes | yes | yes |
+| infra-runtime | yes | yes | NO | NO |
+| interactive-runtime | yes | yes | yes | yes |
+| media-runtime | yes | yes | yes | yes |
+| param-readers | yes | yes | yes | yes |
+| plugin-entry | yes | yes | yes | yes |
+| question-gateway-runtime | yes | yes | yes | yes |
+| reply-runtime | yes | yes | yes | yes |
+| routing | yes | yes | yes | yes |
+| runtime-env | yes | yes | yes | yes |
+| runtime-store | yes | yes | yes | yes |
+| secret-input | yes | yes | yes | yes |
+| secret-input-runtime | yes | yes | yes | yes |
+| secret-ref-runtime | yes | yes | yes | yes |
+| session-store-runtime | yes | yes | yes | yes |
+| setup | yes | yes | yes | yes |
+| ssrf-runtime | yes | yes | yes | yes |
+| temp-path | yes | yes | yes | yes |
+| web-media | yes | yes | yes | yes |
+
+`npm run build` audits all built static imports/re-exports and literal dynamic
+imports against the pinned package's exports; `npm run sdk:check -- <package.json>`
+can target another host. Beta audits intentionally report the guarded optional
+`infra-runtime` as missing; real built-index/setup imports and observer disablement
+smokes pass on both betas. Smoke hosts were npm-pack extracted into scratch,
+with matching beta `@openclaw/ai` packages and remaining dependencies resolved from
+the existing pinned development dependency tree (not full clean host installs).
 
 ## Client evidence (source snapshots, October 8, 2026)
 
@@ -118,6 +179,10 @@ sender, monitor and SDK observer; there are no test-only production methods.
 | Isolation/expiry | Wrong message/account; removal events; expired controls; removed/disabled/aborted lookup races | Control boundary; each independently protects a side-effect admission condition |
 | Terminal lifecycle | External resolve/expire, terminal content, not-found, real failures/retry, failed edit | Observer/control boundary; retained fault cases cover recovery and absence of repeat execution |
 | Config/state bounds | Custom emoji/collision; bounded admission/freeing capacity; account clear | Control boundary; runtime/manifest config test owns public schema parity |
+| Host compatibility | Missing observer export: two accounts start/stop, one log, no binding/resolution/interception; real extracted beta index/setup imports and disablement smoke | Plugin load/observer boundary; controlled missing export test proves plugin fallback, real smoke proves Node exports enforcement |
+| Built artifact SDK contract | Checker subprocess fails on an absent dynamically imported export, then passes with complete fixture exports; covers nested JS and static re-exports | Real checker CLI boundary; no network dependency or production-only test seam |
+| Fallback presentation | Sender with/without authoritative observation preserves zform commands but advertises reactions only when observed | Real sender boundary; distinct from observer binding/no-interception risk |
+| Deferred fairness timing | Existing starvation regression now waits for first release with zero fake-clock advancement, then retains exact 200ms/250ms outcomes | Real monitor replay boundary; async SDK discovery no longer assumed complete after one event-loop flush |
 | Integration | Sender retains zform and passes exact sent ID; monitor routes reaction without agent dispatch; all queue recovery assertions; manual/zform ingress await followed by approver revocation, disablement, removal or abort (plus positive control) | Real sender/monitor boundary with collaborator spies; not duplicates of store semantics |
 
 Controlled regression mutations were restored immediately: authorizer forced to
@@ -142,8 +207,8 @@ Bindings are process-local: restarting/removing the account retires old reaction
 controls; typed `/approve` remains the fallback. If canonical request observation
 has not arrived when the outbound send completes (or admission is full), no
 reaction binding/seeding is created. This is deliberate fail-closed behavior,
-not authorization inferred from message text. Gateway observer start failures
-fail account startup rather than silently advertising an unsafe approval path.
+not authorization inferred from message text. Missing public observer SDK disables
+only reactions; other Gateway observer start failures still fail account startup.
 
 No OG installation/configuration/restart or live approval was performed here.
 Debbie owns publication and the OG live test; use the precise script in the PR

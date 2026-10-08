@@ -230,6 +230,7 @@ vi.mock("./client.js", () => ({
 describe("sendMessageZulip media and presentation", () => {
   it("keeps the zform and binds reactions to the exact account and returned message ID", async () => {
     const { zulipApprovalReactions } = await import("./approval-reactions.js");
+    zulipApprovalReactions.observe("default", "req-1", "exec", Date.now() + 60000);
     const register = vi.spyOn(zulipApprovalReactions, "register").mockResolvedValue(undefined);
     try {
       await sendMessageZulip("user:alice@example.test", "Approval", {
@@ -245,7 +246,20 @@ describe("sendMessageZulip media and presentation", () => {
         widgetContent: expect.objectContaining({ widget_type: "zform" }),
       }));
       expect(register).toHaveBeenCalledWith(expect.objectContaining({ accountId: "default", messageId: "9001", sourceText: expect.stringContaining("Authorized approvers") }));
-    } finally { register.mockRestore(); }
+      zulipApprovalReactions.clearAccount("default");
+      await sendMessageZulip("user:alice@example.test", "Approval", {
+        cfg: { channels: { zulip: { allowFrom: ["ian@test"] } } },
+        channelData: { execApproval: { approvalId: "req-1", approvalKind: "exec", state: "pending", allowedDecisions: ["allow-once", "deny"] } },
+        presentation: { blocks: [{ type: "buttons", buttons: [
+          { label: "Allow once", action: { type: "command", command: "/approve req-1 allow-once" } },
+          { label: "Deny", action: { type: "command", command: "/approve req-1 deny" } },
+        ] }] },
+      });
+      const sent = sendState.sendZulipPrivateMessage.mock.calls.at(-1)![1];
+      expect(sent.content).not.toContain("Authorized approvers can also react");
+      expect(sent.widgetContent).toMatchObject({ widget_type: "zform" });
+      expect(JSON.stringify(sent.widgetContent)).toContain("/approve req-1 allow-once");
+    } finally { register.mockRestore(); zulipApprovalReactions.clearAccount("default"); }
   });
   it("uses the explicit target topic for both text and media when thread context disagrees", async () => {
     await sendMessageZulip("stream:synthetic-stream:Canonical Topic", "text", {

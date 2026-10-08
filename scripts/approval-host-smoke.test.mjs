@@ -107,21 +107,39 @@ for (const version of ["2026.9.3", "2026.9.6", "2026.10.1-beta.1", "2026.10.1-be
         assert.equal(readApprovalBinding({ payload: rendered }).approvalId, "12345678-1234-4234-8234-123456789abc");
         const network = [];
         const originalFetch = globalThis.fetch;
+        let nextMessageId = 122;
+        const widgetIds = new Set();
         globalThis.fetch = async (url, init) => {
           network.push({ url: String(url), init });
-          return new Response(JSON.stringify({ result: "success", id: 123 }));
+          if (init.method === "PATCH" && widgetIds.has(String(url).split("/").at(-1))) return new Response(JSON.stringify({ result: "error", msg: "Widgets cannot be edited." }), { status: 400 });
+          const id = String(url).endsWith("/messages") ? ++nextMessageId : undefined;
+          if (id && new URLSearchParams(init.body).has("widget_content")) widgetIds.add(String(id));
+          return new Response(JSON.stringify({ result: "success", id }));
         };
         try {
           await zulipOutboundAdapter.sendPayload({ cfg, to: "user:approver@test", payload: rendered });
         } finally { globalThis.fetch = originalFetch; }
-        assert.equal(network.filter(({ url }) => url.endsWith("/messages")).length, 1, "one prompt, no native delivery duplication");
-        const messageBody = new URLSearchParams(network.find(({ url }) => url.endsWith("/messages")).init.body);
-        const widget = JSON.parse(messageBody.get("widget_content"));
-        assert.equal(widget.widget_type, "zform", "actual send delivers zform in widget_content");
+        const messages = network.filter(({ url }) => url.endsWith("/messages"));
+        assert.equal(messages.length, 2, "one editable prompt plus one disposable zform, no native delivery duplication");
+        const messageBody = new URLSearchParams(messages[0].init.body);
+        assert.equal(messageBody.has("widget_content"), false, "original approval prompt must remain editable");
+        const widget = JSON.parse(new URLSearchParams(messages[1].init.body).get("widget_content"));
+        assert.equal(widget.widget_type, "zform", "companion preserves desktop controls");
         assert.deepEqual(widget.extra_data.choices.map(choice => choice.reply), ["/approve 12345678-1234-4234-8234-123456789abc allow-once", "/approve 12345678-1234-4234-8234-123456789abc allow-always", "/approve 12345678-1234-4234-8234-123456789abc deny"]);
         assert.equal(network.filter(({ url }) => url.endsWith("/reactions")).length, 2, "actual send binds and seeds both reactions");
         const { zulipApprovalReactions } = await import("./dist/src/zulip/approval-reactions.js");
         assert.equal(await zulipApprovalReactions.command({ cfg, accountId: "default", senderId: "unauthorized@test", text: "/approve 12345678-1234-4234-8234-123456789abc deny" }), true, "actual send registered binding");
+        globalThis.fetch = async (url, init) => {
+          network.push({ url: String(url), init });
+          assert.ok(!(init.method === "PATCH" && widgetIds.has(String(url).split("/").at(-1))), "never edit a widget");
+          return new Response(JSON.stringify({ result: "success" }));
+        };
+        try {
+          await zulipApprovalReactions.observeTerminal("default", { event: "exec.approval.resolved", payload: { id: "12345678-1234-4234-8234-123456789abc", decision: "deny" } });
+        } finally { globalThis.fetch = originalFetch; }
+        assert.equal(network.filter(({ url, init }) => url.endsWith("/messages/123") && init.method === "PATCH").length, 1, "external resolution edits original prompt");
+        assert.equal(network.filter(({ url, init }) => url.endsWith("/messages/124") && init.method === "DELETE").length, 1, "external resolution retires zform");
+        assert.equal(network.filter(({ url, init }) => url.includes("/reactions?") && init.method === "DELETE").length, 2, "external resolution removes bot reactions");
         zulipApprovalReactions.clearAccount("default");
       }
       await store.register({ cfg, accountId: "default", messageId: "123", client, sourceText: rendered.text, payload: rendered });

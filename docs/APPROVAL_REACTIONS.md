@@ -110,8 +110,9 @@ Default reactions are **✅ (`check`) = allow-once** and **❌ (`cross_mark`) = 
 Configure `approvalReactions.approve` / `.deny` at root or account level using
 supported Unicode or named Zulip emoji. Existing bindings keep their seeded emoji;
 new deliveries use current config. Sender hints and registration share normalized
-control eligibility: unsupported-only decisions and collisions neither advertise nor
-bind reactions, while zform/manual fallback controls remain. No allow-always reaction.
+control eligibility: unsupported-only decisions and collisions do not advertise or
+seed reactions; their validated zform/manual controls still bind for interception
+and terminal cleanup. No allow-always reaction.
 
 The outbound renderer keeps zform and readable fallback commands, adds reaction instructions
 for explicit approvers, and registers/seeds controls against the returned message ID.
@@ -135,8 +136,9 @@ These controls are no longer active.
 ```
 
 Deny/already-resolved outcomes show the canonical winner, not the local selection.
-Failed edits cannot reactivate bindings. Seeding is best-effort. A stale zform may
-remain visually present, but core still rejects repeated execution.
+Failed cleanup cannot reactivate bindings. Seeding is best-effort. Terminal
+cleanup waits for in-flight seeding before removing reactions. Cleanup API failures
+may leave stale visuals, but cannot permit repeated execution.
 
 There is no passive observer or proactive terminal update for decisions made on a
 remote surface. The next local reaction/manual command obtains terminal truth from
@@ -223,20 +225,21 @@ this manual ledger is the required gate for independent Hawk review.
 | Explicit policy and actor identity: authorized/unauthorized/API-derived email; no approvers; bot/inactive/missing email; wrong message/account/removal/self | Real auth + client serialization boundary; independent side-effect admission risks |
 | Async authorization: ingress, identity lookup, lazy resolver await; revoked/disabled/removed/aborted/cleared state | Real monitor/control boundaries; new lazy-await cases cover the newly introduced await, not duplicates of identity/ingress cases |
 | First-wins: duplicate events, sibling deliveries, widget/manual vs reaction orders, canonical losing result | Local claims + controlled Gateway results; does not prove core service atomicity |
-| Terminal/retry: exact outcome content, not-found retirement, real-failure retry, failed-edit inertness | Settlement/control boundary; removed observer-only external-event tests because no production observer exists; canonical losing-result test owns external decision truth |
+| Terminal/retry: exact outcome content, not-found retirement, real-failure retry, failed-edit inertness | Settlement/control boundary; Gateway callback/terminal observer, late-delivery cache and losing-result tests cover external decisions and independent cleanup |
 | Bounds/config/cleanup: emoji overrides/collisions, capped admission and TTL freeing, in-flight removal | Channel target boundary; real sender/monitor own exact delivery ID and account teardown wiring |
 | Host artifact compatibility: real npm host helper functions and exports, built index/setup load, active seed/lookup/cleanup without observation | Built artifact boundary on all four hosts; replaces beta feature-disablement test; it would fail pre-rework because no observed request exists |
-| Core delivery regression: actual forwarding routes, same-chat builder, native rendering vs plain fallback, one zform prompt and two seeded reactions on all four hosts | Real core-to-built-plugin outbound boundary; replaces direct SDK-builder-only matrix evidence; without-renderer negative control fails binding on every host |
+| Core delivery regression: actual forwarding routes, same-chat builder, native rendering vs plain fallback, one editable prompt, one disposable zform, two seeded reactions, and external terminal cleanup on all four hosts | Real core-to-built-plugin outbound boundary; replaces direct SDK-builder-only matrix evidence; without-renderer negative control fails binding on every host |
 | Source-adaptation mutation: extra source select beside valid buttons is adapted to context by real core but must not produce a binding/zform | Four-host real core-to-renderer matrix owns this contract; fails on ed2520a and passes after sourcePresentation validation; no test-only production seam |
 | Mixed-control mutation: valid typed approval buttons plus extra command/callback/link must not render or bind | Same renderer/control-admission boundary; reproduces Hawk MEDIUM on 701cd39 (three failures) and passes after exclusive full-set validation; no overlapping test-only seam |
 | Rendered marker integrity: mismatched owner/kind/decisions/version/terminal state must remain unbound; typed actions become full-ID commands without losing text/data | Channel renderer/SDK validation boundary; focused tamper coverage independently protects the new consumed-presentation boundary; no new test-only production seam |
-| Sender fallback: zform preservation, exact returned ID, explicit approvers; unsupported-only decisions and normalized emoji collisions must not advertise or bind | Real sender boundary; new cases fail before shared eligibility fix and pass after; real registration retained, no test-only seam |
+| Sender fallback: zform preservation, exact returned ID, explicit approvers; unsupported-only decisions and normalized emoji collisions must not advertise/seed reactions but must bind validated fallback commands | Real sender boundary; new cases fail before shared eligibility fix and pass after; real registration retained, no test-only seam |
 | Emitted import checker: absent dynamic import rejected then complete fixture accepted | Real checker CLI; fixture infra-runtime string tests generic dynamic scanning, not a production observer dependency |
 
 Public methods are production-called by sender/monitor; binding retirement is private.
-The SDK `clearForTest` seam is not used. Removed `observe`, `hasPendingObservation`,
-`canObserve` and observer lifecycle factory after checking source, tests, mocks and
-emitted imports. No exported downstream contract promised these internal modules.
+The SDK `clearForTest` seam is not used. The earlier optional reaction-request
+observer was removed because its SDK export was absent on beta hosts. Terminal
+observation now uses the public operator-approvals Gateway client (no competing
+prompt planner); host artifact tests validate the actual import surface.
 Existing manual ingress HIGH regression still passes. The new no-observation binding
 fails on the old architecture. All four old artifacts fail the matrix (older hosts
 do not seed unobserved targets; betas also fail the missing observer export audit).
@@ -245,6 +248,36 @@ Focused and full verification receipts are listed in the PR draft.
 ## Live verification limits
 
 No push, PR publication, package installation, config edit, gateway restart or live
-approval was performed. Debbie owns publication and live-client verification. Check
+approval was performed by this worker. OG logs were read over SSH; live tests
+reported by Debbie provided the immutable-widget and stream-mention failures. Debbie owns publication and live-client verification. Check
 web/desktop widgets, mobile reactions, external winning decisions, TTL/not-found,
 message-edit permissions and account teardown on a test Gateway before release.
+
+## Terminal outcomes and Zulip widgets
+
+Zulip refuses content edits on widget messages (`Widgets cannot be edited.`).
+Validated approval delivery therefore sends an editable canonical prompt with
+reactions, followed by a separate disposable zform message. Resolution edits
+the original prompt, deletes the companion zform, and removes the bot's seeded
+reactions (other users' reactions are not removed). An operator-approvals Gateway
+client observes terminal events, including CLI/Control UI resolution and expiry;
+it is stopped with the account monitor. Core may additionally post its normal
+resolution message. API cleanup failures are logged and never reactivate a binding.
+The bot requires Zulip permissions to edit its messages and delete its zforms.
+
+Stream zform replies prepend a bot mention. Approval ingress removes only a
+leading identity-qualified mention of the connected bot (numeric ID or email),
+including silent mentions, before resolving a validated approval ahead of agent
+dispatch. Other mentions and display-name-only mentions are not stripped.
+
+## Live defect regression receipt
+
+On `caeaecc`, the current regression files produced 22 failures (234 passed):
+identity-qualified bot mentions were not intercepted, external terminal updates
+had no production owner, and the sender attached immutable widgets to prompts.
+The monitor case uses the exact live zform content in stream ingress with bot ID
+13; it asserts settlement occurs without agent dispatch and rechecks revocation,
+disablement, removal and abort. The four-host matrix models immutable widgets,
+asserts two distinct delivery IDs, and verifies prompt edit/zform deletion/reaction
+removal on external resolution. This replaces—not duplicates—the prior single
+widget prompt assertion, which encoded Zulip behavior incorrectly.

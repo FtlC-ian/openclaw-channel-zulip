@@ -67,6 +67,70 @@ describe("approval reaction control boundary", () => {
     const edit = new URLSearchParams(request.mock.calls.find(([, init]) => init?.method === "PATCH")![1].body).get("content");
     expect(edit).toBe("Approval required\n\n**Approval outcome: allow-once**\nThese controls are no longer active.");
   });
+  it.each(["reaction", "zform", "manual", "cli", "control-ui", "expired"])("retires the editable prompt and companion widget after %s resolution", async (surface) => {
+    await store.register({ cfg, accountId: "default", messageId: "10", widgetMessageId: "11", client, sourceText: "Approval required", payload: payload() });
+    // Model Zulip's actual server contract instead of an always-successful PATCH.
+    request.mockImplementation(async (path, init) => {
+      if (path === "/messages/11" && init?.method === "PATCH") throw new Error("Widgets cannot be edited.");
+      return path.startsWith("/users/") ? { result: "success", user: { email: "ian@test" } } : { result: "success" };
+    });
+    if (surface === "reaction") await react();
+    else if (surface === "manual" || surface === "zform") await command();
+    else await store.observeTerminal("default", { event: "exec.approval.resolved", payload: { id: "req-1", decision: "deny", ...(surface === "expired" ? { terminalStatus: "expired" } : {}) } });
+    expect(request).toHaveBeenCalledWith("/messages/10", expect.objectContaining({ method: "PATCH" }));
+    expect(request).toHaveBeenCalledWith("/messages/11", expect.objectContaining({ method: "DELETE" }));
+    expect(request.mock.calls.filter(([path, init]) => path.endsWith("/reactions") && init?.method === "DELETE")).toHaveLength(2);
+    await react(); await store.observeTerminal("default", { event: "exec.approval.resolved", payload: { id: "req-1", decision: "deny" } });
+    expect(request.mock.calls.filter(([, init]) => init?.method === "PATCH")).toHaveLength(1);
+  });
+  it("remembers bounded terminal observations that race pending delivery", async () => {
+    store = new ZulipApprovalReactions(1);
+    await store.observeTerminal("default", { event: "exec.approval.resolved", payload: { id: "old", decision: "deny" } });
+    await store.observeTerminal("default", { event: "exec.approval.resolved", payload: { id: "req-1", decision: "allow-once" } });
+    await store.register({ cfg, accountId: "default", messageId: "10", widgetMessageId: "11", client, sourceText: "Approval required", payload: payload() });
+    expect(request).toHaveBeenCalledWith("/messages/10", expect.objectContaining({ method: "PATCH", body: expect.stringContaining("allow-once") }));
+    expect(request.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+    await react(); expect(mocks.resolve).not.toHaveBeenCalled();
+  });
+  it("uses the gateway observation winner when settlement races another surface", async () => {
+    await register();
+    let complete!: (value: unknown) => void;
+    mocks.resolve.mockImplementation(() => new Promise((resolve) => { complete = resolve; }));
+    const pending = react();
+    await vi.waitFor(() => expect(complete).toBeTypeOf("function"));
+    await store.observeTerminal("default", { event: "exec.approval.resolved", payload: { id: "req-1", decision: "deny" } });
+    complete({ applied: false, approval: { status: "denied", decision: "deny" } }); await pending;
+    const patches = request.mock.calls.filter(([, init]) => init?.method === "PATCH");
+    expect(patches).toHaveLength(1);
+    expect(new URLSearchParams(patches[0][1].body).get("content")).toContain("outcome: deny");
+  });
+  it.each(["@**Debbie-OG|13**", "@_**Debbie-OG|13**", "@**bot@test**", "@_**Renamed|bot@test**"])("intercepts identity-qualified bot mention %s", async (mention) => {
+    const id = "9f832b3e-561c-47df-a95c-beb76511a55a";
+    await register(id);
+    expect(await store.command({ cfg, accountId: "default", senderId: "ian@test", botUserId: "13", botEmail: "bot@test", text: `${mention} /approve ${id} allow-once` })).toBe(true);
+    expect(mocks.resolve).toHaveBeenCalledTimes(1);
+  });
+  it.each(["@**Other|8**", "@_**Other|8**", "@**Debbie-OG**", "@**Other|other@test**", "prefix @**Debbie-OG|13**", "@**Other|8** @**Debbie-OG|13**"])("does not strip foreign/unqualified/nonleading mentions %s", async (mention) => {
+    await register();
+    expect(await store.command({ cfg, accountId: "default", senderId: "ian@test", botUserId: "13", botEmail: "bot@test", text: `${mention} /approve req-1 allow-once` })).toBe(false);
+    expect(mocks.resolve).not.toHaveBeenCalled();
+  });
+  it("consumes unauthorized mention-prefixed approval without resolving or dispatching", async () => {
+    await register();
+    expect(await store.command({ cfg, accountId: "default", senderId: "stranger@test", botUserId: "13", text: "@**Debbie-OG|13** /approve req-1 allow-once" })).toBe(true);
+    expect(mocks.resolve).not.toHaveBeenCalled();
+  });
+  it("observes only matching account, owner, id and canonical terminal outcomes", async () => {
+    await register();
+    for (const [accountId, event] of [
+      ["other", { event: "exec.approval.resolved", payload: { id: "req-1", decision: "deny" } }],
+      ["default", { event: "plugin.approval.resolved", payload: { id: "req-1", decision: "deny" } }],
+      ["default", { event: "exec.approval.resolved", payload: { id: "other", decision: "deny" } }],
+      ["default", { event: "exec.approval.resolved", payload: { id: "req-1", decision: "invalid" } }],
+    ] as const) await store.observeTerminal(accountId, event);
+    expect(request.mock.calls.filter(([, init]) => init?.method === "PATCH")).toHaveLength(0);
+    await react(); expect(mocks.resolve).toHaveBeenCalledTimes(1);
+  });
   it("denies unauthorized actors and never trusts an event-supplied email", async () => {
     await register(); request.mockImplementation(async () => ({ result: "success", user: { user_id: 2, email: "stranger@test" } }));
     await react(); expect(mocks.resolve).not.toHaveBeenCalled();

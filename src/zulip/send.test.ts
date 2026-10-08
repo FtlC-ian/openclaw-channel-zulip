@@ -240,11 +240,13 @@ describe("sendMessageZulip media and presentation", () => {
           { label: "Deny", action: { type: "command", command: "/approve req-1 deny" } },
         ] }] },
       });
-      expect(sendState.sendZulipPrivateMessage).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({
-        content: expect.stringContaining("✅ = Allow once; ❌ = Deny"),
-        widgetContent: expect.objectContaining({ widget_type: "zform" }),
-      }));
-      expect(register).toHaveBeenCalledWith(expect.objectContaining({ accountId: "default", messageId: "9001", sourceText: expect.stringContaining("Authorized approvers") }));
+      expect(sendState.sendZulipPrivateMessage.mock.calls.at(-2)![1]).toMatchObject({
+        content: expect.stringContaining("✅ = Allow once; ❌ = Deny"), widgetContent: undefined,
+      });
+      expect(sendState.sendZulipPrivateMessage.mock.calls.at(-1)![1]).toMatchObject({
+        content: "Approval controls for req-1", widgetContent: { widget_type: "zform" },
+      });
+      expect(register).toHaveBeenCalledWith(expect.objectContaining({ accountId: "default", messageId: "9001", widgetMessageId: "9001", sourceText: expect.stringContaining("Authorized approvers") }));
       zulipApprovalReactions.clearAccount("default");
       await sendMessageZulip("user:alice@example.test", "Approval", {
         cfg: { channels: { zulip: { allowFrom: [] } } },
@@ -276,7 +278,7 @@ describe("sendMessageZulip media and presentation", () => {
       expect(sent.content).not.toContain("Authorized approvers can also react");
       expect(sent.widgetContent).toMatchObject({ widget_type: "zform" });
       for (const decision of allowedDecisions) expect(JSON.stringify(sent.widgetContent)).toContain(`/approve inactive ${decision}`);
-      expect(await zulipApprovalReactions.command({ cfg, accountId: "default", senderId: "ian@test", text: `/approve inactive ${allowedDecisions[0]}` })).toBe(false);
+      expect(await zulipApprovalReactions.command({ cfg, accountId: "default", senderId: "stranger@test", text: `/approve inactive ${allowedDecisions[0]}` })).toBe(true);
     } finally { sendState.account.config = originalAccountConfig; zulipApprovalReactions.clearAccount("default"); }
   });
   it("uses the explicit target topic for both text and media when thread context disagrees", async () => {

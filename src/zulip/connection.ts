@@ -86,9 +86,10 @@ export class ZulipConnection {
   claimMonitor(target: Target) {
     const entry = this.entry(target);
     const owner = Symbol();
+    const retiringCore = entry.core;
     entry.monitors.add(owner);
     this.retireCore(entry);
-    void this.stop(entry).catch(() => {});
+    if (retiringCore) void this.stop(entry).catch(() => {});
     let closed = false;
     let closing: Promise<void> | undefined;
     const stop = async () => {

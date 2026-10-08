@@ -190,6 +190,9 @@ This manual ledger supplies the contracts for Hawk's independent gate:
 - **Single owner/terminal lifetime:** a real SDK typing loop in the actual monitor
   test owns inbound admission, suppressed core start/clear and reaction-hold stop.
   Coordinator tests separately own concurrent inbound owners and topic isolation.
+  The interleaved sibling-admission case starts one monitor before admitting the
+  second; it fails on `3c10f7e` (an extra stop/start interrupts the first) and passes
+  when admission retires only a core-owned indicator, never another monitor.
   Removing both core owner gates fails the no-duplicate regression; restored code
   passes. The host matrix proves the same behavior through each real SDK caller.
 - **Existing backoff test:** replaced its assertion about the second abort-listener

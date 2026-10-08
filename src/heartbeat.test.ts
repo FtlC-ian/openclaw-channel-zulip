@@ -192,9 +192,10 @@ describe("Zulip heartbeat transport", () => {
     const subject = setup();
     const target = { type: "stream" as const, streamId: 42, topic: "A" };
     const a = subject.connection.claimMonitor(target);
+    await a.start();
     const b = subject.connection.claimMonitor(target);
     const c = subject.connection.claimMonitor({ ...target, topic: "B" });
-    await Promise.all([a.start(), b.start(), c.start()]);
+    await Promise.all([b.start(), c.start()]);
     expect(subject.typing().filter(call => call.op === "start").map(call => call.topic).sort()).toEqual(["A", "B"]);
     await a.close();
     expect(subject.typing().filter(call => call.op === "stop")).toHaveLength(0);

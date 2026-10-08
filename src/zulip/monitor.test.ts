@@ -7,6 +7,15 @@ import { buildChannelInboundEventContext } from "openclaw/plugin-sdk/channel-inb
 import type { RuntimeEnv } from "../sdk.js";
 import { zulipThreading } from "../threading.js";
 
+const approvalGatewayMocks = vi.hoisted(() => ({ resolve: vi.fn() }));
+vi.mock("openclaw/plugin-sdk/approval-gateway-runtime", () => ({ resolveApprovalOverGateway: approvalGatewayMocks.resolve }));
+
+const approvalObserverMocks = vi.hoisted(() => ({ create: vi.fn(), start: vi.fn(), stop: vi.fn() }));
+vi.mock("openclaw/plugin-sdk/gateway-runtime", () => ({
+  createOperatorApprovalsGatewayClient: approvalObserverMocks.create.mockImplementation(async () => ({ stop: approvalObserverMocks.stop })),
+  startGatewayClientWhenEventLoopReady: approvalObserverMocks.start,
+}));
+
 const questionRuntimeMocks = vi.hoisted(() => ({
   registerChannelDelivery: vi.fn(),
   resolveOption: vi.fn(),
@@ -395,11 +404,13 @@ const typingCallbacksMock = vi.fn(() => ({
   onCleanup: vi.fn(),
 }));
 
+const readPairingAllowFromMock = vi.fn(async () => state.pairingAllowFrom);
+
 vi.mock("../sdk.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../sdk.js")>(),
   createChannelPairingController: vi.fn(() => ({
     upsertPairingRequest: state.upsertPairingRequest,
-    readStoreForDmPolicy: vi.fn(async () => state.pairingAllowFrom),
+    readStoreForDmPolicy: readPairingAllowFromMock,
   })),
 }));
 
@@ -556,11 +567,17 @@ describe("monitorZulipProvider", () => {
   beforeEach(async () => {
     const { startZulipMonitorReactionLifecycles } = await import("./monitor.js");
     startZulipMonitorReactionLifecycles();
+    state.botUser.id = 999;
+    approvalObserverMocks.create.mockClear();
+    approvalObserverMocks.start.mockClear();
+    approvalObserverMocks.stop.mockClear();
     state.core = state.createCore();
     state.core.channel.inbound.buildContext.mockImplementation(buildChannelInboundEventContext);
     state.durableStores = new Map();
     state.durableQueues = new Map();
     state.pairingAllowFrom = [];
+    readPairingAllowFromMock.mockReset().mockImplementation(async () => state.pairingAllowFrom);
+    approvalGatewayMocks.resolve.mockReset().mockResolvedValue({ applied: true, approval: { status: "allowed", decision: "allow-once" } });
     state.pairingUpsertError = undefined;
     state.upsertPairingRequest.mockReset().mockImplementation(async () => {
       if (state.pairingUpsertError) {
@@ -611,6 +628,84 @@ describe("monitorZulipProvider", () => {
     typingCallbacksMock.mockClear();
   });
 
+  it.each(["unchanged", "revoked", "disabled", "removed", "aborted"])("revalidates %s manual/zform approval after asynchronous ingress authorization", async (change) => {
+    const approvalModule = await import("./approval-reactions.js");
+    const { buildApprovalPendingReplyPayload } = await import("openclaw/plugin-sdk/approval-runtime");
+    const command = vi.spyOn(approvalModule.zulipApprovalReactions, "command");
+    const controller = new AbortController();
+    const email = "user8@zlp.pubnerd.app";
+    state.botUser.id = 13;
+    const initial = { channels: { zulip: { url: state.account.baseUrl, email: state.account.email, apiKey: "test-key", allowFrom: [email], dmPolicy: "pairing" } } } as any;
+    let committed = initial;
+    state.account.config = initial.channels.zulip;
+    state.autoAbort = false;
+    state.abortController = controller;
+    await approvalModule.zulipApprovalReactions.register({
+      cfg: initial, accountId: "default", messageId: "approval-100", client: state.client, sourceText: "Approval required",
+      payload: buildApprovalPendingReplyPayload({ approvalId: "9f832b3e-561c-47df-a95c-beb76511a55a", approvalSlug: "9f832b3e", text: "Approval required", allowedDecisions: ["allow-once", "deny"] }),
+    });
+    readPairingAllowFromMock.mockImplementationOnce(async () => {
+      if (change === "revoked") committed = { channels: { zulip: { ...initial.channels.zulip, allowFrom: ["someone-else@test"] } } };
+      if (change === "disabled") committed = { channels: { zulip: { ...initial.channels.zulip, enabled: false } } };
+      if (change === "removed") committed = {};
+      if (change === "aborted") controller.abort();
+      return [];
+    });
+    getZulipEventsWithRetryMock.mockImplementationOnce(async () => ({ result: "success", events: [{ id: 1, type: "message", message: { ...makeChannelMessage(9620000 + ["unchanged", "revoked", "disabled", "removed", "aborted"].indexOf(change)), content: "@**Debbie-OG|13** /approve 9f832b3e-561c-47df-a95c-beb76511a55a allow-once" } }] }));
+    getZulipEventsWithRetryMock.mockImplementationOnce(async () => {
+      if (!controller.signal.aborted) {
+        await vi.waitFor(() => expect(command).toHaveBeenCalled());
+        await command.mock.results[0].value;
+      }
+      controller.abort();
+      return { result: "success", events: [] };
+    });
+    try {
+      const { monitorZulipProvider } = await import("./monitor.js");
+      await monitorZulipProvider({ config: initial, getConfig: () => committed, abortSignal: controller.signal });
+      expect(readPairingAllowFromMock).toHaveBeenCalledTimes(1);
+      expect(approvalGatewayMocks.resolve).toHaveBeenCalledTimes(change === "unchanged" ? 1 : 0);
+      if (change === "unchanged") expect(command).toHaveBeenCalledWith(expect.objectContaining({ senderId: email, senderName: "Ian F" }));
+      expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+    } finally {
+      controller.abort(); command.mockRestore(); approvalModule.zulipApprovalReactions.clearAccount("default");
+    }
+  });
+
+  it("subscribes to external terminal events and stops the observer with the monitor", async () => {
+    const { zulipApprovalReactions } = await import("./approval-reactions.js");
+    const controller = new AbortController();
+    const cfg = { channels: { zulip: { url: state.account.baseUrl, email: state.account.email, apiKey: "***", allowFrom: ["user8@zlp.pubnerd.app"] } } } as any;
+    state.account.config = cfg.channels.zulip;
+    state.autoAbort = false;
+    const observe = vi.spyOn(zulipApprovalReactions, "observeTerminal").mockResolvedValue(undefined);
+    getZulipEventsWithRetryMock.mockImplementationOnce(async () => {
+      const event = { event: "exec.approval.resolved", payload: { id: "external", decision: "deny" } };
+      approvalObserverMocks.create.mock.calls[0][0].onEvent(event);
+      await vi.waitFor(() => expect(observe).toHaveBeenCalledWith("default", event));
+      controller.abort();
+      return { result: "success", events: [] };
+    });
+    try {
+      const { monitorZulipProvider } = await import("./monitor.js");
+      await monitorZulipProvider({ config: cfg, abortSignal: controller.signal });
+      expect(approvalObserverMocks.start).toHaveBeenCalledTimes(1);
+      expect(approvalObserverMocks.stop).toHaveBeenCalled();
+      expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+    } finally { controller.abort(); observe.mockRestore(); }
+  });
+
+  it("routes reaction events with live account identity without dispatching an agent turn", async () => {
+    const { zulipApprovalReactions } = await import("./approval-reactions.js");
+    const react = vi.spyOn(zulipApprovalReactions, "react").mockResolvedValue(undefined);
+    try {
+      const event = { id: 1, type: "reaction", op: "add", message_id: 10, user_id: 2, emoji_name: "check", reaction_type: "unicode_emoji" };
+      state.pollResponses = [{ result: "success", events: [event] }];
+      await runMonitorOnce();
+      expect(react).toHaveBeenCalledWith(expect.objectContaining({ accountId: state.account.accountId, botUserId: String(state.botUser.id), event, client: state.client }));
+      expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+    } finally { react.mockRestore(); }
+  });
   it("dispatches an accepted inbound message through the channel-turn lifecycle", async () => {
     state.pollResponses = [
       {
@@ -3210,7 +3305,7 @@ describe("monitorZulipProvider", () => {
 
     expect(registerZulipQueueMock).toHaveBeenCalledTimes(2);
     for (const call of registerZulipQueueMock.mock.calls) {
-      expect(call[1]).toEqual({ eventTypes: ["message"], streams: ["*"] });
+      expect(call[1]).toEqual({ eventTypes: ["message", "reaction"], streams: ["*"] });
     }
   });
 
@@ -3226,7 +3321,7 @@ describe("monitorZulipProvider", () => {
 
     expect(registerZulipQueueMock).toHaveBeenCalledWith(
       state.client,
-      { eventTypes: ["message"], streams: ["general"] },
+      { eventTypes: ["message", "reaction"], streams: ["general"] },
     );
   });
 
@@ -4004,7 +4099,9 @@ describe("monitorZulipProvider", () => {
     const startedAt = Date.now();
     const monitorPromise = runMonitorOnce(controller);
     try {
-      await vi.advanceTimersByTimeAsync(0);
+      await vi.waitFor(() => {
+        expect(state.durableQueues.get(state.account.accountId)?.release).toHaveBeenCalledTimes(1);
+      }, { interval: 0 });
       const queue = state.durableQueues.get(state.account.accountId);
       expect(queue?.release).toHaveBeenCalledExactlyOnceWith(retryableDurableId, {
         lastError: "Zulip stream metadata unavailable during durable replay",

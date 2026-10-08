@@ -11,7 +11,7 @@ function normalizeZulipApproverId(value: string | number): string | undefined {
   return email || undefined;
 }
 
-function resolveZulipApprovers(cfg: OpenClawConfig, accountId?: string | null): string[] {
+export function resolveZulipApprovers(cfg: OpenClawConfig, accountId?: string | null): string[] {
   const allowFrom = resolveZulipAccount({ cfg, accountId }).config.allowFrom ?? [];
   const seen = new Set<string>();
   const approvers: string[] = [];

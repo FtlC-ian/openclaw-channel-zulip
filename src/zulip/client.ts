@@ -80,6 +80,11 @@ export type ZulipMessage = {
 };
 
 export type ZulipEvent = {
+  op?: string;
+  user_id?: number;
+  message_id?: number;
+  emoji_name?: string;
+  reaction_type?: string;
   id: number;
   type: string;
   message?: ZulipMessage;

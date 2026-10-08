@@ -1,7 +1,7 @@
 {
   "name": "openclaw-channel-zulip",
   "version": "2026.10.8",
-  "description": "Zulip channel plugin for OpenClaw \u2014 concurrent message processing, file uploads, approval hooks, and native message actions",
+  "description": "Zulip channel plugin for OpenClaw — concurrent message processing, file uploads, approval hooks, and native message actions",
   "type": "module",
   "author": "FtlC-ian",
   "license": "MIT",
@@ -29,6 +29,7 @@
   "files": [
     "dist/",
     "docs/ACTION_CAPABILITIES.md",
+    "docs/APPROVAL_REACTIONS.md",
     "docs/LIFECYCLE.md",
     "docs/RELEASE_CHECKLIST.md",
     "docs/TOPIC_MIGRATION.md",
@@ -40,12 +41,14 @@
     "CHANGELOG.md"
   ],
   "scripts": {
-    "build": "tsc && node scripts/sync-plugin-manifest.mjs --check",
+    "build": "tsc && node scripts/sync-plugin-manifest.mjs --check && node scripts/check-sdk-exports.mjs",
+    "sdk:check": "node scripts/check-sdk-exports.mjs",
     "manifest:sync": "tsc && node scripts/sync-plugin-manifest.mjs",
     "manifest:check": "tsc && node scripts/sync-plugin-manifest.mjs --check",
     "prepack": "npm run build",
-    "test": "vitest run src && node --test scripts/migrate-topic-sessions.test.mjs",
-    "prepublishOnly": "npm run build"
+    "test": "vitest run src && node --test scripts/migrate-topic-sessions.test.mjs scripts/check-sdk-exports.test.mjs",
+    "prepublishOnly": "npm run build",
+    "test:hosts": "node --test scripts/approval-host-smoke.test.mjs"
   },
   "dependencies": {
     "zod": "^4.4.3"

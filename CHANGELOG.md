@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Features
+- **Reaction approvals** (#92): Keep zform buttons and seed ✅ (allow once) / ❌ (deny) on the same approval message for mobile and web. Require explicit account `allowFrom` approvers, bind canonical approval ownership and TTL targets to the exact sent message, settle through the shared Gateway resolver, and edit terminal outcomes. Configure `approvalReactions.approve` / `approvalReactions.deny` per account.
+
+### Compatibility
+- **Reaction SDK compatibility** (#92): Register TTL-bound targets from actually delivered approval payloads, matching Signal's public SDK pattern. Remove the passive observer dependency so reaction approvals work on OpenClaw 2026.9.3, 2026.9.6 and 2026.10.1-beta.1/beta.2. Revalidate account, abort and approver policy after lazy resolver loading. Built-artifact host tests check exports, load and enabled reactions on all four hosts.
+
+### Bug Fixes
+- **Approval buttons and prompts** (#92): Implement `outbound.renderPresentation`, so core approval prompts render as zform buttons instead of falling back to plain text. A button click posts `@**bot** /approve ...`; strip a leading mention of this bot before matching, so clicks resolve the approval instead of queueing behind the blocked run. This was broken before #92 too. Resolved prompts are edited to start with the outcome and approver, and the separate button message and seeded reactions are removed.
+
+### Upgrade notes
+- Installing or updating to this version needs `--accept-capabilities` (for example `openclaw plugins update openclaw-channel-zulip@<version> --accept-capabilities`).
+- CLI-backed agents (claude-cli) block while waiting for approval, so the prompt reaches Zulip only through core forwarding. Set `approvals.exec` to `{ "enabled": true, "mode": "session" }`. See `docs/APPROVAL_REACTIONS.md`.
+
 ## 2026.10.8
 
 ### Features

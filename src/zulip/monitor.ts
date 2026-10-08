@@ -1,3 +1,4 @@
+import { startZulipApprovalObserver, stripLeadingZulipApprovalBotMention, zulipApprovalReactions } from "./approval-reactions.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type {
@@ -230,7 +231,10 @@ function cacheZulipStreamMetadata(accountId: string, metadata: ZulipStreamMetada
 
 export function clearZulipAccountMonitorCaches(accountId: string, removed = false): void {
   clearZulipStreamMetadataCache(accountId);
-  if (removed) recentInboundMessages.clearPrefix(`${accountId}:`);
+  if (removed) {
+    recentInboundMessages.clearPrefix(`${accountId}:`);
+    zulipApprovalReactions.clearAccount(accountId);
+  }
 }
 
 function clearZulipStreamMetadataCache(accountId: string): void {
@@ -695,6 +699,8 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     log: logVerboseMessage,
   });
 
+  let stopApprovalObserver = () => {};
+
   const activeMessageTasks = new Set<Promise<void>>();
   let abortedMessagePreservationFailed = false;
   let abortedMessagePreservationError: unknown;
@@ -905,6 +911,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     });
 
     const rawText = stripHtmlToText(message.content ?? "");
+    const approvalCommandText = stripHtmlToText(stripLeadingZulipApprovalBotMention(message.content ?? "", { userId: String(botUserId), email: botEmail }));
 
     const questionConversation: ZulipQuestionConversation = isDM
       ? { kind: "dm", recipient: dmTargetIdentity }
@@ -955,7 +962,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       surface: "zulip",
     });
     const isQuestionControl = zulipQuestionZformStore.recognizes(questionMessage);
-    const hasControlCommand = isQuestionControl || core.channel.text.hasControlCommand(rawText, cfg);
+    const hasControlCommand = isQuestionControl || core.channel.text.hasControlCommand(approvalCommandText, cfg);
     const isControlCommand = allowTextCommands && hasControlCommand;
     const useAccessGroups = true;
     const senderAllowedForCommands = isSenderAllowed({
@@ -1048,6 +1055,19 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     if (isQuestionControl && !commandAuthorized) {
       return;
     }
+
+    if (opts.abortSignal?.aborted || monitorReactionShutdownStarted) return ABORTED_INBOUND_MESSAGE;
+    if (await zulipApprovalReactions.command({
+      cfg,
+      getConfig: opts.getConfig,
+      abortSignal: opts.abortSignal,
+      accountId: account.accountId,
+      senderId: senderIdentity,
+      senderName: message.sender_full_name?.trim() || undefined,
+      text: approvalCommandText,
+      botUserId: String(botUserId),
+      botEmail,
+    })) return;
 
     const questionControl = await zulipQuestionZformStore.intercept({
       message: questionMessage,
@@ -2167,7 +2187,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
   })();
   const pendingReceiveCheckpoints = new Set<Promise<void>>();
   const queue = await registerZulipQueue(client, {
-    eventTypes: ["message"],
+    eventTypes: ["message", "reaction"],
     streams: registrationStreams,
   });
   let queueId = queue.queueId;
@@ -2598,6 +2618,11 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
 
   activeMonitorReactionCleanups.add(cleanupActiveReactionLifecycles);
   try {
+    stopApprovalObserver = await startZulipApprovalObserver({
+      cfg, accountId: account.accountId, abortSignal: opts.abortSignal,
+      onError: (error) => runtime.error?.(`zulip: approval terminal observer failed: ${String(error)}`),
+    });
+
     await replayPendingDurableInboundMessages();
 
     // Long-poll at 90s — nginx proxy_read_timeout is now 120s
@@ -2623,7 +2648,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
           if (isBadQueue) {
             runtime.log?.("zulip: queue expired, re-registering...");
             const newQueue = await registerZulipQueue(client, {
-              eventTypes: ["message"],
+              eventTypes: ["message", "reaction"],
               streams: registrationStreams,
             });
             queueId = newQueue.queueId;
@@ -2683,6 +2708,21 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
             lastEventId = validEventId;
           }
 
+          if (event.type === "reaction") {
+            try {
+              await zulipApprovalReactions.react({
+                abortSignal: opts.abortSignal,
+                getConfig: opts.getConfig,
+                cfg: opts.getConfig?.() ?? cfg,
+                accountId: account.accountId,
+                botUserId: String(botUserId),
+                event,
+                client,
+              });
+            } catch (error) {
+              runtime.error?.(`zulip: approval reaction failed: ${String(error)}`);
+            }
+          }
           if (event.type === "message" && event.message) {
             const inboundMessage = event.flags
               ? { ...event.message, flags: [...event.flags] }
@@ -2741,7 +2781,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         if (errStr.toLowerCase().includes("bad event queue")) {
           runtime.log?.("zulip: bad event queue error thrown; re-registering...");
           const newQueue = await registerZulipQueue(client, {
-            eventTypes: ["message"],
+            eventTypes: ["message", "reaction"],
             streams: registrationStreams,
           });
           queueId = newQueue.queueId;
@@ -2769,6 +2809,8 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       }
     }
   } finally {
+    stopApprovalObserver();
+    zulipApprovalReactions.clearAccount(account.accountId);
     opts.abortSignal?.removeEventListener("abort", handleMonitorAbort);
     if (opts.abortSignal?.aborted) await cleanupActiveReactionLifecycles();
     await Promise.allSettled(Array.from(activeMessageTasks));

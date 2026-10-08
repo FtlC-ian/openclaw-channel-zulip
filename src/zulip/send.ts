@@ -1,3 +1,6 @@
+import { readApprovalBinding } from "./approval-sdk.js";
+import { resolveZulipApprovers } from "../approval-auth.js";
+import { resolveZulipApprovalReactionControls, zulipApprovalReactions } from "./approval-reactions.js";
 import fs from "node:fs";
 import fsPromises from "node:fs/promises";
 import path from "node:path";
@@ -362,6 +365,13 @@ export async function sendMessageZulip(
   }
 
   message = prependZulipRoutingNotice(message, fallback);
+  const approvalBinding = readApprovalBinding({ payload: { presentation: opts.presentation, channelData: opts.channelData } });
+  if (approvalBinding && resolveZulipApprovers(opts.cfg, account.accountId).length > 0) {
+    const controls = resolveZulipApprovalReactionControls(approvalBinding.allowedDecisions, account.config.approvalReactions);
+    if (controls.length > 0) {
+      message += `\n\nAuthorized approvers can also react: ${controls.map(({ emoji, label }) => `${emoji} = ${label}`).join("; ")}.`;
+    }
+  }
 
   const preflightTargetSummary = (() => {
     if (target.kind === "user") {
@@ -420,12 +430,17 @@ export async function sendMessageZulip(
     messageLength: message.length,
   });
 
+  // Zulip refuses content edits on any widget message. Keep the canonical
+  // approval prompt editable and deliver its zform as a disposable companion.
+  const splitApprovalWidget = Boolean(approvalBinding && widgetContent && resolveZulipApprovers(opts.cfg, account.accountId).length);
+  const promptWidget = splitApprovalWidget ? undefined : widgetContent;
+  let widgetMessageId: string | undefined;
   let messageId = "unknown";
   if (target.kind === "user") {
     const response = await sendZulipPrivateMessage(client, {
       to: target.email,
       content: message,
-      widgetContent,
+      widgetContent: promptWidget,
     });
     messageId = response.id ? String(response.id) : "unknown";
   } else {
@@ -433,7 +448,7 @@ export async function sendMessageZulip(
       stream: target.stream,
       topic: target.topic,
       content: message,
-      widgetContent,
+      widgetContent: promptWidget,
     });
     messageId = response.id ? String(response.id) : "unknown";
   }
@@ -445,6 +460,23 @@ export async function sendMessageZulip(
     hadWidget: Boolean(widgetContent),
     widgetContentSource,
   });
+
+  if (splitApprovalWidget) {
+    const content = `Approval controls for ${approvalBinding!.approvalId}`;
+    try {
+      const response = target.kind === "user"
+        ? await sendZulipPrivateMessage(client, { to: target.email, content, widgetContent })
+        : await sendZulipStreamMessage(client, { stream: target.stream, topic: target.topic, content, widgetContent });
+      widgetMessageId = response.id ? String(response.id) : undefined;
+    } catch (error) {
+      // The canonical prompt is already visible. Do not report a failed delivery
+      // or leave its fallback commands unbound merely because desktop controls
+      // failed; reactions/manual approval remain available on the prompt.
+      logger.warn?.("zulip approval companion delivery failed; retaining canonical prompt", {
+        accountId: account.accountId, messageId, error: String(error),
+      });
+    }
+  }
 
   if (questionPreparation) {
     const conversation =
@@ -474,6 +506,8 @@ export async function sendMessageZulip(
       });
     }
   }
+
+  await zulipApprovalReactions.register({ cfg: opts.cfg, accountId: account.accountId, messageId, widgetMessageId, client, sourceText: message, payload: { presentation: opts.presentation, channelData: opts.channelData } });
 
   core.channel.activity.record({
     channel: "zulip",

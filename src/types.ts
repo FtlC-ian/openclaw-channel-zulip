@@ -89,6 +89,8 @@ export type ZulipAccountConfig = {
   mediaMaxMb?: number;
   /** Mark successfully handled inbound messages read after durable completion. Default: false. */
   markHandledRead?: boolean;
+  /** Approval message controls. Defaults: ✅ allow-once, ❌ deny. */
+  approvalReactions?: { approve?: string; deny?: string };
   /** Automatic lifecycle reactions on the inbound Zulip message. */
   reactions?: {
     enabled?: boolean;

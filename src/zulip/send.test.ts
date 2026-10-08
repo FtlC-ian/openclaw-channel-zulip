@@ -213,7 +213,8 @@ vi.mock("../runtime.js", () => ({
   getZulipRuntime: () => sendState.runtime,
 }));
 
-vi.mock("./accounts.js", () => ({
+vi.mock("./accounts.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("./accounts.js")>(),
   resolveZulipRuntimeAccount: vi.fn(async () => sendState.account),
 }));
 
@@ -227,6 +228,80 @@ vi.mock("./client.js", () => ({
 }));
 
 describe("sendMessageZulip media and presentation", () => {
+  it("keeps the zform and binds reactions to the exact account and returned message ID", async () => {
+    const { zulipApprovalReactions } = await import("./approval-reactions.js");
+    const register = vi.spyOn(zulipApprovalReactions, "register").mockResolvedValue(undefined);
+    try {
+      await sendMessageZulip("user:alice@example.test", "Approval", {
+        cfg: { channels: { zulip: { allowFrom: ["ian@test"] } } },
+        channelData: { execApproval: { approvalId: "req-1", approvalKind: "exec", state: "pending", allowedDecisions: ["allow-once", "deny"] } },
+        presentation: { blocks: [{ type: "buttons", buttons: [
+          { label: "Allow once", action: { type: "command", command: "/approve req-1 allow-once" } },
+          { label: "Deny", action: { type: "command", command: "/approve req-1 deny" } },
+        ] }] },
+      });
+      expect(sendState.sendZulipPrivateMessage.mock.calls.at(-2)![1]).toMatchObject({
+        content: expect.stringContaining("✅ = Allow once; ❌ = Deny"), widgetContent: undefined,
+      });
+      expect(sendState.sendZulipPrivateMessage.mock.calls.at(-1)![1]).toMatchObject({
+        content: "Approval controls for req-1", widgetContent: { widget_type: "zform" },
+      });
+      expect(register).toHaveBeenCalledWith(expect.objectContaining({ accountId: "default", messageId: "9001", widgetMessageId: "9001", sourceText: expect.stringContaining("Authorized approvers") }));
+      zulipApprovalReactions.clearAccount("default");
+      await sendMessageZulip("user:alice@example.test", "Approval", {
+        cfg: { channels: { zulip: { allowFrom: [] } } },
+        channelData: { execApproval: { approvalId: "req-1", approvalKind: "exec", state: "pending", allowedDecisions: ["allow-once", "deny"] } },
+        presentation: { blocks: [{ type: "buttons", buttons: [
+          { label: "Allow once", action: { type: "command", command: "/approve req-1 allow-once" } },
+          { label: "Deny", action: { type: "command", command: "/approve req-1 deny" } },
+        ] }] },
+      });
+      const sent = sendState.sendZulipPrivateMessage.mock.calls.at(-1)![1];
+      expect(sent.content).not.toContain("Authorized approvers can also react");
+      expect(sent.widgetContent).toMatchObject({ widget_type: "zform" });
+      expect(JSON.stringify(sent.widgetContent)).toContain("/approve req-1 allow-once");
+    } finally { register.mockRestore(); zulipApprovalReactions.clearAccount("default"); }
+  });
+  it.each(["dm", "stream"])("keeps a successful %s approval prompt bound when its companion zform fails", async (kind) => {
+    const { zulipApprovalReactions } = await import("./approval-reactions.js");
+    const { buildApprovalPendingReplyPayload } = await import("openclaw/plugin-sdk/approval-runtime");
+    const register = vi.spyOn(zulipApprovalReactions, "register").mockResolvedValue(undefined);
+    const warn = vi.fn();
+    const logger = vi.spyOn(sendState.runtime.logging, "getChildLogger").mockReturnValue({ debug: vi.fn(), warn });
+    const send = kind === "dm" ? sendState.sendZulipPrivateMessage : sendState.sendZulipStreamMessage;
+    const callsBefore = send.mock.calls.length;
+    send.mockResolvedValueOnce({ id: 7101 }).mockRejectedValueOnce(new Error("companion refused"));
+    const pending = buildApprovalPendingReplyPayload({ approvalId: "partial", approvalSlug: "partial", text: "Approval", allowedDecisions: ["allow-once", "deny"] });
+    try {
+      const result = await sendMessageZulip(kind === "dm" ? "user:alice@example.test" : "stream:general:general chat", pending.text!, {
+        cfg: { channels: { zulip: { allowFrom: ["ian@test"] } } }, presentation: pending.presentation, channelData: pending.channelData,
+      });
+      expect(result.messageId).toBe("7101");
+      expect(send.mock.calls.length - callsBefore).toBe(2);
+      expect(send.mock.calls[callsBefore][1].widgetContent).toBeUndefined();
+      expect(register).toHaveBeenCalledWith(expect.objectContaining({ messageId: "7101", widgetMessageId: undefined, sourceText: expect.stringContaining("Authorized approvers") }));
+      expect(warn).toHaveBeenCalledWith("zulip approval companion delivery failed; retaining canonical prompt", expect.objectContaining({ messageId: "7101" }));
+    } finally { register.mockRestore(); logger.mockRestore(); }
+  });
+  it.each([
+    { reason: "unsupported-only decisions", allowedDecisions: ["allow-always"] as const, approvalReactions: undefined },
+    { reason: "normalized emoji collisions", allowedDecisions: ["allow-once", "deny"] as const, approvalReactions: { approve: "check", deny: "✅" } },
+  ])("preserves fallback controls without advertising inactive reactions for $reason", async ({ allowedDecisions, approvalReactions }) => {
+    const { buildApprovalPendingReplyPayload } = await import("openclaw/plugin-sdk/approval-runtime");
+    const { zulipApprovalReactions } = await import("./approval-reactions.js");
+    const cfg = { channels: { zulip: { allowFrom: ["ian@test"], approvalReactions } } };
+    const originalAccountConfig = sendState.account.config;
+    sendState.account.config = cfg.channels.zulip;
+    const pending = buildApprovalPendingReplyPayload({ approvalId: "inactive", approvalSlug: "inactive", text: "Approval", allowedDecisions: [...allowedDecisions] });
+    try {
+      await sendMessageZulip("user:alice@example.test", pending.text!, { cfg, channelData: pending.channelData, presentation: pending.presentation });
+      const sent = sendState.sendZulipPrivateMessage.mock.calls.at(-1)![1];
+      expect(sent.content).not.toContain("Authorized approvers can also react");
+      expect(sent.widgetContent).toMatchObject({ widget_type: "zform" });
+      for (const decision of allowedDecisions) expect(JSON.stringify(sent.widgetContent)).toContain(`/approve inactive ${decision}`);
+      expect(await zulipApprovalReactions.command({ cfg, accountId: "default", senderId: "stranger@test", text: `/approve inactive ${allowedDecisions[0]}` })).toBe(true);
+    } finally { sendState.account.config = originalAccountConfig; zulipApprovalReactions.clearAccount("default"); }
+  });
   it("uses the explicit target topic for both text and media when thread context disagrees", async () => {
     await sendMessageZulip("stream:synthetic-stream:Canonical Topic", "text", {
       cfg: {},

@@ -94,6 +94,7 @@ export type MonitorZulipOpts = {
   config?: OpenClawConfig;
   runtime?: RuntimeEnv;
   abortSignal?: AbortSignal;
+  getConfig?: () => OpenClawConfig;
   statusSink?: (patch: Partial<ChannelAccountSnapshot>) => void;
 };
 
@@ -225,6 +226,11 @@ function normalizeZulipStreamMetadata(
 
 function cacheZulipStreamMetadata(accountId: string, metadata: ZulipStreamMetadata): void {
   streamMetadataCache.set(streamMetadataCacheKey(accountId, metadata.streamId), metadata);
+}
+
+export function clearZulipAccountMonitorCaches(accountId: string, removed = false): void {
+  clearZulipStreamMetadataCache(accountId);
+  if (removed) recentInboundMessages.clearPrefix(`${accountId}:`);
 }
 
 function clearZulipStreamMetadataCache(accountId: string): void {
@@ -467,6 +473,12 @@ async function saveZulipMediaBuffer(params: {
   return { path: filePath, contentType };
 }
 
+class ZulipAbortPreservationError extends Error {
+  constructor(cause: unknown) {
+    super(`Zulip aborted receive preservation failed: ${String(cause)}`, { cause });
+  }
+}
+
 const ABORTED_INBOUND_MESSAGE = Symbol("aborted-inbound-message");
 const RETRYABLE_INBOUND_MESSAGE = Symbol("retryable-inbound-message");
 const RETRYABLE_STREAM_POLICY = Symbol("retryable-stream-policy");
@@ -683,17 +695,9 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     log: logVerboseMessage,
   });
 
-  const oncharPrefixes = resolveOncharPrefixes(account.oncharPrefixes);
-  const oncharEnabled = account.chatmode === "onchar";
-
-  const mediaMaxBytes =
-    (account.config.mediaMaxMb || cfg.agents?.defaults?.mediaMaxMb || 5) * 1024 * 1024;
-
-  const statusReactionConfig = resolveZulipStatusReactionConfig({
-    accountConfig: account.config,
-    globalStatusReactions: cfg.messages?.statusReactions,
-  });
   const activeMessageTasks = new Set<Promise<void>>();
+  let abortedMessagePreservationFailed = false;
+  let abortedMessagePreservationError: unknown;
   const activeReactionCleanups = new Set<() => Promise<void>>();
   let reactionCleanupChain = Promise.resolve();
   const cleanupActiveReactionLifecycles = (): Promise<void> => {
@@ -703,11 +707,6 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     );
     return reactionCleanupChain;
   };
-  const thinkingPlaceholderConfig = account.config.thinkingPlaceholder;
-  const thinkingPlaceholderEnabled = thinkingPlaceholderConfig?.enabled === true;
-  const thinkingPlaceholderText = thinkingPlaceholderConfig?.text?.trim() || "Thinking…";
-  const thinkingPlaceholderErrorText =
-    thinkingPlaceholderConfig?.errorText?.trim() || "I couldn't complete that response.";
 
   const pairing = createChannelPairingController({
     core,
@@ -784,7 +783,9 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
 
     const topic = message.subject;
     const policy = resolveZulipInboundStreamPolicy({
-      config: account.config,
+      config: opts.getConfig
+        ? (await resolveZulipRuntimeAccount({ cfg: opts.getConfig(), accountId: account.accountId })).config
+        : account.config,
       streamName,
       streamId,
     });
@@ -820,6 +821,25 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       acceptInbound?: () => Promise<boolean>;
     } = {},
   ) => {
+    const cfg = opts.getConfig?.() ?? opts.config!;
+    const messageAccount = opts.getConfig
+      ? await resolveZulipRuntimeAccount({ cfg, accountId: opts.accountId })
+      : account;
+    const oncharPrefixes = resolveOncharPrefixes(messageAccount.oncharPrefixes);
+    const oncharEnabled = messageAccount.chatmode === "onchar";
+
+    const mediaMaxBytes =
+      (messageAccount.config.mediaMaxMb || cfg.agents?.defaults?.mediaMaxMb || 5) * 1024 * 1024;
+
+    const statusReactionConfig = resolveZulipStatusReactionConfig({
+      accountConfig: messageAccount.config,
+      globalStatusReactions: cfg.messages?.statusReactions,
+    });
+    const thinkingPlaceholderConfig = messageAccount.config.thinkingPlaceholder;
+    const thinkingPlaceholderEnabled = thinkingPlaceholderConfig?.enabled === true;
+    const thinkingPlaceholderText = thinkingPlaceholderConfig?.text?.trim() || "Thinking…";
+    const thinkingPlaceholderErrorText =
+      thinkingPlaceholderConfig?.errorText?.trim() || "I couldn't complete that response.";
     if (opts.abortSignal?.aborted || monitorReactionShutdownStarted) {
       return ABORTED_INBOUND_MESSAGE;
     }
@@ -827,7 +847,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     if (!messageId) {
       return;
     }
-    const dedupeKey = `${account.accountId}:${messageId}`;
+    const dedupeKey = `${messageAccount.accountId}:${messageId}`;
     if (!options.skipRecentDedupe && recentInboundMessages.check(dedupeKey)) {
       return;
     }
@@ -877,7 +897,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     }
 
     const streamConversation = isDM ? null : buildZulipStreamConversation({
-      accountId: account.accountId,
+      accountId: messageAccount.accountId,
       baseUrl,
       botIdentity: email,
       streamId,
@@ -890,7 +910,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       ? { kind: "dm", recipient: dmTargetIdentity }
       : { kind: "stream", stream: streamId, topic };
     const questionMessage = {
-      accountId: account.accountId,
+      accountId: messageAccount.accountId,
       conversation: questionConversation,
       senderId: senderIdentity,
       text: rawText,
@@ -907,15 +927,15 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       (rawText.toLowerCase().includes(`@${botUsername.toLowerCase()}`) ||
         core.channel.mentions.matchesMentionPatterns(rawText, mentionRegexes));
 
-    const dmPolicy = account.config.dmPolicy ?? "pairing";
+    const dmPolicy = messageAccount.config.dmPolicy ?? "pairing";
     const defaultGroupPolicy = cfg.channels?.defaults?.groupPolicy;
-    const groupPolicy = account.config.groupPolicy ?? defaultGroupPolicy ?? "allowlist";
-    const normalizedAllowFrom = normalizeAllowList(account.config.allowFrom ?? []);
-    const normalizedGroupAllowFrom = normalizeAllowList(account.config.groupAllowFrom ?? []);
+    const groupPolicy = messageAccount.config.groupPolicy ?? defaultGroupPolicy ?? "allowlist";
+    const normalizedAllowFrom = normalizeAllowList(messageAccount.config.allowFrom ?? []);
+    const normalizedGroupAllowFrom = normalizeAllowList(messageAccount.config.groupAllowFrom ?? []);
     const storeAllowFrom = normalizeAllowList(
       await readChannelIngressStoreAllowFromForDmPolicy({
         provider: "zulip",
-        accountId: account.accountId,
+        accountId: messageAccount.accountId,
         dmPolicy,
         readStore: pairing.readStoreForDmPolicy,
       }),
@@ -986,7 +1006,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
                   idLine: `Your Zulip email: ${senderIdentity}`,
                   code,
                 }),
-                { cfg, accountId: account.accountId },
+                { cfg, accountId: messageAccount.accountId },
               );
               opts.statusSink?.({ lastOutboundAt: Date.now() });
             } catch (err) {
@@ -1040,7 +1060,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
           await sendMessageZulip(
             isDM ? `user:${dmTargetIdentity}` : `stream:${streamId}:${topic}`,
             questionControl.feedback,
-            { cfg, accountId: account.accountId, topic },
+            { cfg, accountId: messageAccount.accountId, topic },
           );
           opts.statusSink?.({ lastOutboundAt: Date.now() });
         } catch (error) {
@@ -1055,9 +1075,9 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       core.channel.groups.resolveRequireMention({
         cfg,
         channel: "zulip",
-        accountId: account.accountId,
+        accountId: messageAccount.accountId,
         groupId: channelId,
-        requireMentionOverride: inboundStreamPolicy?.requireMention ?? account.requireMention,
+        requireMentionOverride: inboundStreamPolicy?.requireMention ?? messageAccount.requireMention,
       });
     const shouldBypassMention =
       isControlCommand && shouldRequireMention && !wasMentioned && commandAuthorized;
@@ -1129,7 +1149,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
 
     core.channel.activity.record({
       channel: "zulip",
-      accountId: account.accountId,
+      accountId: messageAccount.accountId,
       direction: "inbound",
     });
 
@@ -1148,7 +1168,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         ? undefined
         : await resolveCachedZulipStreamMetadata({
             client,
-            accountId: account.accountId,
+            accountId: messageAccount.accountId,
             streamId: channelId,
             log: logVerboseMessage,
           });
@@ -1157,7 +1177,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     const route = core.channel.routing.resolveAgentRoute({
       cfg,
       channel: "zulip",
-      accountId: account.accountId,
+      accountId: messageAccount.accountId,
       teamId: undefined,
       peer: {
         kind: chatType,
@@ -1379,7 +1399,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
           }
           core.channel.activity.record({
             channel: "zulip",
-            accountId: account.accountId,
+            accountId: messageAccount.accountId,
             direction: "outbound",
           });
           return true;
@@ -1417,14 +1437,14 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         );
       }
     };
-    const streamingMode = account.config.streaming?.mode === "progress"
-      ? resolveChannelPreviewStreamMode(account.config, "off")
+    const streamingMode = messageAccount.config.streaming?.mode === "progress"
+      ? resolveChannelPreviewStreamMode(messageAccount.config, "off")
       : "off";
     const progressDraftActive = streamingMode === "progress";
-    const progressStreamingConfig = account.config.streaming;
+    const progressStreamingConfig = messageAccount.config.streaming;
     const progressDraftEntry = progressDraftActive && progressStreamingConfig
       ? {
-          ...account.config,
+          ...messageAccount.config,
           streaming: {
             ...progressStreamingConfig,
             progress: {
@@ -1434,9 +1454,9 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
             },
           },
         }
-      : account.config;
+      : messageAccount.config;
     const narrationHideCommandText =
-      progressDraftActive && resolveChannelStreamingPreviewCommandText(account.config) !== "raw";
+      progressDraftActive && resolveChannelStreamingPreviewCommandText(messageAccount.config) !== "raw";
     let progressMessageId: string | undefined;
     const progressMessageIds = new Set<string>();
     let progressOperation = Promise.resolve();
@@ -1538,7 +1558,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
             progressEditRetryAttempt = 0;
             core.channel.activity.record({
               channel: "zulip",
-              accountId: account.accountId,
+              accountId: messageAccount.accountId,
               direction: "outbound",
             });
             return true;
@@ -1575,7 +1595,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         nextProgressMutationAt = Date.now() + PROGRESS_MUTATION_MIN_INTERVAL_MS;
         const sent = await sendMessageZulip(to, text, {
           cfg,
-          accountId: account.accountId,
+          accountId: messageAccount.accountId,
           topic,
         });
         if (sent.messageId !== "unknown") {
@@ -1585,7 +1605,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         progressEditRetryAttempt = 0;
         core.channel.activity.record({
           channel: "zulip",
-          accountId: account.accountId,
+          accountId: messageAccount.accountId,
           direction: "outbound",
         });
         return Boolean(progressMessageId);
@@ -1610,7 +1630,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       entry: progressDraftEntry,
       mode: streamingMode,
       active: progressDraftActive,
-      seed: `${account.accountId}:${to}`,
+      seed: `${messageAccount.accountId}:${to}`,
       reasoningLinePrefix: "🧠 ",
       commentaryLinePrefix: "💬 ",
       commentaryItalics: false,
@@ -1677,10 +1697,12 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         activeReactionCleanups.delete(cancelReactionLifecycle);
       }
     };
+    let cleanupTyping = () => {};
     let reactionLifecycleCleanup: Promise<void> | undefined;
     const cancelReactionLifecycle = () => {
       reactionLifecycleCleanup ??= (async () => {
         reactionLifecycleCancelled = true;
+        cleanupTyping();
         if (terminalCleanupTimer) {
           clearTimeout(terminalCleanupTimer);
           terminalCleanupTimer = undefined;
@@ -1706,13 +1728,13 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       return ABORTED_INBOUND_MESSAGE;
     }
 
-    const textLimit = core.channel.text.resolveTextChunkLimit(cfg, "zulip", account.accountId, {
-      fallbackLimit: account.textChunkLimit ?? 4000,
+    const textLimit = core.channel.text.resolveTextChunkLimit(cfg, "zulip", messageAccount.accountId, {
+      fallbackLimit: messageAccount.textChunkLimit ?? 4000,
     });
     const tableMode = core.channel.text.resolveMarkdownTableMode({
       cfg,
       channel: "zulip",
-      accountId: account.accountId,
+      accountId: messageAccount.accountId,
     });
 
     const typingParams = isDM
@@ -1750,6 +1772,9 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       },
     });
 
+    cleanupTyping = () => typingCallbacks.onCleanup?.();
+    if (reactionLifecycleCancelled) cleanupTyping();
+
     if (
       thinkingPlaceholderEnabled &&
       !progressDraftActive &&
@@ -1761,7 +1786,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         try {
           const placeholder = await sendMessageZulip(to, thinkingPlaceholderText, {
             cfg,
-            accountId: account.accountId,
+            accountId: messageAccount.accountId,
             topic,
           });
           if (placeholder.messageId !== "unknown") {
@@ -1800,7 +1825,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         const { text, topic: topicOverride } = extractZulipTopicDirective(rawText);
         const resolvedTopic = topicOverride ? topicOverride.slice(0, 60) : topic;
         if (mediaUrls.length === 0) {
-          const chunkMode = core.channel.text.resolveChunkMode(cfg, "zulip", account.accountId);
+          const chunkMode = core.channel.text.resolveChunkMode(cfg, "zulip", messageAccount.accountId);
           const chunks = core.channel.text.chunkMarkdownTextWithMode(text, textLimit, chunkMode);
           let first = true;
           for (const chunk of chunks.length > 0 ? chunks : [text]) {
@@ -1827,7 +1852,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
               { authorizedSenderId: senderIdentity, conversation: questionConversation },
               () => sendMessageZulip(to, chunk, {
                 cfg,
-                accountId: account.accountId,
+                accountId: messageAccount.accountId,
                 topic: resolvedTopic,
                 presentation: first ? payload.presentation : undefined,
                 channelData: first ? payload.channelData : undefined,
@@ -1848,7 +1873,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
               { authorizedSenderId: senderIdentity, conversation: questionConversation },
               () => sendMessageZulip(to, caption, {
                 cfg,
-                accountId: account.accountId,
+                accountId: messageAccount.accountId,
                 mediaUrl,
                 topic: resolvedTopic,
                 presentation: isFirst ? payload.presentation : undefined,
@@ -1926,7 +1951,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
           dispatcherOptions: { propagateRetryableNoSendFailure: true },
           replyOptions: {
             disableBlockStreaming:
-              typeof account.blockStreaming === "boolean" ? !account.blockStreaming : undefined,
+              typeof messageAccount.blockStreaming === "boolean" ? !messageAccount.blockStreaming : undefined,
             abortSignal: opts.abortSignal,
             allowToolLifecycleWhenProgressHidden:
               statusReactionConfig.enabled || progressDraftActive ? true : undefined,
@@ -1937,7 +1962,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
             progressPreambleEnabled: progressDraftActive ? true : undefined,
             reasoningPayloadsEnabled: progressDraftActive ? true : undefined,
             isProgressDraftVisible: progressDraftActive ? () => progressDraft.isVisible : undefined,
-            onNarrationUpdate: progressDraftActive && resolveChannelStreamingProgressNarration(account.config)
+            onNarrationUpdate: progressDraftActive && resolveChannelStreamingProgressNarration(messageAccount.config)
               ? async (payload) => {
                   await progressDraft.pushNarrationProgress(payload.text);
                 }
@@ -2072,12 +2097,12 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       try {
         await sendMessageZulip(to, thinkingPlaceholderErrorText, {
           cfg,
-          accountId: account.accountId,
+          accountId: messageAccount.accountId,
           topic,
         });
         core.channel.activity.record({
           channel: "zulip",
-          accountId: account.accountId,
+          accountId: messageAccount.accountId,
           direction: "outbound",
         });
         replyDeliveryCommitted = true;
@@ -2099,7 +2124,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       opts.statusSink?.({ lastInboundAt: Date.now() });
       return abortOutcome();
     }
-    if (account.config.reactions?.clearOnFinish !== false) {
+    if (messageAccount.config.reactions?.clearOnFinish !== false) {
       const terminalHoldMs = terminalError
         ? (statusReactionConfig.timing?.errorHoldMs ?? DEFAULT_TIMING.errorHoldMs)
         : (statusReactionConfig.timing?.doneHoldMs ?? DEFAULT_TIMING.doneHoldMs);
@@ -2140,6 +2165,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       return undefined;
     }
   })();
+  const pendingReceiveCheckpoints = new Set<Promise<void>>();
   const queue = await registerZulipQueue(client, {
     eventTypes: ["message"],
     streams: registrationStreams,
@@ -2147,6 +2173,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
   let queueId = queue.queueId;
   let lastEventId = queue.lastEventId;
   let pollBackoffMs = 0;
+  let persistingStoppedBatch = false;
 
   runtime.log?.(`zulip event queue registered: ${queueId}`);
 
@@ -2171,7 +2198,10 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
   const handledReadBatcher = createZulipReadBatcher(client);
 
   const markHandledInboundMessageRead = async (message: ZulipMessage): Promise<void> => {
-    if (account.config.markHandledRead !== true) {
+    const currentAccount = opts.getConfig
+      ? await resolveZulipRuntimeAccount({ cfg: opts.getConfig(), accountId: account.accountId })
+      : account;
+    if (currentAccount.config.markHandledRead !== true) {
       logHandledReadDiagnostic("disabled");
       return;
     }
@@ -2213,6 +2243,9 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         streamDecision: options.streamDecision,
         acceptInbound: options.acceptInbound,
       });
+      if (outcome === ABORTED_INBOUND_MESSAGE && options.acceptInbound && options.durableAccepted?.() !== true) {
+        await options.acceptInbound();
+      }
       const manageDurableRecord =
         Boolean(durableId) &&
         (!options.acceptInbound || options.durableAccepted?.() === true);
@@ -2258,6 +2291,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       }
       return "settled";
     } catch (err) {
+      if (err instanceof ZulipAbortPreservationError) throw err;
       if (
         durableInboundJournal &&
         durableId &&
@@ -2434,8 +2468,9 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
 
   const processMessage = async (
     message: ZulipMessage,
-    queueEventId?: number,
-    streamResolution?: InboundStreamResolution,
+    queueEventId: number | undefined,
+    streamResolution: InboundStreamResolution | undefined,
+    onReceiveCheckpoint: () => void,
   ): Promise<void> => {
     const messageId = String(message.id ?? "");
     const metadata: ZulipDurableInboundMetadata | undefined =
@@ -2471,8 +2506,12 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
           ) {
             schedulePendingDurableReplay(acceptedDurableId);
           }
+          onReceiveCheckpoint();
           return durableAccepted;
         } catch (err) {
+          if (opts.abortSignal?.aborted || monitorReactionShutdownStarted) {
+            throw new ZulipAbortPreservationError(err);
+          }
           runtime.log?.(`zulip: failed persisting durable inbound; delivering live: ${String(err)}`);
           return true;
         }
@@ -2563,6 +2602,10 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
 
     // Long-poll at 90s — nginx proxy_read_timeout is now 120s
     while (!opts.abortSignal?.aborted) {
+      // The next poll acknowledges lastEventId; wait for receive admission, not agent completion.
+      await Promise.all(Array.from(pendingReceiveCheckpoints));
+      if (abortedMessagePreservationFailed) throw abortedMessagePreservationError;
+      if (opts.abortSignal?.aborted) break;
       try {
         const response = await getZulipEventsWithRetry(client, {
           queueId,
@@ -2608,8 +2651,29 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         resetPollBackoff();
 
         // Process messages with staggered start times for more natural feel
-        for (const event of events) {
+        for (const [eventIndex, event] of events.entries()) {
           if (opts.abortSignal?.aborted) {
+            if (durableInboundJournal) {
+              persistingStoppedBatch = true;
+              for (const pendingEvent of events.slice(eventIndex)) {
+                if (pendingEvent.type !== "message" || !pendingEvent.message) continue;
+                const pendingMessage = pendingEvent.flags
+                  ? { ...pendingEvent.message, flags: [...pendingEvent.flags] }
+                  : pendingEvent.message;
+                const messageId = String(pendingMessage.id ?? "");
+                if (!messageId) continue;
+                const eventId = Number(pendingEvent.id);
+                await durableInboundJournal.accept(
+                  createZulipDurableInboundMessageId({ accountId: account.accountId, messageId }),
+                  { message: serializeZulipDurableInboundMessage(pendingMessage), receivedAt: Date.now() },
+                  {
+                    receivedAt: Date.now(),
+                    ...(Number.isFinite(eventId) && eventId >= 0 ? { metadata: { queueEventId: eventId } } : {}),
+                  },
+                );
+              }
+              persistingStoppedBatch = false;
+            }
             break;
           }
           const nextEventId = Number((event as { id?: unknown })?.id);
@@ -2646,11 +2710,20 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
               }
             }
             // Start processing without awaiting (fire-and-forget with error handling)
-            const messageTask = processMessage(inboundMessage, validEventId, streamResolution).catch(
+            let receiveCheckpoint!: () => void;
+            const checkpoint = new Promise<void>((resolve) => { receiveCheckpoint = resolve; });
+            pendingReceiveCheckpoints.add(checkpoint);
+            void checkpoint.then(() => pendingReceiveCheckpoints.delete(checkpoint));
+            if (!durableInboundJournal) receiveCheckpoint();
+            const messageTask = processMessage(inboundMessage, validEventId, streamResolution, receiveCheckpoint).catch(
               (err) => {
+                if (err instanceof ZulipAbortPreservationError || opts.abortSignal?.aborted) {
+                  abortedMessagePreservationFailed = true;
+                  abortedMessagePreservationError ??= err;
+                }
                 runtime.error?.(`zulip: message processing failed: ${String(err)}`);
               },
-            );
+            ).finally(receiveCheckpoint);
             activeMessageTasks.add(messageTask);
             void messageTask.finally(() => {
               activeMessageTasks.delete(messageTask);
@@ -2661,6 +2734,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         }
       } catch (err) {
         if (opts.abortSignal?.aborted) {
+          if (persistingStoppedBatch) throw err;
           break;
         }
         const errStr = String(err);
@@ -2696,13 +2770,16 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     }
   } finally {
     opts.abortSignal?.removeEventListener("abort", handleMonitorAbort);
-    await cleanupActiveReactionLifecycles();
+    if (opts.abortSignal?.aborted) await cleanupActiveReactionLifecycles();
     await Promise.allSettled(Array.from(activeMessageTasks));
     await cleanupActiveReactionLifecycles();
     activeMonitorReactionCleanups.delete(cleanupActiveReactionLifecycles);
+    if (abortedMessagePreservationFailed || persistingStoppedBatch) {
+      runtime.error?.(`zulip: retaining unacknowledged queue ${queueId} after failed durable shutdown preservation`);
+    } else {
+      await deleteZulipQueue(client, queueId);
+    }
   }
-
-  // Cleanup
-  await deleteZulipQueue(client, queueId);
+  if (abortedMessagePreservationFailed) throw abortedMessagePreservationError;
   runtime.log?.("zulip monitor stopped");
 }

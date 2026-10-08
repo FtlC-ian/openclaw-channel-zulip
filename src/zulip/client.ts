@@ -119,8 +119,20 @@ function resolveRetryAfterMs(res: Response): number | undefined {
   return undefined;
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function delay(ms: number, signal?: AbortSignal | null): Promise<void> {
+  signal?.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      reject(signal?.reason ?? new DOMException("Aborted", "AbortError"));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 function prepareZulipRequestHeaders(init?: RequestInit, authHeader?: string): Headers {
@@ -239,6 +251,7 @@ export async function zulipRequestWithRetry<T>(
   const method = init?.method ?? "GET";
 
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    init?.signal?.throwIfAborted();
     const url = buildZulipApiUrl(client.baseUrl, path);
     const headers = prepareZulipRequestHeaders(init, client.authHeader);
 
@@ -246,6 +259,7 @@ export async function zulipRequestWithRetry<T>(
     try {
       res = await client.fetchImpl(url, { ...init, headers });
     } catch (err) {
+      if (init?.signal?.aborted) throw err;
       const errorText = err instanceof Error ? err.message : String(err);
       if (attempt >= maxRetries) {
         client.log?.failure?.({ path, method, attempt, maxRetries, error: errorText });
@@ -255,7 +269,7 @@ export async function zulipRequestWithRetry<T>(
       const jitter = Math.random() * 0.2 * backoff;
       const waitMs = backoff + jitter;
       client.log?.retry?.({ path, method, attempt, maxRetries, waitMs, error: errorText });
-      await delay(waitMs);
+      await delay(waitMs, init?.signal);
       continue;
     }
 
@@ -302,7 +316,7 @@ export async function zulipRequestWithRetry<T>(
       waitMs,
       detail,
     });
-    await delay(waitMs);
+    await delay(waitMs, init?.signal);
   }
 
   throw new Error("Zulip API request failed after retries");
@@ -446,13 +460,11 @@ export async function getZulipEvents(
   });
   const controller = new AbortController();
   const externalSignal = params.signal;
-  // Chain external abort signal if provided
+  const onAbort = () => controller.abort(externalSignal?.reason);
   if (externalSignal?.aborted) {
     controller.abort(externalSignal.reason);
   } else {
-    externalSignal?.addEventListener("abort", () => controller.abort(externalSignal.reason), {
-      once: true,
-    });
+    externalSignal?.addEventListener("abort", onAbort, { once: true });
   }
   const timeoutMs = params.timeoutMs ?? 90000;
   const timeout = setTimeout(() => controller.abort(), timeoutMs + 15000);
@@ -462,6 +474,7 @@ export async function getZulipEvents(
     >(`/events?${qs.toString()}`, { signal: controller.signal });
   } finally {
     clearTimeout(timeout);
+    externalSignal?.removeEventListener("abort", onAbort);
   }
 }
 
@@ -485,13 +498,11 @@ export async function getZulipEventsWithRetry(
   });
   const controller = new AbortController();
   const externalSignal = params.signal;
-  // Chain external abort signal if provided
+  const onAbort = () => controller.abort(externalSignal?.reason);
   if (externalSignal?.aborted) {
     controller.abort(externalSignal.reason);
   } else {
-    externalSignal?.addEventListener("abort", () => controller.abort(externalSignal.reason), {
-      once: true,
-    });
+    externalSignal?.addEventListener("abort", onAbort, { once: true });
   }
   const timeoutMs = params.timeoutMs ?? 90000;
   const timeout = setTimeout(() => controller.abort(), timeoutMs + 15000);
@@ -506,6 +517,7 @@ export async function getZulipEventsWithRetry(
     );
   } finally {
     clearTimeout(timeout);
+    externalSignal?.removeEventListener("abort", onAbort);
   }
 }
 

@@ -13,13 +13,25 @@ type Resolver = NonNullable<ChannelPlugin["resolver"]>;
 type ListParams = Parameters<NonNullable<Directory["listPeers"]>>[0];
 type Scope = { cfg: OpenClawConfig; accountId?: string | null };
 type Entry = ChannelDirectoryEntry & { userId?: string };
-type CacheEntry = { expires: number; value: Promise<Entry[]> };
+type CacheEntry = { accountId: string; expires: number; value: Promise<Entry[]> };
 const cache = new WeakMap<OpenClawConfig, Map<string, CacheEntry>>();
 const CACHE_TTL_MS = 60_000;
 const MAX_CACHE_ENTRIES = 32;
 
+function scopeAccountId(params: Scope): string {
+  return params.accountId?.trim() ? normalizeAccountId(params.accountId) : resolveDefaultZulipAccountId(params.cfg);
+}
+
+export function clearZulipAccountDirectoryCache(cfg: OpenClawConfig, accountId: string): void {
+  const entries = cache.get(cfg);
+  const normalized = normalizeAccountId(accountId);
+  for (const [key, entry] of entries ?? []) {
+    if (entry.accountId === normalized) entries!.delete(key);
+  }
+}
+
 async function context(params: Scope) {
-  const accountId = params.accountId?.trim() ? normalizeAccountId(params.accountId) : resolveDefaultZulipAccountId(params.cfg);
+  const accountId = scopeAccountId(params);
   if (!listZulipAccountIds(params.cfg).includes(accountId)) throw new Error(`Unknown Zulip account: ${accountId}`);
   const account = await resolveZulipRuntimeAccount({ cfg: params.cfg, accountId });
   if (!account.enabled || !account.baseUrl || !account.email || !account.apiKey) {
@@ -40,7 +52,7 @@ async function cached(params: Scope, identity: string, kind: string, live: boole
   if (!live && existing) return existing.value;
   entries.delete(key);
   while (entries.size >= MAX_CACHE_ENTRIES) entries.delete(entries.keys().next().value!);
-  const entry: CacheEntry = { expires: Date.now() + CACHE_TTL_MS, value: load() };
+  const entry: CacheEntry = { accountId: scopeAccountId(params), expires: Date.now() + CACHE_TTL_MS, value: load() };
   entries.set(key, entry);
   try {
     return await entry.value;

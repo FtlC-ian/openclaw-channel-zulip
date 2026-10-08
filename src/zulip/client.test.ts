@@ -3,6 +3,7 @@ import {
   addZulipReaction,
   createZulipClient,
   createZulipReadBatcher,
+  getZulipEventsWithRetry,
   fetchZulipMessages,
   registerZulipQueue,
   removeZulipReaction,
@@ -511,5 +512,37 @@ describe("Zulip message flags", () => {
     const [, init] = fetchImpl.mock.calls[0] ?? [];
     const body = new URLSearchParams(String(init?.body));
     expect(body.get("messages")).toBe("[104,105]");
+  });
+});
+
+
+describe("event long-poll cancellation", () => {
+  it("aborts an in-flight fetch without retrying and removes its signal listener", async () => {
+    const controller = new AbortController();
+    const remove = vi.spyOn(controller.signal, "removeEventListener");
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (_url, init) => {
+      const signal = init!.signal!;
+      await new Promise<void>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+      });
+      return jsonResponse({ result: "success", events: [] });
+    });
+    const client = createZulipClient({ baseUrl: "https://zulip.example.test", email: "bot@example.test", apiKey: "test-key", fetchImpl });
+    const polling = getZulipEventsWithRetry(client, { queueId: "queue-1", lastEventId: 0, signal: controller.signal });
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1));
+    controller.abort();
+    await expect(polling).rejects.toThrow("Aborted");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(remove).toHaveBeenCalledWith("abort", expect.any(Function));
+  });
+
+  it("removes the long-poll abort listener after a successful request", async () => {
+    const controller = new AbortController();
+    const add = vi.spyOn(controller.signal, "addEventListener");
+    const remove = vi.spyOn(controller.signal, "removeEventListener");
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({ result: "success", events: [] }));
+    const client = createZulipClient({ baseUrl: "https://zulip.example.test", email: "bot@example.test", apiKey: "test-key", fetchImpl });
+    await getZulipEventsWithRetry(client, { queueId: "queue-1", lastEventId: 0, signal: controller.signal });
+    expect(remove).toHaveBeenCalledWith("abort", add.mock.calls[0][1]);
   });
 });

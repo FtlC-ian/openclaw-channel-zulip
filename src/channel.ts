@@ -36,6 +36,7 @@ import {
   resolveZulipSessionConversation,
 } from "./session-conversation.js";
 import { zulipSecrets } from "./secret-contract.js";
+import { runZulipAccount, stopZulipAccount, zulipLifecycle } from "./lifecycle.js";
 import { zulipThreading } from "./threading.js";
 import { zulipDirectory, zulipResolver } from "./directory.js";
 
@@ -251,7 +252,18 @@ export const zulipPlugin = {
   streaming: {
     blockStreamingCoalesceDefaults: { minChars: 1500, idleMs: 1000 },
   },
-  reload: { configPrefixes: ["channels.zulip"] },
+  reload: {
+    configPrefixes: ["channels.zulip"],
+    noopPrefixes: [
+      "name", "dmPolicy", "allowFrom", "groupPolicy", "groupAllowFrom",
+      "chatmode", "oncharPrefixes", "requireMention", "topics", "streamTopics",
+      "mediaMaxMb", "markHandledRead", "reactions", "thinkingPlaceholder",
+      "streaming", "textChunkLimit", "chunkMode", "blockStreaming",
+      "blockStreamingCoalesce", "responsePrefix", "agentReactionGuidance",
+      "defaultTopic", "routingDiagnosticsTarget", "enableAdminActions",
+      "streamOverrides",
+    ].flatMap((key) => [`channels.zulip.${key}`, `channels.zulip.accounts.*.${key}`]),
+  },
   configSchema: zulipChannelConfigSchema,
   secrets: zulipSecrets,
   config: {
@@ -519,7 +531,9 @@ export const zulipPlugin = {
       };
     },
   },
+  lifecycle: zulipLifecycle,
   gateway: {
+    stopAccount: async (ctx) => stopZulipAccount(ctx.accountId),
     startAccount: async (ctx) => {
       const account = await resolveZulipRuntimeAccount({ cfg: ctx.cfg, accountId: ctx.account.accountId });
       ctx.setStatus({
@@ -529,12 +543,12 @@ export const zulipPlugin = {
         emailSource: account.emailSource,
       } as ChannelAccountSnapshot);
       ctx.log?.info(`[${account.accountId}] starting channel`);
-      const { monitorZulipProvider } = await import("./zulip/monitor.js");
-      return monitorZulipProvider({
+      return runZulipAccount({
         email: account.email ?? undefined,
         baseUrl: account.baseUrl ?? undefined,
         accountId: account.accountId,
         config: ctx.cfg,
+        getConfig: () => getZulipRuntime().config.current() as OpenClawConfig,
         runtime: ctx.runtime,
         abortSignal: ctx.abortSignal,
         statusSink: (patch) => ctx.setStatus({ accountId: ctx.accountId, ...patch }),

@@ -1053,7 +1053,15 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       return;
     }
 
-    if (await zulipApprovalReactions.command({ cfg, accountId: account.accountId, senderId: senderIdentity, text: rawText })) return;
+    if (opts.abortSignal?.aborted || monitorReactionShutdownStarted) return ABORTED_INBOUND_MESSAGE;
+    if (await zulipApprovalReactions.command({
+      cfg,
+      getConfig: opts.getConfig,
+      abortSignal: opts.abortSignal,
+      accountId: account.accountId,
+      senderId: senderIdentity,
+      text: rawText,
+    })) return;
 
     const questionControl = await zulipQuestionZformStore.intercept({
       message: questionMessage,

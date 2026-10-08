@@ -15,7 +15,7 @@
   shared resolver owns global first-wins arbitration, including other channels
   and `/approve`; local claims serialize same-account sibling deliveries.
 - Account removal, disablement and abort are rechecked after asynchronous user
-  lookup. Hooks before persistence must not stop a still-configured monitor.
+  lookup and immediately before manual/zform command settlement. Hooks before persistence must not stop a still-configured monitor.
   Committed teardown clears only that account's ephemeral approval state.
 - No durable approval state is introduced. Each of the observed-request and
   delivered-binding maps is capped at 1,000 entries globally, pruned on admission
@@ -118,13 +118,20 @@ sender, monitor and SDK observer; there are no test-only production methods.
 | Isolation/expiry | Wrong message/account; removal events; expired controls; removed/disabled/aborted lookup races | Control boundary; each independently protects a side-effect admission condition |
 | Terminal lifecycle | External resolve/expire, terminal content, not-found, real failures/retry, failed edit | Observer/control boundary; retained fault cases cover recovery and absence of repeat execution |
 | Config/state bounds | Custom emoji/collision; bounded admission/freeing capacity; account clear | Control boundary; runtime/manifest config test owns public schema parity |
-| Integration | Sender retains zform and passes exact sent ID; monitor routes reaction without agent dispatch; all queue recovery assertions | Real sender/monitor boundary with collaborator spies; not duplicates of store semantics |
+| Integration | Sender retains zform and passes exact sent ID; monitor routes reaction without agent dispatch; all queue recovery assertions; manual/zform ingress await followed by approver revocation, disablement, removal or abort (plus positive control) | Real sender/monitor boundary with collaborator spies; not duplicates of store semantics |
 
 Controlled regression mutations were restored immediately: authorizer forced to
 allow made the unauthorized-actor test fail; disabling local claim checks made
 the duplicate-event test fail. Both passed on restored production code. Logs are
 kept alongside the worktree as `zulip-92-auth-regression.log` and
 `zulip-92-race-regression.log`. Full build/test/diff receipts are in the PR draft.
+The manual/zform monitor regression also failed before the Hawk HIGH finding was
+fixed: revocation, disablement and removal each invoked the resolver once when
+zero calls were permitted. The unchanged-account positive control still resolves
+once. All five monitor cases pass with current-config/abort revalidation; a direct
+command test additionally verifies an already-aborted command is consumed without
+resolution. Receipts: `zulip-92-manual-gap-before.log` and
+`zulip-92-manual-gap-after.log` beside the worktree.
 The named `test-value-audit` skill is not available in this worker's supplied
 skill catalog or local skill directories; this ledger records the required gate
 manually for independent reviewer validation.

@@ -117,6 +117,12 @@ describe("approval reaction control boundary", () => {
     complete({ result: "success", user: { user_id: 2, email: "ian@test" } }); await pending;
     expect(mocks.resolve).not.toHaveBeenCalled();
   });
+  it("consumes an aborted manual approval without resolving it", async () => {
+    await register();
+    const controller = new AbortController(); controller.abort();
+    expect(await store.command({ cfg, accountId: "default", senderId: "ian@test", text: "/approve req-1 allow-once", abortSignal: controller.signal })).toBe(true);
+    expect(mocks.resolve).not.toHaveBeenCalled();
+  });
   it("ignores expired bindings before invoking identity or resolver", async () => {
     vi.useFakeTimers(); await register(); vi.advanceTimersByTime(60001); request.mockClear(); await react();
     expect(request).not.toHaveBeenCalled(); expect(mocks.resolve).not.toHaveBeenCalled();

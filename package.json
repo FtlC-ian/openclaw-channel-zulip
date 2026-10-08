@@ -29,6 +29,7 @@
   "files": [
     "dist/",
     "docs/ACTION_CAPABILITIES.md",
+    "docs/APPROVAL_REACTIONS.md",
     "docs/LIFECYCLE.md",
     "docs/RELEASE_CHECKLIST.md",
     "docs/TOPIC_MIGRATION.md",

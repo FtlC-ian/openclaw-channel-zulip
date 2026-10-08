@@ -80,13 +80,14 @@ export class ZulipApprovalReactions {
     if (params.abortSignal?.aborted || !user.email || user.is_bot || user.is_active === false) return;
     await this.decide({ ...params, cfg: params.getConfig?.() ?? params.cfg, binding, senderId: user.email, decision });
   }
-  async command(params: { cfg: OpenClawConfig; accountId: string; senderId: string; text: string }): Promise<boolean> {
+  async command(params: { abortSignal?: AbortSignal; getConfig?: () => OpenClawConfig; cfg: OpenClawConfig; accountId: string; senderId: string; text: string }): Promise<boolean> {
     this.prune();
     const match = params.text.trim().match(/^\/approve\s+(\S+)\s+(allow-once|allow-always|deny)$/u);
     if (!match) return false;
     const binding = [...this.bindings.values()].find((value) => value.accountId === params.accountId && value.approvalId === match[1]);
     if (!binding) return false;
-    await this.decide({ ...params, binding, decision: match[2] as ApprovalDecision });
+    if (params.abortSignal?.aborted) return true;
+    await this.decide({ ...params, cfg: params.getConfig?.() ?? params.cfg, binding, decision: match[2] as ApprovalDecision });
     return true;
   }
   private async decide(params: { cfg: OpenClawConfig; accountId: string; senderId: string; binding: Binding; decision: ApprovalDecision }): Promise<void> {

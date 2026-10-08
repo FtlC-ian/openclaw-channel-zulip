@@ -7,6 +7,9 @@ import { buildChannelInboundEventContext } from "openclaw/plugin-sdk/channel-inb
 import type { RuntimeEnv } from "../sdk.js";
 import { zulipThreading } from "../threading.js";
 
+const approvalGatewayMocks = vi.hoisted(() => ({ resolve: vi.fn() }));
+vi.mock("openclaw/plugin-sdk/approval-gateway-runtime", () => ({ resolveApprovalOverGateway: approvalGatewayMocks.resolve }));
+
 const questionRuntimeMocks = vi.hoisted(() => ({
   registerChannelDelivery: vi.fn(),
   resolveOption: vi.fn(),
@@ -395,11 +398,13 @@ const typingCallbacksMock = vi.fn(() => ({
   onCleanup: vi.fn(),
 }));
 
+const readPairingAllowFromMock = vi.fn(async () => state.pairingAllowFrom);
+
 vi.mock("../sdk.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../sdk.js")>(),
   createChannelPairingController: vi.fn(() => ({
     upsertPairingRequest: state.upsertPairingRequest,
-    readStoreForDmPolicy: vi.fn(async () => state.pairingAllowFrom),
+    readStoreForDmPolicy: readPairingAllowFromMock,
   })),
 }));
 
@@ -561,6 +566,8 @@ describe("monitorZulipProvider", () => {
     state.durableStores = new Map();
     state.durableQueues = new Map();
     state.pairingAllowFrom = [];
+    readPairingAllowFromMock.mockReset().mockImplementation(async () => state.pairingAllowFrom);
+    approvalGatewayMocks.resolve.mockReset().mockResolvedValue({ applied: true, approval: { status: "allowed", decision: "allow-once" } });
     state.pairingUpsertError = undefined;
     state.upsertPairingRequest.mockReset().mockImplementation(async () => {
       if (state.pairingUpsertError) {
@@ -609,6 +616,50 @@ describe("monitorZulipProvider", () => {
     state.addZulipReaction.mockReset().mockResolvedValue(undefined);
     state.removeZulipReaction.mockReset().mockResolvedValue(undefined);
     typingCallbacksMock.mockClear();
+  });
+
+  it.each(["unchanged", "revoked", "disabled", "removed", "aborted"])("revalidates %s manual/zform approval after asynchronous ingress authorization", async (change) => {
+    const approvalModule = await import("./approval-reactions.js");
+    const { buildApprovalPendingReplyPayload } = await import("openclaw/plugin-sdk/approval-runtime");
+    const observer = vi.spyOn(approvalModule, "createZulipApprovalObserver").mockReturnValue({ start: vi.fn(async () => {}), stop: vi.fn(async () => {}) } as any);
+    const command = vi.spyOn(approvalModule.zulipApprovalReactions, "command");
+    const controller = new AbortController();
+    const email = "user8@zlp.pubnerd.app";
+    const initial = { channels: { zulip: { url: state.account.baseUrl, email: state.account.email, apiKey: "test-key", allowFrom: [email], dmPolicy: "pairing" } } } as any;
+    let committed = initial;
+    state.account.config = initial.channels.zulip;
+    state.autoAbort = false;
+    state.abortController = controller;
+    approvalModule.zulipApprovalReactions.observe("default", "manual-gap", "exec", Date.now() + 60000);
+    await approvalModule.zulipApprovalReactions.register({
+      cfg: initial, accountId: "default", messageId: "approval-100", client: state.client, sourceText: "Approval required",
+      payload: buildApprovalPendingReplyPayload({ approvalId: "manual-gap", approvalSlug: "manual-gap", text: "Approval required", allowedDecisions: ["allow-once", "deny"] }),
+    });
+    readPairingAllowFromMock.mockImplementationOnce(async () => {
+      if (change === "revoked") committed = { channels: { zulip: { ...initial.channels.zulip, allowFrom: ["someone-else@test"] } } };
+      if (change === "disabled") committed = { channels: { zulip: { ...initial.channels.zulip, enabled: false } } };
+      if (change === "removed") committed = {};
+      if (change === "aborted") controller.abort();
+      return [];
+    });
+    getZulipEventsWithRetryMock.mockImplementationOnce(async () => ({ result: "success", events: [{ id: 1, type: "message", message: { ...makePrivateMessage(9620000 + ["unchanged", "revoked", "disabled", "removed", "aborted"].indexOf(change)), content: "/approve manual-gap allow-once" } }] }));
+    getZulipEventsWithRetryMock.mockImplementationOnce(async () => {
+      if (!controller.signal.aborted) {
+        await vi.waitFor(() => expect(command).toHaveBeenCalled());
+        await command.mock.results[0].value;
+      }
+      controller.abort();
+      return { result: "success", events: [] };
+    });
+    try {
+      const { monitorZulipProvider } = await import("./monitor.js");
+      await monitorZulipProvider({ config: initial, getConfig: () => committed, abortSignal: controller.signal });
+      expect(readPairingAllowFromMock).toHaveBeenCalledTimes(1);
+      expect(approvalGatewayMocks.resolve).toHaveBeenCalledTimes(change === "unchanged" ? 1 : 0);
+      expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+    } finally {
+      controller.abort(); observer.mockRestore(); command.mockRestore(); approvalModule.zulipApprovalReactions.clearAccount("default");
+    }
   });
 
   it("routes reaction events with live account identity without dispatching an agent turn", async () => {

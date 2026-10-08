@@ -38,6 +38,7 @@ import {
 } from "./session-conversation.js";
 import { zulipSecrets } from "./secret-contract.js";
 import { runZulipAccount, stopZulipAccount, zulipLifecycle } from "./lifecycle.js";
+import { zulipHeartbeat } from "./heartbeat.js";
 import { zulipThreading } from "./threading.js";
 import { zulipDirectory, zulipResolver } from "./directory.js";
 import { zulipDoctor } from "./doctor.js";
@@ -532,6 +533,7 @@ export const zulipPlugin = {
     },
   },
   lifecycle: zulipLifecycle,
+  heartbeat: zulipHeartbeat,
   gateway: {
     stopAccount: async (ctx) => stopZulipAccount(ctx.accountId),
     startAccount: async (ctx) => {

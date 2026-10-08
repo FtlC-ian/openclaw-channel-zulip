@@ -492,6 +492,7 @@ export async function getZulipEventsWithRetry(
     retryBaseDelayMs?: number;
     signal?: AbortSignal;
     dontBlock?: boolean;
+    onHealthChanged?: (healthy: boolean) => void;
   },
 ): Promise<
   ZulipApiResponse & { events?: ZulipEvent[] }
@@ -512,14 +513,24 @@ export async function getZulipEventsWithRetry(
   const timeoutMs = params.timeoutMs ?? 90000;
   const timeout = setTimeout(() => controller.abort(), timeoutMs + 15000);
   try {
-    return await zulipRequestWithRetry<
+    params.onHealthChanged?.(true);
+    const pollingClient: ZulipClient = { ...client, log: {
+      retry: event => { params.onHealthChanged?.(false); client.log?.retry?.(event); },
+      failure: event => { params.onHealthChanged?.(false); client.log?.failure?.(event); },
+    } };
+    const response = await zulipRequestWithRetry<
       ZulipApiResponse & { events?: ZulipEvent[] }
     >(
-      client,
+      pollingClient,
       `/events?${qs.toString()}`,
       { signal: controller.signal },
       { baseDelayMs: params.retryBaseDelayMs },
     );
+    params.onHealthChanged?.(response.result === "success" && !controller.signal.aborted);
+    return response;
+  } catch (error) {
+    params.onHealthChanged?.(false);
+    throw error;
   } finally {
     clearTimeout(timeout);
     externalSignal?.removeEventListener("abort", onAbort);
@@ -634,6 +645,7 @@ export async function sendZulipTyping(
     | { type: "stream"; streamId: number | string; topic: string }
     | { type: "direct"; to: number[] }
   ),
+  options: { signal?: AbortSignal } = {},
 ): Promise<void> {
   const body = new URLSearchParams();
   body.set("op", params.op);
@@ -644,10 +656,12 @@ export async function sendZulipTyping(
   } else {
     body.set("to", JSON.stringify(params.to));
   }
-  await client.request("/typing", {
+  const payload = await client.request<ZulipApiResponse>("/typing", {
     method: "POST",
     body: body.toString(),
+    signal: options.signal,
   });
+  assertSuccess(payload, "Zulip typing failed");
 }
 
 export async function fetchZulipSubscriptions(

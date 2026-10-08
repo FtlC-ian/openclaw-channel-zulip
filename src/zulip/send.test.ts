@@ -260,6 +260,25 @@ describe("sendMessageZulip media and presentation", () => {
       expect(JSON.stringify(sent.widgetContent)).toContain("/approve req-1 allow-once");
     } finally { register.mockRestore(); zulipApprovalReactions.clearAccount("default"); }
   });
+  it.each([
+    { reason: "unsupported-only decisions", allowedDecisions: ["allow-always"] as const, approvalReactions: undefined },
+    { reason: "normalized emoji collisions", allowedDecisions: ["allow-once", "deny"] as const, approvalReactions: { approve: "check", deny: "✅" } },
+  ])("preserves fallback controls without advertising inactive reactions for $reason", async ({ allowedDecisions, approvalReactions }) => {
+    const { buildApprovalPendingReplyPayload } = await import("openclaw/plugin-sdk/approval-runtime");
+    const { zulipApprovalReactions } = await import("./approval-reactions.js");
+    const cfg = { channels: { zulip: { allowFrom: ["ian@test"], approvalReactions } } };
+    const originalAccountConfig = sendState.account.config;
+    sendState.account.config = cfg.channels.zulip;
+    const pending = buildApprovalPendingReplyPayload({ approvalId: "inactive", approvalSlug: "inactive", text: "Approval", allowedDecisions: [...allowedDecisions] });
+    try {
+      await sendMessageZulip("user:alice@example.test", pending.text!, { cfg, channelData: pending.channelData, presentation: pending.presentation });
+      const sent = sendState.sendZulipPrivateMessage.mock.calls.at(-1)![1];
+      expect(sent.content).not.toContain("Authorized approvers can also react");
+      expect(sent.widgetContent).toMatchObject({ widget_type: "zform" });
+      for (const decision of allowedDecisions) expect(JSON.stringify(sent.widgetContent)).toContain(`/approve inactive ${decision}`);
+      expect(await zulipApprovalReactions.command({ cfg, accountId: "default", senderId: "ian@test", text: `/approve inactive ${allowedDecisions[0]}` })).toBe(false);
+    } finally { sendState.account.config = originalAccountConfig; zulipApprovalReactions.clearAccount("default"); }
+  });
   it("uses the explicit target topic for both text and media when thread context disagrees", async () => {
     await sendMessageZulip("stream:synthetic-stream:Canonical Topic", "text", {
       cfg: {},

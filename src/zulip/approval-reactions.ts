@@ -16,6 +16,19 @@ const loadResolver = createLazyRuntimeSurface(
   (runtime) => runtime.resolveApprovalOverGateway,
 );
 
+export function resolveZulipApprovalReactionControls(
+  allowedDecisions: readonly ApprovalDecision[],
+  config?: { approve?: string; deny?: string },
+) {
+  const allowed = new Set(listApprovalReactionBindings({ allowedDecisions }).map((binding: { decision: ApprovalDecision }) => binding.decision));
+  const controls = [
+    { emoji: config?.approve ?? "✅", decision: "allow-once" as const, label: "Allow once" },
+    { emoji: config?.deny ?? "❌", decision: "deny" as const, label: "Deny" },
+  ].filter(({ decision }) => allowed.has(decision))
+    .map((control) => ({ ...control, spec: resolveZulipReactionSpec(control.emoji) }));
+  return new Set(controls.map(({ spec }) => spec.emojiName)).size === controls.length ? controls : [];
+}
+
 export class ZulipApprovalReactions {
   private readonly bindings = new Map<string, Binding>();
   private readonly targets;
@@ -53,12 +66,8 @@ export class ZulipApprovalReactions {
     const key = this.key(params.accountId, params.messageId);
     if (this.bindings.has(key) || this.bindings.size >= this.maxEntries) return;
     const config = resolveZulipAccount({ cfg: params.cfg, accountId: params.accountId }).config.approvalReactions;
-    const specs = [
-      { spec: resolveZulipReactionSpec(config?.approve ?? "✅"), decision: "allow-once" as const },
-      { spec: resolveZulipReactionSpec(config?.deny ?? "❌"), decision: "deny" as const },
-    ].filter(({ decision }) => listApprovalReactionBindings({ allowedDecisions: metadata.allowedDecisions }).some((binding: { decision: ApprovalDecision }) => binding.decision === decision));
+    const specs = resolveZulipApprovalReactionControls(metadata.allowedDecisions, config);
     if (specs.length === 0) return;
-    if (new Set(specs.map(({ spec }) => spec.emojiName)).size !== specs.length) return;
     const binding: Binding = { ...metadata, accountId: params.accountId, messageId: params.messageId, client: params.client, sourceText: params.sourceText, expiresAtMs: Date.now() + TARGET_TTL_MS, resolving: false, emojis: new Map(specs.map(({ spec, decision }) => [spec.emojiName, decision])) };
     this.bindings.set(key, binding);
     await this.targets.register(key, binding);

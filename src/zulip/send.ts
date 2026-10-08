@@ -1,6 +1,6 @@
 import { readApprovalBinding } from "./approval-sdk.js";
 import { resolveZulipApprovers } from "../approval-auth.js";
-import { zulipApprovalReactions } from "./approval-reactions.js";
+import { resolveZulipApprovalReactionControls, zulipApprovalReactions } from "./approval-reactions.js";
 import fs from "node:fs";
 import fsPromises from "node:fs/promises";
 import path from "node:path";
@@ -367,12 +367,10 @@ export async function sendMessageZulip(
   message = prependZulipRoutingNotice(message, fallback);
   const approvalBinding = readApprovalBinding({ payload: { presentation: opts.presentation, channelData: opts.channelData } });
   if (approvalBinding && resolveZulipApprovers(opts.cfg, account.accountId).length > 0) {
-    const emojis = account.config.approvalReactions;
-    const controls = [
-      approvalBinding.allowedDecisions.includes("allow-once") ? `${emojis?.approve ?? "✅"} = Allow once` : undefined,
-      approvalBinding.allowedDecisions.includes("deny") ? `${emojis?.deny ?? "❌"} = Deny` : undefined,
-    ].filter(Boolean);
-    message += `\n\nAuthorized approvers can also react: ${controls.join("; ")}.`;
+    const controls = resolveZulipApprovalReactionControls(approvalBinding.allowedDecisions, account.config.approvalReactions);
+    if (controls.length > 0) {
+      message += `\n\nAuthorized approvers can also react: ${controls.map(({ emoji, label }) => `${emoji} = ${label}`).join("; ")}.`;
+    }
   }
 
   const preflightTargetSummary = (() => {

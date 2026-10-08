@@ -22,7 +22,9 @@
 Default reactions are **✅ (`check`) = allow-once** and **❌ (`cross_mark`) = deny**.
 Configure `approvalReactions.approve` / `.deny` at root or account level using
 supported Unicode or named Zulip emoji. Existing bindings keep their seeded emoji;
-new deliveries use current config. Collisions fail closed. No allow-always reaction.
+new deliveries use current config. Sender hints and registration share normalized
+control eligibility: unsupported-only decisions and collisions neither advertise nor
+bind reactions, while zform/manual fallback controls remain. No allow-always reaction.
 
 The sender keeps zform and readable fallback commands, adds reaction instructions
 for explicit approvers, and registers/seeds controls against the returned message ID.
@@ -131,7 +133,7 @@ this manual ledger is the required gate for independent Hawk review.
 | Terminal/retry: exact outcome content, not-found retirement, real-failure retry, failed-edit inertness | Settlement/control boundary; removed observer-only external-event tests because no production observer exists; canonical losing-result test owns external decision truth |
 | Bounds/config/cleanup: emoji overrides/collisions, capped admission and TTL freeing, in-flight removal | Channel target boundary; real sender/monitor own exact delivery ID and account teardown wiring |
 | Host artifact compatibility: real npm host helper functions and exports, built index/setup load, active seed/lookup/cleanup without observation | Built artifact boundary on all four hosts; replaces beta feature-disablement test; it would fail pre-rework because no observed request exists |
-| Sender fallback: zform preservation, exact returned ID, explicit approvers required to advertise | Real sender boundary; no test-only observation method or lifecycle factory remains |
+| Sender fallback: zform preservation, exact returned ID, explicit approvers; unsupported-only decisions and normalized emoji collisions must not advertise or bind | Real sender boundary; new cases fail before shared eligibility fix and pass after; real registration retained, no test-only seam |
 | Emitted import checker: absent dynamic import rejected then complete fixture accepted | Real checker CLI; fixture infra-runtime string tests generic dynamic scanning, not a production observer dependency |
 
 Public methods are production-called by sender/monitor; binding retirement is private.
@@ -139,7 +141,8 @@ The SDK `clearForTest` seam is not used. Removed `observe`, `hasPendingObservati
 `canObserve` and observer lifecycle factory after checking source, tests, mocks and
 emitted imports. No exported downstream contract promised these internal modules.
 Existing manual ingress HIGH regression still passes. The new no-observation binding
-and all four artifact cases fail on the old architecture (no seeded controls).
+fails on the old architecture. All four old artifacts fail the matrix (older hosts
+do not seed unobserved targets; betas also fail the missing observer export audit).
 Focused and full verification receipts are listed in the PR draft.
 
 ## Live verification limits

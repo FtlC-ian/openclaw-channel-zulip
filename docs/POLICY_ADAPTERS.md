@@ -42,6 +42,12 @@ Each warning names its root/account path and provides a manual fix hint:
 - Configured reaction approvals without explicit normalized approver identities
   cannot approve via reactions. Wildcard and pairing-store entries do not count.
 
+The SDK `shouldSkipDefaultEmptyGroupAllowlistWarning` hook suppresses core's
+fallback group warning for Zulip only; the capability metadata remains truthful.
+Core otherwise duplicates this warning and recommends opening group access.
+The four-host matrix invokes the real `collectDoctorPreviewNotes` composition
+and asserts one group warning with safe guidance, not just adapter output.
+
 Disabled accounts are not previewed. Root and account inheritance are inspected
 separately; a named default account cannot hide an unsafe root setting.
 
@@ -119,7 +125,7 @@ catalog. This ledger records the manual gate for independent review.
 
 | Logical contract / credible regression | Primary owner and overlap disposition |
 | --- | --- |
-| Preview of open DM, empty group sender/fallback, every all-stream spelling, expanding overrides, missing explicit approvers, inheritance/disablement | Public plugin doctor boundary; parameterized cases retain distinct omitted/empty/wildcard semantics. Existing security warning tests cover a separate security adapter, not doctor wiring. |
+| Preview of open DM, empty group sender/fallback, every all-stream spelling, expanding overrides, missing explicit approvers, inheritance/disablement | Focused adapter preview cases own distinct omitted/empty/wildcard semantics; real core `collectDoctorPreviewNotes` in the four-host matrix owns integrated warning composition and prevents duplicated/broadening generic group guidance. Existing security warning tests cover a separate security adapter, not doctor composition. |
 | Repair no broadening across inbound and approval auth, immutable credentials/input, schema validity, idempotency | Public plugin repair boundary plus real auth helpers. Exact duplicates are the only automatic mutation; `user:@email` negative-normalization example preserves distinct approval identity. |
 | Sender read/edit round trips, normalization, root/named-account isolation, preserved unrelated config, no phantom/no-op sections | Public plugin allowlist boundary and real runtime schema. Tests invoke production adapter methods, not a test-only edit helper seam. |
 | Empty group fallback and open DM wildcard removal must narrow rather than broaden or invalidate schema | Public editor plus real SDK fallback and runtime schema; distinct policies require separate regressions. |
@@ -131,4 +137,9 @@ There are no test-only production seams. Shared normalization is called by
 monitor, pairing, config editing and doctor inspection; both adapters are
 registered on the public plugin. Tests don't claim live Gateway authorization,
 persistence/reload, CLI formatting or reaction settlement from config-only calls.
-Full verification and exact-SHA independent review receipts accompany delivery.
+The integrated-doctor regression fails all four hosts on 2230d4d (two group
+warnings including core's `groupPolicy="open"` recommendation), then passes with
+the SDK suppression hook. Root, named-account, DM-fallback and disabled scopes
+run through real core composition. Host child processes isolate HOME, state and
+config paths in scratch directories; no operator state is used. Full verification
+and exact-SHA independent review receipts accompany delivery.

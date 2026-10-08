@@ -84,6 +84,21 @@ for (const version of ["2026.9.3", "2026.9.6", "2026.10.1-beta.1", "2026.10.1-be
       const registry = (await loadHostFunction("createEmptyPluginRegistry"))();
       registry.channels.push({ pluginId: "zulip", plugin: zulipPlugin });
       (await loadHostFunction("setActivePluginRegistry"))(registry);
+      const collectDoctorPreviewNotes = await loadHostFunction("collectDoctorPreviewNotes");
+      for (const [section, expectedWarnings] of [
+        [{ groupPolicy: "allowlist", streams: ["general"], allowFrom: [] }, 1],
+        [{ groupPolicy: "allowlist", streams: ["general"], allowFrom: [], accounts: { work: {} } }, 2],
+        [{ groupPolicy: "allowlist", streams: ["general"], allowFrom: ["owner@test"] }, 1],
+        [{ groupPolicy: "allowlist", enabled: false, streams: ["general"], allowFrom: [] }, 0],
+      ]) {
+        const hostNotes = await collectDoctorPreviewNotes({ cfg: { channels: { zulip: section } }, doctorFixCommand: "openclaw doctor --fix", env: process.env });
+        const groupWarnings = hostNotes.warningNotes.flatMap(note => note.split("\\n")).filter(line => line.includes("groupAllowFrom") || line.includes("groupPolicy"));
+        assert.equal(groupWarnings.length, expectedWarnings, "core-composed doctor must emit one non-conflicting group warning per active scope: " + JSON.stringify(groupWarnings));
+        for (const warning of groupWarnings) {
+          assert.ok(warning.includes('groupPolicy="disabled"'), "core doctor retains safe manual fix");
+          assert.ok(!warning.includes('groupPolicy to "open"'), "core doctor must not recommend broadening access");
+        }
+      }
       assert.equal(zulipPlugin.approvalCapability.native, undefined, "no competing native prompt planner");
       assert.equal(zulipPlugin.approvalCapability.nativeRuntime, undefined, "no competing native event delivery");
       const forwarderFile = readdirSync(distPath).find(name => /\\.(mjs|js)$/.test(name) && readFileSync(distPath + "/" + name, "utf8").includes("function buildForwardedExecPendingPayload("));
@@ -199,7 +214,7 @@ for (const version of ["2026.9.3", "2026.9.6", "2026.10.1-beta.1", "2026.10.1-be
       assert.equal(await store.command({ cfg, accountId: "default", senderId: "approver@test", text: "/approve 12345678-1234-4234-8234-123456789abc deny" }), false);
       console.log("enabled ${version}");
     `);
-    const output = execFileSync(process.execPath, [resolve(scratch, "smoke.mjs")], { encoding: "utf8", timeout: 20000 });
+    const output = execFileSync(process.execPath, [resolve(scratch, "smoke.mjs")], { encoding: "utf8", timeout: 20000, env: { ...process.env, HOME: scratch, OPENCLAW_HOME: scratch, OPENCLAW_STATE_DIR: resolve(scratch, "state"), OPENCLAW_CONFIG_PATH: resolve(scratch, "state/openclaw.json") } });
     assert.match(output, /enabled/);
   });
 }

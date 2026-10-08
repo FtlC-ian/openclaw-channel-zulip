@@ -8,6 +8,7 @@ export const zulipDoctor: NonNullable<ChannelPlugin["doctor"]> = {
   groupModel: "hybrid",
   groupAllowFromFallbackToAllowFrom: true,
   warnOnEmptyGroupSenderAllowlist: true,
+  shouldSkipDefaultEmptyGroupAllowlistWarning: ({ channelName }) => channelName === "zulip",
   collectPreviewWarnings: ({ cfg }) => {
     const warnings: string[] = [];
     if ((cfg.channels?.zulip as { enabled?: boolean } | undefined)?.enabled === false) return warnings;

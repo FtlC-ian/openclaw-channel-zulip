@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Features
+- **Doctor and allowlist adapters** (#96): Add account-scoped policy previews with manual fix hints, safe exact-duplicate sender repairs, and config-backed DM/group sender and stream-selector edits. Stream removal writes an explicit deny; last-group-sender and open-DM-wildcard removal fail closed. Built-plugin adapter smoke tests run on all four supported SDK hosts. See `docs/POLICY_ADAPTERS.md`.
 - **Reaction approvals** (#92): Keep zform buttons and seed ✅ (allow once) / ❌ (deny) on the same approval message for mobile and web. Require explicit account `allowFrom` approvers, bind canonical approval ownership and TTL targets to the exact sent message, settle through the shared Gateway resolver, and edit terminal outcomes. Configure `approvalReactions.approve` / `approvalReactions.deny` per account.
 
 ### Compatibility

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
-test("built SDK imports, re-exports and guarded imports must be publicly exported", async () => {
+test("built and type-only source SDK imports must be publicly exported", async () => {
   const root = await mkdtemp(join(tmpdir(), "zulip-sdk-check-"));
   try {
     await mkdir(join(root, "dist", "nested"), { recursive: true });
@@ -16,6 +16,8 @@ test("built SDK imports, re-exports and guarded imports must be publicly exporte
       try { await import("openclaw/plugin-sdk/infra-runtime"); } catch {}
       // import "openclaw/plugin-sdk/not-an-import";
     `);
+    await mkdir(join(root, "src"));
+    await writeFile(join(root, "src", "types.ts"), 'import type { Contract } from "openclaw/plugin-sdk/channel-contract";');
     const packagePath = join(root, "package.json");
     const exports = { "./plugin-sdk/core": "./core.js", "./plugin-sdk/approval-runtime": "./approval.js" };
     const run = () => spawnSync(process.execPath, [fileURLToPath(new URL("./check-sdk-exports.mjs", import.meta.url)), packagePath], { cwd: root, encoding: "utf8" });
@@ -25,8 +27,13 @@ test("built SDK imports, re-exports and guarded imports must be publicly exporte
     assert.match(failure.stderr, /does not export: openclaw\/plugin-sdk\/infra-runtime/u);
     exports["./plugin-sdk/infra-runtime"] = "./infra.js";
     await writeFile(packagePath, JSON.stringify({ version: "fixture", exports }));
+    const typeFailure = run();
+    assert.equal(typeFailure.status, 1);
+    assert.match(typeFailure.stderr, /does not export: openclaw\/plugin-sdk\/channel-contract/u);
+    exports["./plugin-sdk/channel-contract"] = "./contract.js";
+    await writeFile(packagePath, JSON.stringify({ version: "fixture", exports }));
     const success = run();
     assert.equal(success.status, 0, success.stderr);
-    assert.match(success.stdout, /3 built specifiers/u);
+    assert.match(success.stdout, /4 source\/built specifiers/u);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

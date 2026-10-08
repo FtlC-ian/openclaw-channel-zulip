@@ -128,14 +128,29 @@ resolution and cleanup. The Gateway, not the transport TTL, enforces actual appr
 expiry. Expired Gateway requests retire on `APPROVAL_NOT_FOUND`; real failures keep
 bindings retryable. Terminal bindings retire before editing all sibling messages:
 
-```
-<original request and fallback commands>
+````
+✅ Approved (allow once) by Ian F
 
-**Approval outcome: allow-once**
-These controls are no longer active.
+ID: req-1
+Command:
 ```
+printf 'hello'
+```
+````
 
-Deny/already-resolved outcomes show the canonical winner, not the local selection.
+The outcome is the first line, followed only by the ID and the command already
+shown in the prompt (when recognized). Reply/reaction instructions, expiry, mode,
+background notes and other request metadata are removed. Local reactions use the
+fetched approver display name (email fallback); zform/manual commands use their
+known sender email. Remote events use `resolvedBy` when supplied; a losing local
+settlement uses only a canonical channel resolver ID, never a device ID or the
+losing sender. Names/IDs are escaped and command fences are neutralized.
+
+Other first-line examples: `❌ Denied by Ian F`, `⌛ Expired`, `🚫 Cancelled`,
+`Resolved elsewhere: allow-once` (unknown remote actor), and
+`⌛ Expired or already resolved` (Gateway not-found). Allow-always decisions show
+`✅ Approved (allow always)`. Deny/already-resolved outcomes show the canonical
+winner, not the local selection. No additional Gateway result metadata is copied.
 Failed cleanup cannot reactivate bindings. Seeding is best-effort. Terminal
 cleanup waits for in-flight seeding before removing reactions. Cleanup API failures
 may leave stale visuals, but cannot permit repeated execution.

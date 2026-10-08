@@ -27,7 +27,7 @@ async function react(overrides: Partial<ZulipEvent> = {}, configuration = cfg, a
 const command = (text = "/approve req-1 deny") => store.command({ cfg, accountId: "default", senderId: "ian@test", text });
 beforeEach(() => {
   store = new ZulipApprovalReactions();
-  request = vi.fn(async (path: string) => path.startsWith("/users/") ? { result: "success", user: { user_id: 2, email: "ian@test", is_bot: false, is_active: true } } : { result: "success" });
+  request = vi.fn(async (path: string) => path.startsWith("/users/") ? { result: "success", user: { user_id: 2, email: "ian@test", full_name: "Ian F", is_bot: false, is_active: true } } : { result: "success" });
   client = { baseUrl: "https://zulip.test", authHeader: "test", fetchImpl: vi.fn(async (url, init) => new Response(JSON.stringify(await request(new URL(String(url)).pathname.replace("/api/v1", ""), init)), { status: 200 })), request } as ZulipClient;
   mocks.resolve.mockReset().mockImplementation(async (params) => ({ applied: true, approval: { status: params.decision === "deny" ? "denied" : "allowed", decision: params.decision } }));
 });
@@ -63,9 +63,9 @@ describe("approval reaction control boundary", () => {
     expect(seeds.map(([, init]) => new URLSearchParams(init.body).get("emoji_name"))).toEqual(["check", "cross_mark"]);
     await react();
     expect(mocks.resolve).toHaveBeenCalledWith(expect.objectContaining({ approvalId: "req-1", approvalKind: "exec", decision: "allow-once", senderId: "ian@test", accountId: "default" }));
-    expect(request).toHaveBeenCalledWith("/messages/10", expect.objectContaining({ method: "PATCH", body: expect.stringContaining("allow-once") }));
+    expect(request).toHaveBeenCalledWith("/messages/10", expect.objectContaining({ method: "PATCH", body: expect.stringContaining("Approved") }));
     const edit = new URLSearchParams(request.mock.calls.find(([, init]) => init?.method === "PATCH")![1].body).get("content");
-    expect(edit).toBe("Approval required\n\n**Approval outcome: allow-once**\nThese controls are no longer active.");
+    expect(edit).toBe("✅ Approved (allow once) by Ian F\n\nID: req-1");
   });
   it.each(["reaction", "zform", "manual", "cli", "control-ui", "expired", "cancelled"])("retires the editable prompt and companion widget after %s resolution", async (surface) => {
     await store.register({ cfg, accountId: "default", messageId: "10", widgetMessageId: "11", client, sourceText: "Approval required", payload: payload() });
@@ -77,7 +77,11 @@ describe("approval reaction control boundary", () => {
     if (surface === "reaction") await react();
     else if (surface === "manual" || surface === "zform") await command();
     else await store.observeTerminal("default", { event: "exec.approval.resolved", payload: { id: "req-1", decision: "deny", ...(["expired", "cancelled"].includes(surface) ? { terminalStatus: surface, decision: undefined } : {}) } });
-    expect(request).toHaveBeenCalledWith("/messages/10", expect.objectContaining({ method: "PATCH", ...(["expired", "cancelled"].includes(surface) ? { body: expect.stringContaining(`outcome%3A+${surface}`) } : {}) }));
+    const edit = new URLSearchParams(request.mock.calls.find(([, init]) => init?.method === "PATCH")![1].body).get("content");
+    const header = surface === "reaction" ? "✅ Approved (allow once) by ian\\@test"
+      : surface === "manual" || surface === "zform" ? "❌ Denied by ian\\@test"
+      : surface === "expired" ? "⌛ Expired" : surface === "cancelled" ? "🚫 Cancelled" : "Resolved elsewhere: deny";
+    expect(edit).toBe(`${header}\n\nID: req-1`);
     expect(request).toHaveBeenCalledWith("/messages/11", expect.objectContaining({ method: "DELETE" }));
     expect(request.mock.calls.filter(([path, init]) => path.endsWith("/reactions") && init?.method === "DELETE")).toHaveLength(2);
     await react(); await store.observeTerminal("default", { event: "exec.approval.resolved", payload: { id: "req-1", decision: "deny" } });
@@ -88,7 +92,7 @@ describe("approval reaction control boundary", () => {
     await store.observeTerminal("default", { event: "exec.approval.resolved", payload: { id: "old", decision: "deny" } });
     await store.observeTerminal("default", { event: "exec.approval.resolved", payload: { id: "req-1", decision: "allow-once" } });
     await store.register({ cfg, accountId: "default", messageId: "10", widgetMessageId: "11", client, sourceText: "Approval required", payload: payload() });
-    expect(request).toHaveBeenCalledWith("/messages/10", expect.objectContaining({ method: "PATCH", body: expect.stringContaining("allow-once") }));
+    expect(request).toHaveBeenCalledWith("/messages/10", expect.objectContaining({ method: "PATCH", body: expect.stringContaining("Resolved+elsewhere%3A+allow-once") }));
     expect(request.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
     await react(); expect(mocks.resolve).not.toHaveBeenCalled();
   });
@@ -102,7 +106,7 @@ describe("approval reaction control boundary", () => {
     complete({ applied: false, approval: { status: "denied", decision: "deny" } }); await pending;
     const patches = request.mock.calls.filter(([, init]) => init?.method === "PATCH");
     expect(patches).toHaveLength(1);
-    expect(new URLSearchParams(patches[0][1].body).get("content")).toContain("outcome: deny");
+    expect(new URLSearchParams(patches[0][1].body).get("content")).toBe("Resolved elsewhere: deny\n\nID: req-1");
   });
   it.each(["@**Debbie-OG|13**", "@_**Debbie-OG|13**", "@**bot@test**", "@_**Renamed|bot@test**"])("intercepts identity-qualified bot mention %s", async (mention) => {
     const id = "9f832b3e-561c-47df-a95c-beb76511a55a";
@@ -223,8 +227,33 @@ describe("approval reaction control boundary", () => {
   it("renders the gateway winner rather than a losing local decision", async () => {
     await register(); mocks.resolve.mockResolvedValue({ applied: false, approval: { status: "denied", decision: "deny" } }); await react();
     const patch = request.mock.calls.find(([, init]) => init?.method === "PATCH")!;
-    expect(new URLSearchParams(patch[1].body).get("content")).toContain("outcome: deny");
+    expect(new URLSearchParams(patch[1].body).get("content")).toBe("Resolved elsewhere: deny\n\nID: req-1");
     await react(); expect(mocks.resolve).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["sdk", "live-inline"])("retains only the already displayed ID and command from %s prompts", async (format) => {
+    const pending = buildTypedExecApprovalPendingReplyPayload({ approvalId: "req-1", approvalSlug: "req-1", command: "printf 'hello'", host: "gateway", cwd: "/private/path", agentId: "private-agent", expiresAtMs: Date.now() + 60000, allowedDecisions: ["allow-once", "deny"] });
+    const sourceText = format === "sdk" ? pending.text! : "🔒 Exec approval required\nID: req-1\nCommand: printf 'hello'\nCWD: /private/path\nEnv: SECRET=hidden\nHost: gateway\nAgent: private-agent\nSecurity: allowlist\nAsk: always\nExpiry: 60s\nMode: foreground\nBackground note: wait\nReply with: /approve req-1 allow-once\nReact ✅ to approve";
+    await store.register({ cfg, accountId: "default", messageId: "10", client, sourceText: `${sourceText}\nReact ✅ to approve`, payload: pending });
+    // The result contains additional data that must not enter the edited prompt.
+    mocks.resolve.mockResolvedValue({ applied: true, approval: { status: "allowed", decision: "allow-once", presentation: { commandText: "SECRET=extra-data" }, resolver: { kind: "device", id: "private-device" } } });
+    await react();
+    const edit = new URLSearchParams(request.mock.calls.find(([, init]) => init?.method === "PATCH")![1].body).get("content");
+    expect(edit).toBe("✅ Approved (allow once) by Ian F\n\nID: req-1\nCommand:\n```\nprintf 'hello'\n```");
+  });
+  it("escapes observed actor and ID, neutralizes command fences, and caches the winner before delivery", async () => {
+    const id = "req-*_[id]";
+    await store.observeTerminal("default", { event: "exec.approval.resolved", payload: { id, decision: "allow-always", resolvedBy: "Ian **F**\n@**all** [link](url)", request: { env: "hidden" } } });
+    await store.register({ cfg, accountId: "default", messageId: "10", client, sourceText: "Command:\n````sh\necho ``` @**all**\n````\nEnv: hidden", payload: payload(id) });
+    const edit = new URLSearchParams(request.mock.calls.find(([, init]) => init?.method === "PATCH")![1].body).get("content");
+    expect(edit).toBe("✅ Approved (allow always) by Ian \\*\\*F\\*\\* \\@\\*\\*all\\*\\* \\[link\\](url)\n\nID: req-\\*\\_\\[id\\]\nCommand:\n```\necho `\u200b`\u200b` @**all**\n```");
+  });
+  it.each(["channel", "device"])("attributes an external %s winner without crediting the losing reactor or leaking device IDs", async (kind) => {
+    await register();
+    mocks.resolve.mockResolvedValue({ applied: false, approval: { status: "denied", decision: "deny", resolver: { kind, id: "winner@test" } } });
+    await react();
+    const edit = new URLSearchParams(request.mock.calls.find(([, init]) => init?.method === "PATCH")![1].body).get("content");
+    expect(edit).toBe(`${kind === "channel" ? "❌ Denied by winner\\@test" : "Resolved elsewhere: deny"}\n\nID: req-1`);
   });
   it("locks sibling deliveries of the same approval", async () => {
     await register(); await register("req-1", "11"); await Promise.all([react(), react({ message_id: 11 })]);
@@ -238,6 +267,8 @@ describe("approval reaction control boundary", () => {
   it("allows retry after real gateway failures but retires not-found approvals", async () => {
     await register(); mocks.resolve.mockRejectedValueOnce(new Error("database offline")); await expect(react()).rejects.toThrow("database offline");
     mocks.resolve.mockRejectedValueOnce(Object.assign(new Error("approval expired or not found"), { gatewayCode: "APPROVAL_NOT_FOUND" })); await react(); await react(); expect(mocks.resolve).toHaveBeenCalledTimes(2);
+    const edit = new URLSearchParams(request.mock.calls.find(([, init]) => init?.method === "PATCH")![1].body).get("content");
+    expect(edit).toBe("⌛ Expired or already resolved\n\nID: req-1");
   });
   it("keeps resolved bindings inert when the terminal edit fails", async () => {
     await register(); request.mockImplementation(async (path, init) => { if (init?.method === "PATCH") throw new Error("edit denied"); return { result: "success", user: { user_id: 2, email: "ian@test" } }; });

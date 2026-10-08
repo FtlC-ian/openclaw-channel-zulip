@@ -19,6 +19,12 @@ function escapeStatusValue(value: string): string {
   return value.replace(/[\r\n\u0000-\u001f\u007f]/gu, " ").replace(/@/gu, "@\u200b").replace(/[\\`*_\[\]<>~]/gu, "\\$&");
 }
 
+// Render user-controlled names as a code span so Zulip never linkifies or mentions them.
+function inertStatusValue(value: string): string | undefined {
+  const text = value.replace(/[\r\n\u0000-\u001f\u007f]/gu, " ").replace(/`/gu, "\u02cb").trim();
+  return text ? `\`${text}\`` : undefined;
+}
+
 function renderTerminal(entry: Binding, terminal: Terminal): string {
   const { outcome } = terminal;
   const status = outcome === "expired" ? "⌛ Expired"
@@ -28,7 +34,8 @@ function renderTerminal(entry: Binding, terminal: Terminal): string {
     : outcome === "allow-once" ? "✅ Approved (allow once)"
     : outcome === "allow-always" ? "✅ Approved (allow always)"
     : outcome === "deny" ? "❌ Denied" : "Resolved";
-  const actor = terminal.actor && ["allow-once", "allow-always", "deny"].includes(outcome) ? ` by ${escapeStatusValue(terminal.actor)}` : "";
+  const actorText = terminal.actor && ["allow-once", "allow-always", "deny"].includes(outcome) ? inertStatusValue(terminal.actor) : undefined;
+  const actor = actorText ? ` by ${actorText}` : "";
   // Retain only the command already displayed, never Gateway result metadata.
   const displayedCommand = entry.sourceText.match(/^(?:\*\*)?(?:Pending command|Command):(?:\*\*)?[ \t]*\n(?:[ \t]*\n)*(`{3,}|~{3,})[^\n]*\n([\s\S]*?)\n\1[ \t]*(?:\n|$)/imu)?.[2]
     ?? entry.sourceText.match(/^(?:\*\*)?Command:(?:\*\*)?[ \t]*(\S[^\n]*)$/imu)?.[1];

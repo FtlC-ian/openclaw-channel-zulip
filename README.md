@@ -587,7 +587,7 @@ colliding emoji disable the binding rather than create an ambiguous approval.
 There is deliberately no reaction for **Allow always**. Typed `/approve` remains
 available, and zform buttons use the same canonical first-wins resolver.
 After resolution, the prompt starts with a clear status such as
-`✅ Approved (allow once) by Ian F`, `❌ Denied by Ian F`, or `⌛ Expired`.
+`` ✅ Approved (allow once) by `Ian F` ``, `` ❌ Denied by `Ian F` ``, or `⌛ Expired`.
 Only the ID and already-displayed command remain; obsolete instructions are
 removed along with the companion zform and bot-seeded reactions. Unknown remote
 approvers are not invented (`Resolved elsewhere: allow-once`).

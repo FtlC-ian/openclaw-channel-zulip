@@ -129,7 +129,7 @@ expiry. Expired Gateway requests retire on `APPROVAL_NOT_FOUND`; real failures k
 bindings retryable. Terminal bindings retire before editing all sibling messages:
 
 ````
-✅ Approved (allow once) by Ian F
+✅ Approved (allow once) by `Ian F`
 
 ID: req-1
 Command:
@@ -144,9 +144,9 @@ background notes and other request metadata are removed. Local reactions use the
 fetched approver display name (email fallback); zform/manual commands use their
 known sender email. Remote events use `resolvedBy` when supplied; a losing local
 settlement uses only a canonical channel resolver ID, never a device ID or the
-losing sender. Names/IDs are escaped and command fences are neutralized.
+losing sender. Approver names render as inert code spans (no links or mentions), IDs are escaped, and command fences are neutralized.
 
-Other first-line examples: `❌ Denied by Ian F`, `⌛ Expired`, `🚫 Cancelled`,
+Other first-line examples: `` ❌ Denied by `Ian F` ``, `⌛ Expired`, `🚫 Cancelled`,
 `Resolved elsewhere: allow-once` (unknown remote actor), and
 `⌛ Expired or already resolved` (Gateway not-found). Allow-always decisions show
 `✅ Approved (allow always)`. Deny/already-resolved outcomes show the canonical

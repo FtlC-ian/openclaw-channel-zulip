@@ -38,7 +38,9 @@ decisions and pending state against `execApproval` before binding/seeding the re
 message ID. Command-backed controls remain supported. A prompt must contain exclusively the
 exact canonical typed-action set or exclusively the exact command set; additional
 commands, callbacks, links or select controls are rejected rather than preserved
-alongside a valid subset. No text is parsed and no
+alongside a valid subset. Both the original normalized `sourcePresentation` and
+core-adapted controls are validated, so adaptation cannot erase a contradictory
+select and launder the remaining valid subset into a binding. No text is parsed and no
 approval owner is invented.
 
 ### Core trace (tagged source, fetched through `gh api`)
@@ -225,6 +227,7 @@ this manual ledger is the required gate for independent Hawk review.
 | Bounds/config/cleanup: emoji overrides/collisions, capped admission and TTL freeing, in-flight removal | Channel target boundary; real sender/monitor own exact delivery ID and account teardown wiring |
 | Host artifact compatibility: real npm host helper functions and exports, built index/setup load, active seed/lookup/cleanup without observation | Built artifact boundary on all four hosts; replaces beta feature-disablement test; it would fail pre-rework because no observed request exists |
 | Core delivery regression: actual forwarding routes, same-chat builder, native rendering vs plain fallback, one zform prompt and two seeded reactions on all four hosts | Real core-to-built-plugin outbound boundary; replaces direct SDK-builder-only matrix evidence; without-renderer negative control fails binding on every host |
+| Source-adaptation mutation: extra source select beside valid buttons is adapted to context by real core but must not produce a binding/zform | Four-host real core-to-renderer matrix owns this contract; fails on ed2520a and passes after sourcePresentation validation; no test-only production seam |
 | Mixed-control mutation: valid typed approval buttons plus extra command/callback/link must not render or bind | Same renderer/control-admission boundary; reproduces Hawk MEDIUM on 701cd39 (three failures) and passes after exclusive full-set validation; no overlapping test-only seam |
 | Rendered marker integrity: mismatched owner/kind/decisions/version/terminal state must remain unbound; typed actions become full-ID commands without losing text/data | Channel renderer/SDK validation boundary; focused tamper coverage independently protects the new consumed-presentation boundary; no new test-only production seam |
 | Sender fallback: zform preservation, exact returned ID, explicit approvers; unsupported-only decisions and normalized emoji collisions must not advertise or bind | Real sender boundary; new cases fail before shared eligibility fix and pass after; real registration retained, no test-only seam |

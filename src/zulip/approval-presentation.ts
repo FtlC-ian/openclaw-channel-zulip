@@ -3,7 +3,8 @@ import { markRenderedApproval, readApprovalBinding } from "./approval-sdk.js";
 import { presentationToZulipWidgetContent } from "./send.js";
 
 // Core consumes presentation after this hook; carry only validated controls across that boundary.
-export const renderZulipApprovalPresentation: NonNullable<ChannelOutboundAdapter["renderPresentation"]> = ({ payload, presentation }) => {
+export const renderZulipApprovalPresentation: NonNullable<ChannelOutboundAdapter["renderPresentation"]> = ({ payload, presentation, sourcePresentation }) => {
+  if (!readApprovalBinding({ payload: { ...payload, presentation: sourcePresentation ?? presentation } })) return null;
   const binding = readApprovalBinding({ payload: { ...payload, presentation } });
   if (!binding) return null;
   const commandPresentation = {

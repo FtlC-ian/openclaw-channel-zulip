@@ -87,16 +87,22 @@ for (const version of ["2026.9.3", "2026.9.6", "2026.10.1-beta.1", "2026.10.1-be
         if (mode) forwarded.push(deliveries[0].payloads[0]);
       }
       const sameChatPayload = buildTypedExecApprovalPendingReplyPayload({ approvalId: "12345678-1234-4234-8234-123456789abc", approvalSlug: "12345678", command: "true", host: "gateway" });
+      const renderWithPlugin = sourcePayload => renderForDelivery({
+        presentationCapabilities: zulipOutboundAdapter.presentationCapabilities,
+        renderPresentation: (adapted, sourcePresentation) => zulipOutboundAdapter.renderPresentation({ payload: adapted, presentation: adapted.presentation, sourcePresentation, ctx: { cfg, to: "user:approver@test" } }),
+      }, sourcePayload);
+      const sourceSelect = structuredClone(sameChatPayload);
+      sourceSelect.presentation.blocks.push({ type: "select", options: [{ label: "Other approval", action: { type: "command", command: "/approve other allow-always" } }] });
+      const rejectedSelect = await renderWithPlugin(sourceSelect);
+      const { readApprovalBinding } = await import("./dist/src/zulip/approval-sdk.js");
+      assert.equal(readApprovalBinding({ payload: rejectedSelect }), null, "source select must not be hidden by real core adaptation and admit a binding");
+      assert.equal(rejectedSelect.channelData?.zulip?.widgetContent, undefined, "rejected source controls cannot produce an approval zform");
       let rendered;
       for (const sourcePayload of [...forwarded, sameChatPayload]) {
         const degraded = await renderForDelivery({}, sourcePayload);
         assert.equal(degraded.presentation, undefined, "without the public renderer core strips controls");
-        const { readApprovalBinding } = await import("./dist/src/zulip/approval-sdk.js");
         assert.equal(readApprovalBinding({ payload: degraded }), null, "reproduce live missing binding");
-        rendered = await renderForDelivery({
-          presentationCapabilities: zulipOutboundAdapter.presentationCapabilities,
-          renderPresentation: adapted => zulipOutboundAdapter.renderPresentation({ payload: adapted, presentation: adapted.presentation, sourcePresentation: sourcePayload.presentation, ctx: { cfg, to: "user:approver@test" } }),
-        }, sourcePayload);
+        rendered = await renderWithPlugin(sourcePayload);
         assert.equal(rendered.presentation, undefined, "core consumes presentation after channel rendering");
         assert.equal(readApprovalBinding({ payload: rendered }).approvalId, "12345678-1234-4234-8234-123456789abc");
         const network = [];

@@ -88,29 +88,7 @@ their entries. Policy filtering still runs on every cache hit; dynamic policy-on
 do not require cache eviction. The 60-second TTL, concurrent-load sharing, bounded cache,
 credential isolation, and live-refresh API semantics remain unchanged.
 
-## Reversible operator policy-reload check (not executed here)
-
-1. On an authorized isolated OG account/stream, record the original stream override
-   `enabled` value (including whether absent), gateway PID, queue generation/registration
-   count and a local/private queue identifier. Keep credentials and legacy `streams`
-   untouched. Confirm the deployed reviewed plugin version before testing.
-2. Through the supported config-writing UI/API, commit just the test stream override
-   `enabled: false`. After committed runtime visibility, send a unique benign marker in
-   the test topic: expect no agent dispatch/reply. Core owns reload; this dynamic noop
-   prefix must keep the same PID and monitor generation, with no queue DELETE/register.
-3. Commit `enabled: true` for that override. Send another unique benign marker: expect
-   exactly one normal dispatch/reply, again the same PID/generation and queue. Capture
-   timestamped committed-setting, dispatch and registration evidence; redact private
-   identifiers from public receipts. Do not use lifecycle hooks as a reload substitute.
-4. In a finally/rollback step, restore the exact original override value or remove the
-   newly introduced key if absent originally. Verify the restored effective policy and
-   unchanged credentials, PID and queue generation. If unexpected replacement or missing
-   reply occurs, restore first and report the evidence; do not restart or rotate secrets.
-
-This minimal test proves dynamic committed policy refresh, not credential replacement,
-durable cancellation, or account removal. Those require separate authorized scenarios.
-
-## Review / live verification gaps
+## Limits
 
 - Hook-only invocation cannot safely replace transport: pre-persistence hooks have no
   transaction/rollback handle. Hosts must apply committed core reload after a successful
@@ -121,49 +99,4 @@ durable cancellation, or account removal. Those require separate authorized scen
   not silently report successful shutdown or run a second local poll.
 - Registration is not an atomic server-side handoff. Durable guarantees apply to received
   work when the durable journal is available, not events arriving during registration gaps
-  or unavailable/failed durable storage. No live reload/OG verification is claimed.
-
-## Test-value record
-
-| Contract / credible regression | Primary owner and evidence | Overlap / proof limits |
-| --- | --- | --- |
-| Lifecycle invalidation of self/users/subscriptions across both config snapshots, without other-account eviction or policy bypass | `directory.test.ts`, actual lifecycle → directory → controlled HTTP fetch | TTL/live-refresh/isolation tests retain distinct cache contracts; no test-only production seam. |
-| Directory refills during committed teardown must not outlive either original/current snapshot | `lifecycle.test.ts`, controlled draining monitor + real directory/cache/HTTP client, observes refreshed self name | Separate settlement-boundary risk; monitor mock cannot prove actual server teardown. |
-| Pre-persistence write/removal failure, hook-plus-committed-core composition, one generation, actual runtime getter, simultaneous/stale starts and environment-only compatibility | `lifecycle.test.ts`, committed runtime getter + controlled monitor boundary | Mocks prove orchestration, not server DELETE. |
-| Accepted-turn cancellation with actual core's serialized repeated-stop path | `monitor.test.ts`, installed pinned core manager → actual adapter → actual monitor → controlled SDK dispatcher | Asserts the turn's reply AbortSignal, not a second direct helper call. Pinned internal manager entry is located from installed SDK; no core code is vendored. |
-| Received batch tail and aborted admission survive restart; delivered records are not replayed | `monitor.test.ts`, actual monitor + durable journal adapter with controlled SDK state/client | Existing durable failure/replay/post-delivery-race tests retain distinct retry and completion risks. |
-| Abort-admission/stopped-tail storage failure must reject, not use live fallback or destroy the remote recovery copy | `monitor.test.ts`, cancellation at policy lookup + fault-injected journal enqueue, observes rejection/no delivery/no DELETE and retained-queue diagnostic | Separate from ordinary live fallback and healthy teardown. |
-| Next poll cannot acknowledge pending durable admission | `monitor.test.ts`, blocked durable enqueue and fake-clock pacing, observes actual poll calls/cursor | This proves the plugin's API-call ordering, not Zulip's implementation; official acknowledgment contract linked above. |
-| Startup replay failure cannot bypass DELETE | `monitor.test.ts`, finalization boundary | Distinct from ordinary shutdown. |
-| Removal clears volatile dedupe; replacement preserves it | `monitor.test.ts`, repeat dispatch observation | `clearPrefix` has a production caller, not a test-only seam. |
-| Typing and terminal-hold cleanup | Existing terminal-hold monitor test now asserts typing cleanup | Independent progress/reaction retry/subagent tests remain. |
-| Fetch abort does not retry; listeners removed on success/abort | `client.test.ts`, actual client/retry/poll transport with fault-injected fetch | Proves local signal propagation/cleanup, not remote cancellation. |
-
-The two failed-persistence regressions fail against the initial lifecycle adapter, then pass
-after committed-core ownership fixes. Restoring the pre-cancellation-fix adapter/monitor reproduces the real core cancellation
-and received-batch-tail regressions; the final implementation passes. Earlier original-code
-checks also reproduced startup replay queue leakage and aborted-fetch retry timeout.
-A real monitor test changes committed DM policy between received messages and proves one
-queue registration and only the policy-eligible dispatch. An isolated pinned-core planner
-check confirmed dynamic root/named/per-stream leaves are no-ops while credentials, streams
-restart Zulip; the broad queue lets override enablement refresh dynamically.
-
-No production test-only lifecycle seams remain. The initial split turn-cancellation signal
-and misleading direct repeated-stop test were removed in favor of core's actual contract.
-The two directory regressions fail when only the rebased pre-integration lifecycle adapter
-is restored (missing six refresh requests; stale self name), then pass with invalidation.
-The invalidator is called by production hooks/start/teardown and is not exported from the
-package entry point. Its consumers and cache/resolver call paths were checked.
-
-## Independent review disposition
-
-Hawk's initial pre-persistence mutation and stale-start findings are resolved. Its next
-review found that core serializes repeated stops, invalidating an assumed second-call
-cancellation route. The implementation now uses immediate core cancellation and durable
-receive replay rather than attempting an uncancellable grace period. A further review
-identified cancellation-before-admission using the normal live fallback; strict admission,
-monitor error propagation, and retaining the remote recovery queue resolve that failure.
-
-The mandatory `test-value-audit` skill was not advertised to implementer or reviewer.
-This manual contract/proof record is not represented as a skill invocation; the procedural
-review gate remains for Debbie's review environment.
+  or unavailable/failed durable storage.

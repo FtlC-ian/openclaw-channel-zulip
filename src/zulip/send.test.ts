@@ -262,6 +262,27 @@ describe("sendMessageZulip media and presentation", () => {
       expect(JSON.stringify(sent.widgetContent)).toContain("/approve req-1 allow-once");
     } finally { register.mockRestore(); zulipApprovalReactions.clearAccount("default"); }
   });
+  it.each(["dm", "stream"])("keeps a successful %s approval prompt bound when its companion zform fails", async (kind) => {
+    const { zulipApprovalReactions } = await import("./approval-reactions.js");
+    const { buildApprovalPendingReplyPayload } = await import("openclaw/plugin-sdk/approval-runtime");
+    const register = vi.spyOn(zulipApprovalReactions, "register").mockResolvedValue(undefined);
+    const warn = vi.fn();
+    const logger = vi.spyOn(sendState.runtime.logging, "getChildLogger").mockReturnValue({ debug: vi.fn(), warn });
+    const send = kind === "dm" ? sendState.sendZulipPrivateMessage : sendState.sendZulipStreamMessage;
+    const callsBefore = send.mock.calls.length;
+    send.mockResolvedValueOnce({ id: 7101 }).mockRejectedValueOnce(new Error("companion refused"));
+    const pending = buildApprovalPendingReplyPayload({ approvalId: "partial", approvalSlug: "partial", text: "Approval", allowedDecisions: ["allow-once", "deny"] });
+    try {
+      const result = await sendMessageZulip(kind === "dm" ? "user:alice@example.test" : "stream:general:general chat", pending.text!, {
+        cfg: { channels: { zulip: { allowFrom: ["ian@test"] } } }, presentation: pending.presentation, channelData: pending.channelData,
+      });
+      expect(result.messageId).toBe("7101");
+      expect(send.mock.calls.length - callsBefore).toBe(2);
+      expect(send.mock.calls[callsBefore][1].widgetContent).toBeUndefined();
+      expect(register).toHaveBeenCalledWith(expect.objectContaining({ messageId: "7101", widgetMessageId: undefined, sourceText: expect.stringContaining("Authorized approvers") }));
+      expect(warn).toHaveBeenCalledWith("zulip approval companion delivery failed; retaining canonical prompt", expect.objectContaining({ messageId: "7101" }));
+    } finally { register.mockRestore(); logger.mockRestore(); }
+  });
   it.each([
     { reason: "unsupported-only decisions", allowedDecisions: ["allow-always"] as const, approvalReactions: undefined },
     { reason: "normalized emoji collisions", allowedDecisions: ["allow-once", "deny"] as const, approvalReactions: { approve: "check", deny: "✅" } },

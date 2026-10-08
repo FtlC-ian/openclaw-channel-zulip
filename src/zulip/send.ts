@@ -463,10 +463,19 @@ export async function sendMessageZulip(
 
   if (splitApprovalWidget) {
     const content = `Approval controls for ${approvalBinding!.approvalId}`;
-    const response = target.kind === "user"
-      ? await sendZulipPrivateMessage(client, { to: target.email, content, widgetContent })
-      : await sendZulipStreamMessage(client, { stream: target.stream, topic: target.topic, content, widgetContent });
-    widgetMessageId = response.id ? String(response.id) : undefined;
+    try {
+      const response = target.kind === "user"
+        ? await sendZulipPrivateMessage(client, { to: target.email, content, widgetContent })
+        : await sendZulipStreamMessage(client, { stream: target.stream, topic: target.topic, content, widgetContent });
+      widgetMessageId = response.id ? String(response.id) : undefined;
+    } catch (error) {
+      // The canonical prompt is already visible. Do not report a failed delivery
+      // or leave its fallback commands unbound merely because desktop controls
+      // failed; reactions/manual approval remain available on the prompt.
+      logger.warn?.("zulip approval companion delivery failed; retaining canonical prompt", {
+        accountId: account.accountId, messageId, error: String(error),
+      });
+    }
   }
 
   if (questionPreparation) {

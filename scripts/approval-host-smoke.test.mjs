@@ -142,6 +142,30 @@ for (const version of ["2026.9.3", "2026.9.6", "2026.10.1-beta.1", "2026.10.1-be
         assert.equal(network.filter(({ url, init }) => url.includes("/reactions?") && init.method === "DELETE").length, 2, "external resolution removes bot reactions");
         zulipApprovalReactions.clearAccount("default");
       }
+      // Fault-inject the second request through the real client and sender. The
+      // successful first delivery must still bind and retire on remote resolution.
+      for (const to of ["user:approver@test", "stream:18:general chat"]) {
+        const { zulipApprovalReactions } = await import("./dist/src/zulip/approval-reactions.js");
+        const network = [];
+        const originalFetch = globalThis.fetch;
+        let posts = 0;
+        globalThis.fetch = async (url, init) => {
+          network.push({ url: String(url), init });
+          if (String(url).endsWith("/messages") && init.method === "POST" && ++posts === 2)
+            return new Response(JSON.stringify({ result: "error", msg: "companion refused" }), { status: 400 });
+          return new Response(JSON.stringify({ result: "success", id: 901 }));
+        };
+        try {
+          const result = await zulipOutboundAdapter.sendPayload({ cfg, to, payload: rendered });
+          assert.equal(result.messageId, "901", "companion failure must not turn visible canonical delivery into failure");
+          assert.equal(posts, 2, "no retry duplicates the canonical prompt");
+          assert.equal(network.filter(({ url, init }) => url.endsWith("/messages/901/reactions") && init.method === "POST").length, 2, "canonical reaction controls remain seeded");
+          assert.equal(await zulipApprovalReactions.command({ cfg, accountId: "default", senderId: "unauthorized@test", botUserId: "13", text: "@**Debbie-OG|13** /approve 12345678-1234-4234-8234-123456789abc deny" }), true, "degraded delivery still binds pre-dispatch interception without settling unauthorized actor");
+          await zulipApprovalReactions.observeTerminal("default", { event: "exec.approval.resolved", payload: { id: "12345678-1234-4234-8234-123456789abc", decision: "deny" } });
+          assert.equal(network.filter(({ url, init }) => url.endsWith("/messages/901") && init.method === "PATCH").length, 1, "degraded original still gets terminal edit");
+          assert.equal(network.filter(({ url, init }) => !url.includes("/reactions?") && init.method === "DELETE").length, 0, "failed companion has no message to delete");
+        } finally { globalThis.fetch = originalFetch; zulipApprovalReactions.clearAccount("default"); }
+      }
       await store.register({ cfg, accountId: "default", messageId: "123", client, sourceText: rendered.text, payload: rendered });
       assert.equal(calls.filter(({ init }) => init.method === "POST").length, 2, "reactions must be enabled and seeded without observation");
       await store.react({ cfg, accountId: "default", botUserId: "1", client, event: { type: "reaction", op: "add", user_id: 2, message_id: 123, emoji_name: "check", reaction_type: "unicode_emoji" } });

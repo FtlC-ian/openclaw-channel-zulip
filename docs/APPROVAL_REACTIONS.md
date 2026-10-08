@@ -233,6 +233,7 @@ this manual ledger is the required gate for independent Hawk review.
 | Source-adaptation mutation: extra source select beside valid buttons is adapted to context by real core but must not produce a binding/zform | Four-host real core-to-renderer matrix owns this contract; fails on ed2520a and passes after sourcePresentation validation; no test-only production seam |
 | Mixed-control mutation: valid typed approval buttons plus extra command/callback/link must not render or bind | Same renderer/control-admission boundary; reproduces Hawk MEDIUM on 701cd39 (three failures) and passes after exclusive full-set validation; no overlapping test-only seam |
 | Rendered marker integrity: mismatched owner/kind/decisions/version/terminal state must remain unbound; typed actions become full-ID commands without losing text/data | Channel renderer/SDK validation boundary; focused tamper coverage independently protects the new consumed-presentation boundary; no new test-only production seam |
+| Partial delivery: companion request rejected after successful original (DM and stream) | Real sender network boundary on all four hosts proves successful result, reaction seeds, bound pre-dispatch command and terminal edit without phantom widget deletion; focused sender test owns warning/exact registration arguments; fails before degradable companion handling |
 | Sender fallback: zform preservation, exact returned ID, explicit approvers; unsupported-only decisions and normalized emoji collisions must not advertise/seed reactions but must bind validated fallback commands | Real sender boundary; new cases fail before shared eligibility fix and pass after; real registration retained, no test-only seam |
 | Emitted import checker: absent dynamic import rejected then complete fixture accepted | Real checker CLI; fixture infra-runtime string tests generic dynamic scanning, not a production observer dependency |
 
@@ -266,6 +267,9 @@ cancellation;
 it is stopped with the account monitor. Core may additionally post its normal
 resolution message. API cleanup failures are logged and never reactivate a binding.
 The bot requires Zulip permissions to edit its messages and delete its zforms.
+If companion delivery fails after the original prompt succeeds, the sender logs
+the failure, registers the original without a widget ID, and returns its successful
+delivery. Reactions and manual fallback stay bound without duplicate-prompt retry.
 
 Stream zform replies prepend a bot mention. Approval ingress removes only a
 leading identity-qualified mention of the connected bot (numeric ID or email),

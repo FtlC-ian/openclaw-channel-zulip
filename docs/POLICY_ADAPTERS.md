@@ -5,8 +5,8 @@
 The adapters are typed through `ChannelPlugin["doctor"]` and
 `ChannelPlugin["allowlist"]` from the existing exported
 `openclaw/plugin-sdk/core` import, using the pinned OpenClaw 2026.9.6 SDK.
-No new runtime SDK subpath is required. The emitted-import checker audits all
-27 runtime subpaths, and `test:hosts` imports the built index/setup entry and
+No new runtime SDK subpath is required. The exports checker audits all 34 source/built subpaths (including type-only
+imports, with 27 emitted runtime subpaths), and `test:hosts` imports the built index/setup entry and
 exercises both adapters on actual npm hosts 2026.9.3, 2026.9.6,
 2026.10.1-beta.1 and 2026.10.1-beta.2.
 
@@ -124,6 +124,7 @@ catalog. This ledger records the manual gate for independent review.
 | Sender read/edit round trips, normalization, root/named-account isolation, preserved unrelated config, no phantom/no-op sections | Public plugin allowlist boundary and real runtime schema. Tests invoke production adapter methods, not a test-only edit helper seam. |
 | Empty group fallback and open DM wildcard removal must narrow rather than broaden or invalidate schema | Public editor plus real SDK fallback and runtime schema; distinct policies require separate regressions. |
 | Stream name/decimal selector edits preserve rule metadata and use explicit deny instead of empty-list broadening | Public editor to real inbound stream-policy boundary; name and decimal-ID tests prove different selector namespaces, plus idempotency and account isolation. |
+| Erased type-only SDK imports must remain exported; a missing source-only contract would escape an emitted-JS-only audit | Real exports-checker CLI; existing import/re-export/dynamic negative controls are retained and the new source-only negative control fails the old checker. |
 | Built artifact imports and active doctor/read/edit/repair behavior on four hosts | Actual npm host/built artifact boundary. Complements focused policy tests by proving host load, SDK exports, and production registration; existing reaction delivery matrix remains intact. |
 
 There are no test-only production seams. Shared normalization is called by

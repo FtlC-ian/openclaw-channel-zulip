@@ -281,6 +281,25 @@ These settings filter inbound handling, not event-queue subscriptions. The
 plugin still registers for all public stream events to receive DMs alongside
 stream events. They do not disable outbound stream actions.
 
+### Doctor and allowlists
+
+`openclaw doctor` previews unsafe DM/group policy, all-public-stream scope,
+expanding overrides, and configured reaction approvals without explicit approvers.
+`openclaw doctor --fix` only removes exact duplicate sender entries; it does not
+choose access policies, approvers or credentials.
+
+In an authorized Zulip chat, use `/allowlist list all --config` to inspect access,
+`/allowlist add dm owner@example.com --config` for DM senders, and
+`/allowlist add group sender@example.com --config` for group senders. Add
+`--channel zulip --account <id>` to select an account.
+`/allowlist add group stream:bot-testing --config` enables a stream override;
+`remove group stream:bot-testing --config` explicitly disables that selector,
+without turning an emptied legacy `streams` list into all-stream access.
+Removing the last effective group sender disables group handling to prevent DM
+fallback from reopening access. Removing `*` from open DMs selects allowlist
+policy to keep config valid. Later additions do not automatically reopen disabled
+group handling. See [adapter contracts and live checks](docs/POLICY_ADAPTERS.md).
+
 ### Handled-message read state
 
 `markHandledRead` is disabled by default and may be enabled globally or for an

@@ -40,6 +40,9 @@ import { zulipSecrets } from "./secret-contract.js";
 import { runZulipAccount, stopZulipAccount, zulipLifecycle } from "./lifecycle.js";
 import { zulipThreading } from "./threading.js";
 import { zulipDirectory, zulipResolver } from "./directory.js";
+import { zulipDoctor } from "./doctor.js";
+import { zulipAllowlist } from "./allowlist.js";
+import { normalizeZulipAllowEntry as normalizeAllowEntry } from "./policy-config.js";
 
 const meta = {
   id: "zulip",
@@ -206,14 +209,6 @@ export const zulipMessageAdapter = createChannelMessageAdapterFromOutbound({
   outbound: zulipOutboundAdapter,
 });
 
-function normalizeAllowEntry(entry: string): string {
-  return entry
-    .trim()
-    .replace(/^(zulip|user):/i, "")
-    .replace(/^@/, "")
-    .toLowerCase();
-}
-
 function formatAllowEntry(entry: string): string {
   const trimmed = entry.trim();
   if (!trimmed) {
@@ -236,6 +231,8 @@ function resolveAgentReactionGuidance(
 
 export const zulipPlugin = {
   id: "zulip",
+  doctor: zulipDoctor,
+  allowlist: zulipAllowlist,
   meta: {
     ...meta,
   },

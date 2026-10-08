@@ -9,6 +9,7 @@ import type {
   RuntimeEnv,
 } from "../sdk.js";
 import { createChannelPairingController } from "../sdk.js";
+import { normalizeZulipAllowEntry as normalizeAllowEntry, normalizeZulipAllowList as normalizeAllowList } from "../policy-config.js";
 import { resolveControlCommandGate } from "openclaw/plugin-sdk/command-auth-native";
 import {
   createStatusReactionController,
@@ -408,25 +409,6 @@ function extractZulipTopicDirective(text: string): { text: string; topic?: strin
     text: text.slice(match[0].length).trimStart(),
     topic,
   };
-}
-
-function normalizeAllowEntry(entry: string): string {
-  const trimmed = entry.trim();
-  if (!trimmed) {
-    return "";
-  }
-  if (trimmed === "*") {
-    return "*";
-  }
-  return trimmed
-    .replace(/^(zulip|user):/i, "")
-    .replace(/^@/, "")
-    .toLowerCase();
-}
-
-function normalizeAllowList(entries: Array<string | number>): string[] {
-  const normalized = entries.map((entry) => normalizeAllowEntry(String(entry))).filter(Boolean);
-  return Array.from(new Set(normalized));
 }
 
 function isSenderAllowed(params: {

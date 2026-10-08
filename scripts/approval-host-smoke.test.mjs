@@ -9,7 +9,7 @@ const root = process.env.OPENCLAW_HOST_FIXTURES;
 if (!root) throw new Error("Set OPENCLAW_HOST_FIXTURES to the directory containing npm-extracted <version>/package hosts");
 const require = createRequire(import.meta.url);
 for (const version of ["2026.9.3", "2026.9.6", "2026.10.1-beta.1", "2026.10.1-beta.2"]) {
-  test(`real core approval routing/rendering and Zulip delivery on ${version}`, (t) => {
+  test(`built Zulip doctor/allowlist and real core approval delivery on ${version}`, (t) => {
     const host = resolve(root, version, "package");
     execFileSync(process.execPath, ["scripts/check-sdk-exports.mjs", resolve(host, "package.json")], { stdio: "pipe" });
     const scratch = mkdtempSync(resolve(root, `reaction-smoke-${version}-`));
@@ -47,6 +47,30 @@ for (const version of ["2026.9.3", "2026.9.6", "2026.10.1-beta.1", "2026.10.1-be
       const renderForDelivery = Object.values(rendererModule).find(value => typeof value === "function" && value.name === "renderPresentationForDelivery");
       assert.equal(typeof renderForDelivery, "function");
       const { zulipOutboundAdapter, zulipPlugin } = await import("./dist/src/channel.js");
+      assert.equal(zulipPlugin.doctor.dmAllowFromMode, "topOrNested");
+      assert.equal(zulipPlugin.doctor.groupModel, "hybrid");
+      const policyConfig = { channels: { zulip: { dmPolicy: "open", allowFrom: ["*"], groupPolicy: "allowlist", approvalReactions: { approve: "check" }, accounts: { work: {} } } } };
+      const preview = await zulipPlugin.doctor.collectPreviewWarnings({ cfg: policyConfig, doctorFixCommand: "openclaw doctor --fix" });
+      for (const text of ['dmPolicy="open"', 'groupAllowFrom is empty', 'all public streams', 'no explicit allowFrom approver emails']) assert.ok(preview.some(warning => warning.includes(text) && warning.includes("Fix:")), text);
+      const repairConfig = { channels: { zulip: { allowFrom: ["owner@test", "owner@test"], streams: [], apiKey: { source: "env", provider: "test", id: "TOKEN" } } } };
+      const repaired = await zulipPlugin.doctor.repairConfig({ cfg: repairConfig, doctorFixCommand: "openclaw doctor --fix" });
+      assert.deepEqual(repaired.config.channels.zulip.allowFrom, ["owner@test"]);
+      assert.deepEqual(repaired.config.channels.zulip.streams, []);
+      assert.deepEqual(repaired.config.channels.zulip.apiKey, repairConfig.channels.zulip.apiKey);
+      assert.deepEqual((await zulipPlugin.doctor.repairConfig({ cfg: repaired.config, doctorFixCommand: "openclaw doctor --fix" })).changes, []);
+      const { zulipChannelConfigSchema } = await import("./dist/src/config-schema.js");
+      for (const accountId of [undefined, "work"]) {
+        const edited = structuredClone(policyConfig);
+        const result = await zulipPlugin.allowlist.applyConfigEdit({ cfg: edited, parsedConfig: edited, accountId, scope: "dm", action: "add", entry: "USER:@Owner@Test" });
+        assert.equal(result.changed, true);
+        assert.deepEqual((await zulipPlugin.allowlist.readConfig({ cfg: edited, accountId })).dmAllowFrom, ["*", "owner@test"]);
+        for (const action of ["add", "remove"]) {
+          assert.equal((await zulipPlugin.allowlist.applyConfigEdit({ cfg: edited, parsedConfig: edited, accountId, scope: "group", action, entry: "stream:00017" })).changed, true);
+        }
+        const section = accountId ? edited.channels.zulip.accounts[accountId] : edited.channels.zulip;
+        assert.deepEqual(section.streamOverrides, { "17": { enabled: false } });
+        assert.equal(zulipChannelConfigSchema.runtime.safeParse(edited.channels.zulip).success, true);
+      }
       const { setZulipRuntime } = await import("./dist/src/runtime.js");
       setZulipRuntime({ logging: { getChildLogger: () => ({ debug() {} }) }, channel: { activity: { record() {} }, text: { resolveMarkdownTableMode: () => "off", convertMarkdownTables: text => text } } });
       async function loadHostFunction(name) {

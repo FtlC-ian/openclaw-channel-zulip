@@ -140,10 +140,11 @@ Failed cleanup cannot reactivate bindings. Seeding is best-effort. Terminal
 cleanup waits for in-flight seeding before removing reactions. Cleanup API failures
 may leave stale visuals, but cannot permit repeated execution.
 
-There is no passive observer or proactive terminal update for decisions made on a
-remote surface. The next local reaction/manual command obtains terminal truth from
-Gateway and edits the message; a TTL-pruned target is simply inert. Restart/removal
-retires targets without proactive edits. Typed `/approve` remains the fallback.
+The account monitor observes Gateway terminal events and proactively retires
+controls for remote decisions, expiry and cancellation. The next local
+reaction/manual command also obtains terminal truth from Gateway; TTL-pruned
+targets are inert. Restart/removal clears local state without proactive edits.
+Typed `/approve` remains the fallback.
 
 ## Public SDK evidence and host matrix
 
@@ -260,7 +261,8 @@ Validated approval delivery therefore sends an editable canonical prompt with
 reactions, followed by a separate disposable zform message. Resolution edits
 the original prompt, deletes the companion zform, and removes the bot's seeded
 reactions (other users' reactions are not removed). An operator-approvals Gateway
-client observes terminal events, including CLI/Control UI resolution and expiry;
+client observes terminal events, including CLI/Control UI resolution, expiry and
+cancellation;
 it is stopped with the account monitor. Core may additionally post its normal
 resolution message. API cleanup failures are logged and never reactivate a binding.
 The bot requires Zulip permissions to edit its messages and delete its zforms.

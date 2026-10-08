@@ -136,8 +136,8 @@ export class ZulipApprovalReactions {
     const kind = event.event === "exec.approval.resolved" ? "exec" : event.event === "plugin.approval.resolved" ? "plugin" : undefined;
     const payload = event.payload as { id?: unknown; decision?: unknown; terminalStatus?: unknown } | undefined;
     if (!kind || typeof payload?.id !== "string") return;
-    const outcome = payload.terminalStatus === "expired" ? "expired" : payload.decision;
-    if (outcome !== "expired" && outcome !== "allow-once" && outcome !== "allow-always" && outcome !== "deny") return;
+    const outcome = payload.terminalStatus === "expired" || payload.terminalStatus === "cancelled" ? payload.terminalStatus : payload.decision;
+    if (outcome !== "expired" && outcome !== "cancelled" && outcome !== "allow-once" && outcome !== "allow-always" && outcome !== "deny") return;
     const key = JSON.stringify([accountId, kind, payload.id]);
     if (this.terminals.has(key)) return;
     this.terminals.set(key, { outcome, expiresAtMs: Date.now() + TARGET_TTL_MS });

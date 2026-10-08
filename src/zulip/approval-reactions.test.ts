@@ -67,7 +67,7 @@ describe("approval reaction control boundary", () => {
     const edit = new URLSearchParams(request.mock.calls.find(([, init]) => init?.method === "PATCH")![1].body).get("content");
     expect(edit).toBe("Approval required\n\n**Approval outcome: allow-once**\nThese controls are no longer active.");
   });
-  it.each(["reaction", "zform", "manual", "cli", "control-ui", "expired"])("retires the editable prompt and companion widget after %s resolution", async (surface) => {
+  it.each(["reaction", "zform", "manual", "cli", "control-ui", "expired", "cancelled"])("retires the editable prompt and companion widget after %s resolution", async (surface) => {
     await store.register({ cfg, accountId: "default", messageId: "10", widgetMessageId: "11", client, sourceText: "Approval required", payload: payload() });
     // Model Zulip's actual server contract instead of an always-successful PATCH.
     request.mockImplementation(async (path, init) => {
@@ -76,8 +76,8 @@ describe("approval reaction control boundary", () => {
     });
     if (surface === "reaction") await react();
     else if (surface === "manual" || surface === "zform") await command();
-    else await store.observeTerminal("default", { event: "exec.approval.resolved", payload: { id: "req-1", decision: "deny", ...(surface === "expired" ? { terminalStatus: "expired" } : {}) } });
-    expect(request).toHaveBeenCalledWith("/messages/10", expect.objectContaining({ method: "PATCH" }));
+    else await store.observeTerminal("default", { event: "exec.approval.resolved", payload: { id: "req-1", decision: "deny", ...(["expired", "cancelled"].includes(surface) ? { terminalStatus: surface, decision: undefined } : {}) } });
+    expect(request).toHaveBeenCalledWith("/messages/10", expect.objectContaining({ method: "PATCH", ...(["expired", "cancelled"].includes(surface) ? { body: expect.stringContaining(`outcome%3A+${surface}`) } : {}) }));
     expect(request).toHaveBeenCalledWith("/messages/11", expect.objectContaining({ method: "DELETE" }));
     expect(request.mock.calls.filter(([path, init]) => path.endsWith("/reactions") && init?.method === "DELETE")).toHaveLength(2);
     await react(); await store.observeTerminal("default", { event: "exec.approval.resolved", payload: { id: "req-1", decision: "deny" } });

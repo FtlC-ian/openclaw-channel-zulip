@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, readFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import test from "node:test";
@@ -9,7 +9,7 @@ const root = process.env.OPENCLAW_HOST_FIXTURES;
 if (!root) throw new Error("Set OPENCLAW_HOST_FIXTURES to the directory containing npm-extracted <version>/package hosts");
 const require = createRequire(import.meta.url);
 for (const version of ["2026.9.3", "2026.9.6", "2026.10.1-beta.1", "2026.10.1-beta.2"]) {
-  test(`built Zulip doctor/allowlist and real core approval delivery on ${version}`, (t) => {
+  test(`built Zulip doctor/allowlist, real core approval routing/rendering, heartbeat typing and Zulip delivery on ${version}`, (t) => {
     const host = resolve(root, version, "package");
     execFileSync(process.execPath, ["scripts/check-sdk-exports.mjs", resolve(host, "package.json")], { stdio: "pipe" });
     const scratch = mkdtempSync(resolve(root, `reaction-smoke-${version}-`));
@@ -212,6 +212,7 @@ for (const version of ["2026.9.3", "2026.9.6", "2026.10.1-beta.1", "2026.10.1-be
       assert.equal(await store.command({ cfg, accountId: "default", senderId: "unauthorized@test", text: "/approve 12345678-1234-4234-8234-123456789abc deny" }), true, "delivered binding remains active after denied actor");
       store.clearAccount("default");
       assert.equal(await store.command({ cfg, accountId: "default", senderId: "approver@test", text: "/approve 12345678-1234-4234-8234-123456789abc deny" }), false);
+      ${readFileSync("scripts/heartbeat-host-scenario.mjs", "utf8")}
       console.log("enabled ${version}");
     `);
     const output = execFileSync(process.execPath, [resolve(scratch, "smoke.mjs")], { encoding: "utf8", timeout: 20000, env: { ...process.env, HOME: scratch, OPENCLAW_HOME: scratch, OPENCLAW_STATE_DIR: resolve(scratch, "state"), OPENCLAW_CONFIG_PATH: resolve(scratch, "state/openclaw.json") } });

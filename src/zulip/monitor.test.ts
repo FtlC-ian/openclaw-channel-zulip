@@ -1489,6 +1489,64 @@ describe("monitorZulipProvider", () => {
     expect(state.sendMessageZulip.mock.calls[2][2]).toMatchObject({ topic: "owner-b", channelData: { askUser: expect.anything() } });
   });
 
+  it("publishes only the real registered polling monitor generation and clears it on removal/abort", async () => {
+    const { zulipHeartbeat } = await import("../heartbeat.js");
+    const { monitorZulipProvider } = await import("./monitor.js");
+    const config = { channels: { zulip: { url: state.account.baseUrl, email: state.account.email, apiKey: "fixture" } } };
+    let committed: any = config;
+    const controller = new AbortController();
+    let registered!: (queue: { queueId: string; lastEventId: number }) => void;
+    registerZulipQueueMock.mockImplementationOnce(async () => new Promise(resolve => { registered = resolve; }));
+    getZulipEventsWithRetryMock.mockImplementationOnce(async (_client, options) => {
+      options.onHealthChanged(false);
+      expect((await zulipHeartbeat.checkReady!({ cfg: config })).ok).toBe(false);
+      options.onHealthChanged(true);
+      expect((await zulipHeartbeat.checkReady!({ cfg: config })).ok).toBe(true);
+      committed = {};
+      expect((await zulipHeartbeat.checkReady!({ cfg: config })).ok).toBe(false);
+      controller.abort();
+      return { result: "success", events: [] };
+    });
+    const running = monitorZulipProvider({ config, getConfig: () => committed, abortSignal: controller.signal });
+    await vi.waitFor(() => expect(registerZulipQueueMock).toHaveBeenCalledTimes(1));
+    expect((await zulipHeartbeat.checkReady!({ cfg: config })).ok).toBe(false);
+    registered({ queueId: "heartbeat-queue", lastEventId: 0 });
+    await running;
+    expect(getZulipEventsWithRetryMock).toHaveBeenCalledTimes(1);
+    expect((await zulipHeartbeat.checkReady!({ cfg: config })).ok).toBe(false);
+  });
+
+  it("the monitor's real typing loop owns inbound turns and terminal hold never keeps typing alive", async () => {
+    const { zulipHeartbeat } = await import("../heartbeat.js");
+    const { sendZulipTyping } = await import("./client.js");
+    const real = await vi.importActual<typeof import("openclaw/plugin-sdk/channel-outbound")>("openclaw/plugin-sdk/channel-outbound");
+    typingCallbacksMock.mockImplementationOnce(real.createTypingCallbacks as any);
+    Object.assign(state.core.config.channels.zulip, { url: state.account.baseUrl, email: state.account.email, apiKey: "fixture" });
+    state.autoAbort = false;
+    state.account.config.reactions = { enabled: true, timing: { debounceMs: 0, doneHoldMs: 60000 } };
+    const message = makeChannelMessage(1940001);
+    const target = { cfg: state.core.config, to: `stream:4:${message.subject}` };
+    const typing = vi.mocked(sendZulipTyping);
+    typing.mockClear();
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }) => {
+      await zulipHeartbeat.sendTyping!(target);
+      expect(typing).not.toHaveBeenCalled();
+      await dispatcherOptions.onReplyStart();
+      await vi.waitFor(() => expect(typing).toHaveBeenCalledTimes(1));
+      await zulipHeartbeat.sendTyping!(target);
+      await zulipHeartbeat.clearTyping!(target);
+      expect(typing).toHaveBeenCalledTimes(1);
+      return {};
+    });
+    state.pollResponses = [{ result: "success", events: [{ id: 1, type: "message", message }] }];
+    const running = runMonitorOnce();
+    await vi.waitFor(() => expect(state.addZulipReaction).toHaveBeenCalledWith(state.client, expect.objectContaining({ emojiName: "check" })));
+    expect(typing.mock.calls.map(call => call[1].op)).toEqual(["start", "stop"]);
+    state.abortController!.abort();
+    await running;
+    expect(typing.mock.calls.map(call => call[1].op)).toEqual(["start", "stop"]);
+  });
+
   it("wires typing idle cleanup into the reply dispatcher", async () => {
     state.pollResponses = [
       {
@@ -1925,26 +1983,15 @@ describe("monitorZulipProvider", () => {
       Object.assign(new Error("synthetic rate limit"), { retryAfterMs: 120_000 }),
     );
     const controller = new AbortController();
-    const originalAddEventListener = controller.signal.addEventListener.bind(controller.signal);
-    let abortListenerRegistrations = 0;
-    vi.spyOn(controller.signal, "addEventListener").mockImplementation(
-      (type, listener, options) => {
-        abortListenerRegistrations += 1;
-        if (abortListenerRegistrations === 2) {
-          controller.abort();
-        }
-        originalAddEventListener(type, listener, options);
-      },
-    );
-
-    const monitorPromise = runMonitorOnce(controller);
-
-    await expect(
-      Promise.race([
-        monitorPromise.then(() => "stopped"),
-        new Promise<string>((resolve) => setTimeout(() => resolve("timed-out"), 250)),
-      ]),
-    ).resolves.toBe("stopped");
+    const runtime = { log: vi.fn(), error: vi.fn(() => { setTimeout(() => controller.abort(), 0); }), exit: vi.fn() };
+    const monitorPromise = runMonitorOnce(controller, runtime);
+    await expect(Promise.race([
+      monitorPromise.then(() => "stopped"),
+      new Promise<string>(resolve => setTimeout(() => resolve("timed-out"), 250)),
+    ])).resolves.toBe("stopped");
+    expect(runtime.error).toHaveBeenCalledWith(expect.stringContaining("synthetic rate limit"));
+    expect(getZulipEventsWithRetryMock).toHaveBeenCalledTimes(1);
+    expect(deleteZulipQueueMock).toHaveBeenCalledTimes(1);
   });
 
   it("does not start the next event when aborted during batch pacing", async () => {

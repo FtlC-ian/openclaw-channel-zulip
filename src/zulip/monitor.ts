@@ -1,4 +1,5 @@
 import { startZulipApprovalObserver, stripLeadingZulipApprovalBotMention, zulipApprovalReactions } from "./approval-reactions.js";
+import { ZulipConnection } from "./connection.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type {
@@ -38,7 +39,6 @@ import {
   registerZulipQueue,
   getZulipEventsWithRetry,
   deleteZulipQueue,
-  sendZulipTyping,
   addZulipReaction,
   removeZulipReaction,
   editZulipMessage,
@@ -1745,15 +1745,16 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         ? { op: "start" as const, type: "stream" as const, streamId: Number(streamId), topic }
         : null;
 
+    const typingOwner = typingParams ? connection.claimMonitor(typingParams) : undefined;
     const typingCallbacks = createTypingCallbacks({
       start: async () => {
         if (typingParams) {
-          await sendZulipTyping(client, typingParams);
+          await typingOwner?.start();
         }
       },
       stop: async () => {
         if (typingParams) {
-          await sendZulipTyping(client, { ...typingParams, op: "stop" });
+          await typingOwner?.stop();
         }
       },
       onStartError: (err) => {
@@ -1774,7 +1775,16 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       },
     });
 
-    cleanupTyping = () => typingCallbacks.onCleanup?.();
+    let typingCleaned = false;
+    const stopTyping = () => {
+      if (typingCleaned) return;
+      typingCleaned = true;
+      typingCallbacks.onCleanup?.();
+    };
+    cleanupTyping = () => {
+      stopTyping();
+      void typingOwner?.close().catch(err => logVerboseMessage(`zulip: typing cleanup failed: ${String(err)}`));
+    };
     if (reactionLifecycleCancelled) cleanupTyping();
 
     if (
@@ -2060,7 +2070,11 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       return abortOutcome();
     }
 
+    stopTyping();
+    await typingOwner?.stop().catch(err => logVerboseMessage(`zulip: typing stop failed: ${String(err)}`));
     await subagentContext.finish();
+    cleanupTyping();
+    await typingOwner?.close().catch(() => {});
     if (reactionLifecycleCancelled || opts.abortSignal?.aborted) {
       await cleanupProgressDraft();
       await deletePlaceholder();
@@ -2173,6 +2187,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     streams: registrationStreams,
   });
   let queueId = queue.queueId;
+  const connection = new ZulipConnection(account.accountId, client, opts.getConfig ?? (() => cfg), opts.abortSignal, cfg);
   let lastEventId = queue.lastEventId;
   let pollBackoffMs = 0;
   let persistingStoppedBatch = false;
@@ -2614,6 +2629,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       if (abortedMessagePreservationFailed) throw abortedMessagePreservationError;
       if (opts.abortSignal?.aborted) break;
       try {
+        connection.polling = true;
         const response = await getZulipEventsWithRetry(client, {
           queueId,
           lastEventId,
@@ -2621,9 +2637,11 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
           retryBaseDelayMs: 1000,
           signal: opts.abortSignal,
           dontBlock: false,
+          onHealthChanged: healthy => { connection.polling = healthy; },
         });
 
         if (response.result === "error") {
+          connection.polling = false;
           const msg = response.msg ?? "";
           const isBadQueue =
             response.code === "BAD_EVENT_QUEUE_ID" || msg.toLowerCase().includes("bad event queue");
@@ -2755,6 +2773,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
           }
         }
       } catch (err) {
+        connection.polling = false;
         if (opts.abortSignal?.aborted) {
           if (persistingStoppedBatch) throw err;
           break;
@@ -2791,6 +2810,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       }
     }
   } finally {
+    await connection.close();
     stopApprovalObserver();
     zulipApprovalReactions.clearAccount(account.accountId);
     opts.abortSignal?.removeEventListener("abort", handleMonitorAbort);

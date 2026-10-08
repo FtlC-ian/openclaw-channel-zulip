@@ -2,7 +2,10 @@
 
 ## Unreleased
 
+## 2026.10.8
+
 ### Features
+- **Account lifecycle** (#95): Add the lifecycle adapter. Per-message settings such as policies, mentions, reactions, streaming and stream overrides refresh at the next message without re-registering the event queue. Credential, URL and `streams` changes get exactly one core-owned channel restart. Account hooks only invalidate cached metadata, so a failed config write never swaps credentials or stops an account. Monitor generations are serialized, turns cancel immediately on account abort, and received work survives restarts through durable admission and replay. See `docs/LIFECYCLE.md`.
 - **Account-scoped directory and resolver** (#93): List active, sendable DM peers (including bots), bot identity, and subscribed streams under current account policies. Resolve names, emails, and zero-normalized IDs only within their intended fields, reject ambiguity, preserve permitted topics, and bound credential-scoped caches with expiry cleanup on cache hits.
 
 ### Maintenance

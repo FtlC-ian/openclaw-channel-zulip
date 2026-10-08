@@ -1,6 +1,6 @@
 {
   "name": "openclaw-channel-zulip",
-  "version": "2026.10.7",
+  "version": "2026.10.8",
   "description": "Zulip channel plugin for OpenClaw \u2014 concurrent message processing, file uploads, approval hooks, and native message actions",
   "type": "module",
   "author": "FtlC-ian",
@@ -29,6 +29,7 @@
   "files": [
     "dist/",
     "docs/ACTION_CAPABILITIES.md",
+    "docs/LIFECYCLE.md",
     "docs/RELEASE_CHECKLIST.md",
     "docs/TOPIC_MIGRATION.md",
     "docs/UNICODE-NOTICE.txt",

@@ -16,7 +16,9 @@ The development SDK and lockfile stay pinned to the reviewed OpenClaw baseline i
    (including betas), not only the pinned development SDK. `npm run sdk:check --
    /path/to/openclaw/package.json` audits every built SDK specifier. Optional guarded
    imports may be absent on that host only if an import/start smoke test proves
-   clean feature disablement and preserved fallback paths.
+   clean feature disablement and preserved fallback paths. Reaction approvals must
+   be enabled on the supported host matrix: run `OPENCLAW_HOST_FIXTURES=/path/to/hosts
+   npm run test:hosts` after building, with npm-extracted `<version>/package` hosts.
 4. Merge, then publish from a clean checkout of `main` at the release commit with
    `npm publish`. Run `npm logout` afterwards on shared machines.
 5. Confirm the registry tarball matches a local `npm pack` of the same commit, then

@@ -230,7 +230,6 @@ vi.mock("./client.js", () => ({
 describe("sendMessageZulip media and presentation", () => {
   it("keeps the zform and binds reactions to the exact account and returned message ID", async () => {
     const { zulipApprovalReactions } = await import("./approval-reactions.js");
-    zulipApprovalReactions.observe("default", "req-1", "exec", Date.now() + 60000);
     const register = vi.spyOn(zulipApprovalReactions, "register").mockResolvedValue(undefined);
     try {
       await sendMessageZulip("user:alice@example.test", "Approval", {
@@ -248,7 +247,7 @@ describe("sendMessageZulip media and presentation", () => {
       expect(register).toHaveBeenCalledWith(expect.objectContaining({ accountId: "default", messageId: "9001", sourceText: expect.stringContaining("Authorized approvers") }));
       zulipApprovalReactions.clearAccount("default");
       await sendMessageZulip("user:alice@example.test", "Approval", {
-        cfg: { channels: { zulip: { allowFrom: ["ian@test"] } } },
+        cfg: { channels: { zulip: { allowFrom: [] } } },
         channelData: { execApproval: { approvalId: "req-1", approvalKind: "exec", state: "pending", allowedDecisions: ["allow-once", "deny"] } },
         presentation: { blocks: [{ type: "buttons", buttons: [
           { label: "Allow once", action: { type: "command", command: "/approve req-1 allow-once" } },

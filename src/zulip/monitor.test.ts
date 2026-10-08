@@ -621,7 +621,6 @@ describe("monitorZulipProvider", () => {
   it.each(["unchanged", "revoked", "disabled", "removed", "aborted"])("revalidates %s manual/zform approval after asynchronous ingress authorization", async (change) => {
     const approvalModule = await import("./approval-reactions.js");
     const { buildApprovalPendingReplyPayload } = await import("openclaw/plugin-sdk/approval-runtime");
-    const observer = vi.spyOn(approvalModule, "createZulipApprovalObserver").mockReturnValue({ start: vi.fn(async () => {}), stop: vi.fn(async () => {}) } as any);
     const command = vi.spyOn(approvalModule.zulipApprovalReactions, "command");
     const controller = new AbortController();
     const email = "user8@zlp.pubnerd.app";
@@ -630,7 +629,6 @@ describe("monitorZulipProvider", () => {
     state.account.config = initial.channels.zulip;
     state.autoAbort = false;
     state.abortController = controller;
-    approvalModule.zulipApprovalReactions.observe("default", "manual-gap", "exec", Date.now() + 60000);
     await approvalModule.zulipApprovalReactions.register({
       cfg: initial, accountId: "default", messageId: "approval-100", client: state.client, sourceText: "Approval required",
       payload: buildApprovalPendingReplyPayload({ approvalId: "manual-gap", approvalSlug: "manual-gap", text: "Approval required", allowedDecisions: ["allow-once", "deny"] }),
@@ -658,7 +656,7 @@ describe("monitorZulipProvider", () => {
       expect(approvalGatewayMocks.resolve).toHaveBeenCalledTimes(change === "unchanged" ? 1 : 0);
       expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
     } finally {
-      controller.abort(); observer.mockRestore(); command.mockRestore(); approvalModule.zulipApprovalReactions.clearAccount("default");
+      controller.abort(); command.mockRestore(); approvalModule.zulipApprovalReactions.clearAccount("default");
     }
   });
 

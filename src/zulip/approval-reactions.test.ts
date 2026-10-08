@@ -3,11 +3,10 @@ import { buildExecApprovalPendingReplyPayload, buildTypedExecApprovalPendingRepl
 import { buildApprovalPendingReplyPayload } from "openclaw/plugin-sdk/approval-runtime";
 import type { OpenClawConfig } from "../sdk.js";
 import type { ZulipClient, ZulipEvent } from "./client.js";
-import { ZulipApprovalReactions, createZulipApprovalObserver, zulipApprovalReactions } from "./approval-reactions.js";
+import { ZulipApprovalReactions, zulipApprovalReactions } from "./approval-reactions.js";
 import { readApprovalBinding } from "./approval-sdk.js";
-const mocks = vi.hoisted(() => ({ resolve: vi.fn(), create: vi.fn() }));
+const mocks = vi.hoisted(() => ({ resolve: vi.fn() }));
 vi.mock("openclaw/plugin-sdk/approval-gateway-runtime", () => ({ resolveApprovalOverGateway: mocks.resolve }));
-vi.mock("openclaw/plugin-sdk/infra-runtime", () => ({ createExecApprovalChannelRuntime: mocks.create }));
 
 const cfg = { channels: { zulip: { url: "https://zulip.test", email: "bot@test", apiKey: "test", allowFrom: ["user:ian@test"], accounts: { default: {}, other: { allowFrom: ["other@test"] } } } } } as OpenClawConfig;
 function payload(id = "req-1", kind: "exec" | "plugin" = "exec") {
@@ -20,7 +19,6 @@ let store: ZulipApprovalReactions;
 let client: ZulipClient;
 let request: ReturnType<typeof vi.fn>;
 async function register(id = "req-1", messageId = "10", accountId = "default", configuration = cfg, kind: "exec" | "plugin" = "exec") {
-  store.observe(accountId, id, kind, Date.now() + 60000);
   await store.register({ cfg: configuration, accountId, messageId, client, sourceText: "Approval required", payload: payload(id, kind) });
 }
 async function react(overrides: Partial<ZulipEvent> = {}, configuration = cfg, accountId = "default") {
@@ -32,7 +30,6 @@ beforeEach(() => {
   request = vi.fn(async (path: string) => path.startsWith("/users/") ? { result: "success", user: { user_id: 2, email: "ian@test", is_bot: false, is_active: true } } : { result: "success" });
   client = { baseUrl: "https://zulip.test", authHeader: "test", fetchImpl: vi.fn(async (url, init) => new Response(JSON.stringify(await request(new URL(String(url)).pathname.replace("/api/v1", ""), init)), { status: 200 })), request } as ZulipClient;
   mocks.resolve.mockReset().mockImplementation(async (params) => ({ applied: true, approval: { status: params.decision === "deny" ? "denied" : "allowed", decision: params.decision } }));
-  mocks.create.mockReset();
 });
 afterEach(() => { vi.useRealTimers(); zulipApprovalReactions.clearAccount("default"); zulipApprovalReactions.clearAccount("other"); });
 
@@ -40,7 +37,6 @@ describe("approval reaction control boundary", () => {
   it.each([buildExecApprovalPendingReplyPayload, buildTypedExecApprovalPendingReplyPayload])("accepts SDK exec pending payloads without a state field", async (build) => {
     const pending = build({ approvalId: "req-1", approvalSlug: "req-1", command: "true", host: "gateway", allowedDecisions: ["allow-once", "deny"] });
     expect(readApprovalBinding({ payload: pending })).toMatchObject({ approvalId: "req-1", approvalKind: "exec" });
-    store.observe("default", "req-1", "exec", Date.now() + 60000);
     await store.register({ cfg, accountId: "default", messageId: "10", client, sourceText: pending.text!, payload: pending });
     await react(); expect(mocks.resolve).toHaveBeenCalledTimes(1);
   });
@@ -101,6 +97,7 @@ describe("approval reaction control boundary", () => {
     let current = cfg;
     const pending = store.react({ cfg, getConfig: () => current, accountId: "default", client, botUserId: "1", event: event() });
     current = { channels: { zulip: { allowFrom: ["new@test"] } } } as OpenClawConfig;
+    await vi.waitFor(() => expect(complete).toBeTypeOf("function"));
     complete({ result: "success", user: { user_id: 2, email: "ian@test" } }); await pending;
     expect(mocks.resolve).not.toHaveBeenCalled();
   });
@@ -114,7 +111,25 @@ describe("approval reaction control boundary", () => {
     if (state === "removed") current = {};
     if (state === "disabled") current = { channels: { zulip: { ...cfg.channels!.zulip, enabled: false } } } as OpenClawConfig;
     if (state === "aborted") controller.abort();
+    await vi.waitFor(() => expect(complete).toBeTypeOf("function"));
     complete({ result: "success", user: { user_id: 2, email: "ian@test" } }); await pending;
+    expect(mocks.resolve).not.toHaveBeenCalled();
+  });
+  it.each(["revoked", "disabled", "removed", "aborted", "cleared"])("revalidates %s after the lazy resolver await", async (state) => {
+    await register();
+    const controller = new AbortController();
+    let reads = 0;
+    const getConfig = () => {
+      if (++reads === 1) return cfg;
+      if (state === "aborted") controller.abort();
+      if (state === "cleared") store.clearAccount("default");
+      if (state === "removed") return {};
+      if (state === "revoked") return { channels: { zulip: { ...cfg.channels!.zulip, allowFrom: ["someone-else@test"] } } } as OpenClawConfig;
+      if (state === "disabled") return { channels: { zulip: { ...cfg.channels!.zulip, enabled: false } } } as OpenClawConfig;
+      return cfg;
+    };
+    await expect(store.command({ cfg, getConfig, abortSignal: controller.signal, accountId: "default", senderId: "ian@test", text: "/approve req-1 deny" })).rejects.toThrow("authorization changed");
+    expect(reads).toBe(2);
     expect(mocks.resolve).not.toHaveBeenCalled();
   });
   it("consumes an aborted manual approval without resolving it", async () => {
@@ -124,7 +139,7 @@ describe("approval reaction control boundary", () => {
     expect(mocks.resolve).not.toHaveBeenCalled();
   });
   it("ignores expired bindings before invoking identity or resolver", async () => {
-    vi.useFakeTimers(); await register(); vi.advanceTimersByTime(60001); request.mockClear(); await react();
+    vi.useFakeTimers(); await register(); vi.advanceTimersByTime(24 * 60 * 60 * 1000 + 1); request.mockClear(); await react();
     expect(request).not.toHaveBeenCalled(); expect(mocks.resolve).not.toHaveBeenCalled();
   });
   it("resolves once across duplicate events and ignores terminal reactions", async () => {
@@ -156,10 +171,6 @@ describe("approval reaction control boundary", () => {
     expect(mocks.resolve).not.toHaveBeenCalled(); await react({ emoji_name: "cross_mark" });
     expect(mocks.resolve).toHaveBeenCalledWith(expect.objectContaining({ approvalKind: "plugin", decision: "deny" }));
   });
-  it("terminalizes externally resolved or expired approvals without a local decision", async () => {
-    await register(); await store.terminalize("default", "req-1", "expired"); await react();
-    expect(mocks.resolve).not.toHaveBeenCalled(); expect(request).toHaveBeenCalledWith("/messages/10", expect.objectContaining({ method: "PATCH" }));
-  });
   it("allows retry after real gateway failures but retires not-found approvals", async () => {
     await register(); mocks.resolve.mockRejectedValueOnce(new Error("database offline")); await expect(react()).rejects.toThrow("database offline");
     mocks.resolve.mockRejectedValueOnce(Object.assign(new Error("approval expired or not found"), { gatewayCode: "APPROVAL_NOT_FOUND" })); await react(); await react(); expect(mocks.resolve).toHaveBeenCalledTimes(2);
@@ -179,65 +190,21 @@ describe("approval reaction control boundary", () => {
   it("bounds live bindings without evicting an active decision and frees expired capacity", async () => {
     vi.useFakeTimers(); store = new ZulipApprovalReactions(1); await register(); await register("req-2", "20");
     await react({ message_id: 20 }); expect(mocks.resolve).not.toHaveBeenCalled(); await react(); expect(mocks.resolve).toHaveBeenCalledTimes(1);
-    vi.advanceTimersByTime(60001); await register("req-3", "30"); await react({ message_id: 30 }); expect(mocks.resolve).toHaveBeenCalledTimes(2);
+    vi.advanceTimersByTime(24 * 60 * 60 * 1000 + 1); await register("req-3", "30"); await react({ message_id: 30 }); expect(mocks.resolve).toHaveBeenCalledTimes(2);
   });
   it("clears only the removed account and rejects in-flight user lookup after removal", async () => {
     await register();
     let complete!: (value: unknown) => void;
     request.mockImplementation(() => new Promise((resolve) => { complete = resolve; }));
-    const pending = react(); store.clearAccount("default"); complete({ result: "success", user: { user_id: 2, email: "ian@test" } }); await pending;
+    const pending = react(); await vi.waitFor(() => expect(complete).toBeTypeOf("function")); store.clearAccount("default"); complete({ result: "success", user: { user_id: 2, email: "ian@test" } }); await pending;
     expect(mocks.resolve).not.toHaveBeenCalled();
   });
-  it("does not bind unobserved, mismatched or already terminal canonical requests", async () => {
+  it("binds delivered controls without a gateway observation but rejects terminal payloads", async () => {
     await store.register({ cfg, accountId: "default", messageId: "10", client, sourceText: "Approval", payload: payload() });
-    await react(); expect(mocks.resolve).not.toHaveBeenCalled();
-    store.observe("default", "req-1", "plugin", Date.now() + 60000);
-    await store.register({ cfg, accountId: "default", messageId: "10", client, sourceText: "Approval", payload: payload() });
-    await react(); expect(mocks.resolve).not.toHaveBeenCalled();
-    store.clearAccount("default"); store.observe("default", "req-1", "exec", Date.now() + 60000); await store.terminalize("default", "req-1", "deny");
-    await store.register({ cfg, accountId: "default", messageId: "10", client, sourceText: "Approval", payload: payload() });
-    await react(); expect(mocks.resolve).not.toHaveBeenCalled(); expect(request).toHaveBeenCalledWith("/messages/10", expect.objectContaining({ method: "PATCH" }));
-  });
-});
-
-describe("gateway approval observer", () => {
-  it("uses SDK lifecycle events, account selection and authoritative expiry", async () => {
-    await createZulipApprovalObserver(() => cfg, "default");
-    const adapter = mocks.create.mock.calls[0][0];
-    const approval = { id: "req-1", approvalKind: "exec", createdAtMs: Date.now(), expiresAtMs: Date.now() + 60000, request: { command: "true", turnSourceChannel: "zulip", turnSourceAccountId: "default" } };
-    expect(adapter.shouldHandle(approval)).toBe(true);
-    expect(adapter.shouldHandle({ ...approval, request: { ...approval.request, turnSourceAccountId: "other" } })).toBe(false);
-    expect(adapter.shouldHandle({ ...approval, request: { ...approval.request, turnSourceChannel: "signal" } })).toBe(false);
-    await adapter.deliverRequested(approval);
-    await zulipApprovalReactions.register({ cfg, accountId: "default", messageId: "10", client, sourceText: "Approval", payload: payload() });
-    await adapter.finalizeResolved({ resolved: { id: "req-1", decision: "deny" } });
-    await zulipApprovalReactions.react({ cfg, accountId: "default", client, botUserId: "1", event: event() });
-    expect(mocks.resolve).not.toHaveBeenCalled(); expect(request).toHaveBeenCalledWith("/messages/10", expect.objectContaining({ method: "PATCH" }));
-    await adapter.onStopped();
-  });
-});
-
-describe("unavailable public observer SDK", () => {
-  it("disables reactions once without blocking startup or binding controls", async () => {
-    vi.resetModules();
-    vi.doMock("openclaw/plugin-sdk/infra-runtime", () => ({}));
-    try {
-      const module = await import("./approval-reactions.js");
-      const log = vi.fn();
-      for (const accountId of ["default", "other"]) {
-        const observer = await module.createZulipApprovalObserver(() => cfg, accountId, log);
-        await observer.start();
-        await module.zulipApprovalReactions.register({ cfg, accountId, messageId: "10", client, sourceText: "Approval", payload: payload() });
-        expect(await module.zulipApprovalReactions.command({ cfg, accountId, senderId: "ian@test", text: "/approve req-1 deny" })).toBe(false);
-        await observer.stop();
-      }
-      expect(log).toHaveBeenCalledTimes(1);
-      expect(log).toHaveBeenCalledWith(expect.stringContaining("zform and /approve remain available"));
-      expect(request).not.toHaveBeenCalled();
-      expect(mocks.resolve).not.toHaveBeenCalled();
-    } finally {
-      vi.doUnmock("openclaw/plugin-sdk/infra-runtime");
-      vi.resetModules();
-    }
+    await react(); expect(mocks.resolve).toHaveBeenCalledTimes(1);
+    const terminal = payload("req-2");
+    (terminal.channelData!.execApproval as any).state = "resolved";
+    await store.register({ cfg, accountId: "default", messageId: "20", client, sourceText: "Approval", payload: terminal });
+    await react({ message_id: 20 }); expect(mocks.resolve).toHaveBeenCalledTimes(1);
   });
 });

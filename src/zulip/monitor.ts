@@ -1,4 +1,4 @@
-import { createZulipApprovalObserver, zulipApprovalReactions } from "./approval-reactions.js";
+import { zulipApprovalReactions } from "./approval-reactions.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type {
@@ -2577,7 +2577,6 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     }
   };
 
-  const approvalObserver = await createZulipApprovalObserver(() => opts.getConfig?.() ?? cfg, account.accountId, (message) => runtime.log?.(message));
   const handleMonitorAbort = () => {
     void cleanupActiveReactionLifecycles();
   };
@@ -2613,12 +2612,10 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
 
   activeMonitorReactionCleanups.add(cleanupActiveReactionLifecycles);
   try {
-    if (!opts.abortSignal?.aborted) await approvalObserver.start();
     await replayPendingDurableInboundMessages();
 
     // Long-poll at 90s — nginx proxy_read_timeout is now 120s
     while (!opts.abortSignal?.aborted) {
-      await approvalObserver.start();
       // The next poll acknowledges lastEventId; wait for receive admission, not agent completion.
       await Promise.all(Array.from(pendingReceiveCheckpoints));
       if (abortedMessagePreservationFailed) throw abortedMessagePreservationError;
@@ -2801,7 +2798,6 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       }
     }
   } finally {
-    await approvalObserver.stop();
     zulipApprovalReactions.clearAccount(account.accountId);
     opts.abortSignal?.removeEventListener("abort", handleMonitorAbort);
     if (opts.abortSignal?.aborted) await cleanupActiveReactionLifecycles();

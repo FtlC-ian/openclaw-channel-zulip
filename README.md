@@ -574,6 +574,12 @@ colliding emoji disable the binding rather than create an ambiguous approval.
 There is deliberately no reaction for **Allow always**. Typed `/approve` remains
 available, and zform buttons use the same canonical first-wins resolver.
 
+Reaction approvals are enabled on audited hosts 2026.9.3, 2026.9.6 and
+2026.10.1-beta.1/beta.2 using only public SDK exports. Delivered targets expire
+after 24 hours; the Gateway still enforces actual approval expiry. Without a
+passive observer, external decisions are reflected on the next local interaction,
+not proactively.
+
 The web client implements zform; desktop embeds the web client. Flutter currently
 supports poll submessages but explicitly leaves zform unsupported. See
 [approval implementation and verification notes](docs/APPROVAL_REACTIONS.md)

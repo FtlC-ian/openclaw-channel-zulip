@@ -27,13 +27,15 @@ export function readApprovalBinding({ payload }: { payload: Payload }): Approval
   if (!metadata) return null;
   const replyMetadata = getExecApprovalReplyMetadata(payload);
   if (replyMetadata && (replyMetadata.approvalId !== metadata.approvalId || replyMetadata.approvalKind !== metadata.approvalKind)) return null;
-  const typed = readTyped({ payload });
-  if (typed) return typed;
   if (!payload.presentation) {
     return readApprovalReactionDeliveredBinding({ payload, channelDataKey: DELIVERED_BINDING_KEY }) as ApprovalBindingMetadata | null;
   }
-  const actions = payload.presentation?.blocks.flatMap((block) => block.type === "buttons" ? block.buttons.map((button) => button.action) : []) ?? [];
-  const commands = actions.map((action) => action?.type === "command" ? resolveMessagePresentationActionValue(action) : undefined);
+  if (payload.presentation.blocks.some((block) => block.type === "select")) return null;
+  const actions = payload.presentation.blocks.flatMap((block) => block.type === "buttons" ? block.buttons.map((button) => button.action) : []);
+  if (actions.length !== metadata.allowedDecisions.length) return null;
+  if (actions.every((action) => action?.type === "approval")) return readTyped({ payload });
+  if (!actions.every((action) => action?.type === "command")) return null;
+  const commands = actions.map((action) => resolveMessagePresentationActionValue(action));
   if (commands.length !== metadata.allowedDecisions.length || new Set(commands).size !== commands.length) return null;
   return metadata.allowedDecisions.every((decision) => commands.includes(`/approve ${metadata.approvalId} ${decision}`)) ? metadata : null;
 }

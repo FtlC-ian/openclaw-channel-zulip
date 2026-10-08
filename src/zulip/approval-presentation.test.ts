@@ -45,6 +45,17 @@ describe("approval presentation delivery boundary", () => {
     expect(await render(payload)).toBeNull();
   });
 
+  it.each([
+    { type: "command" as const, command: "/approve other allow-always" },
+    { type: "callback" as const, value: "unrelated-control" },
+    { type: "url" as const, url: "https://example.test" },
+  ])("rejects canonical typed controls mixed with an extra $type action", async (action) => {
+    const payload = pending();
+    payload.presentation!.blocks.push({ type: "buttons", buttons: [{ label: "Unrelated", action }] });
+    expect(readApprovalBinding({ payload })).toBeNull();
+    expect(await render(payload)).toBeNull();
+  });
+
   it("does not use a delivered marker to bypass contradictory surviving controls", async () => {
     const rendered = (await render(pending()))!;
     rendered.presentation!.blocks = [{ type: "buttons", buttons: [{ label: "Wrong", action: { type: "approval", approvalId: "other", approvalKind: "exec", decision: "deny" } }] }];

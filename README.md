@@ -610,6 +610,9 @@ After resolution, the prompt starts with a clear status such as
 Only the ID and already-displayed command remain; obsolete instructions are
 removed along with the companion zform and bot-seeded reactions. Unknown remote
 approvers are not invented (`Resolved elsewhere: allow-once`).
+Core closures use human statuses such as “⚪ Cancelled: approval session ended
+before a decision”, not internal resolver codes as approver names. Unrecognized
+explicit system resolvers show `⚪ Closed by the system` with an inert reason.
 
 Reaction approvals are enabled on audited hosts 2026.9.3, 2026.9.6 and
 2026.10.1-beta.1/beta.2 using only public SDK exports. Delivered targets expire
@@ -621,3 +624,39 @@ The web client implements zform; desktop embeds the web client. Flutter currentl
 supports poll submessages but explicitly leaves zform unsupported. See
 [approval implementation and verification notes](docs/APPROVAL_REACTIONS.md)
 for source references, lifecycle details and limitations.
+# Session progress card (opt-in)
+
+Set `channels.zulip.progressCard.enabled: true` (or under an account) to mirror
+the agent's core `progress_card` calls into one editable message per conversation.
+It is off by default and independent of the per-turn `streaming.mode: "progress"` draft.
+Cards show markdown and ordered ✅ / ▶ / ◻ steps; clearing leaves a short inert state.
+Set `channels.zulip.progressCard.activeEmoji: "waiting"` (or
+`channels.zulip.accounts.<accountId>.progressCard.activeEmoji`) to replace ▶ with
+`:waiting:` for the in-progress step. Use a simple emoji name without colons
+(letters, digits, underscores or hyphens; for example `dark-waiting`). Custom GIF emoji animate
+in Zulip messages; upload the emoji to your realm first. Completed and pending
+steps are unchanged, and omitting `activeEmoji` keeps ▶.
+Control UI edits do not show until the agent's next tool update. Exact mirroring
+requires an upstream hook-bound read (GitLab #8). Unknown session routes are ignored.
+
+CLI agents using the loopback MCP bridge also emit `after_tool_call` with the
+session key; they do not require a separate transcript hook. Enabling this feature
+does not replay the current card. A route must be bound by enabled inbound or
+outbound traffic before a subsequent tool update can be mirrored. If a channel
+reload is deferred while runs are active, saving the setting is not proof that
+the running channel has applied it. See [the MCP coverage audit](docs/progress-card-mcp-coverage.md).
+
+Restart records use the public plugin state store and contain only identifiers,
+conversation topics, hashes and revision floors, never message content or credentials.
+They share a bounded 40-record budget across accounts (legacy hosts reserve 950
+of the 1000 plugin-state rows for ingress); records expire after 30 days.
+Pending approval controls are rebound from the public pending lists. Native
+questions are probed with a denied authorizer on 2026.9.6 and later. On 2026.9.3,
+which lacks that safety capability, question widgets are terminalized instead
+of risking an answer replay. Resolved/unknown recovery states have generic
+inert labels because message content and terminal decision history are not stored.
+Interrupted per-turn drafts are deleted on startup; cards retain their message ids.
+Recovery terminal notices are at-most-once: a reserved send is never replayed
+after an interrupted or ambiguous POST, so a notice can be omitted. Source
+widget deletion and record cleanup remain retryable without duplicate notices.
+

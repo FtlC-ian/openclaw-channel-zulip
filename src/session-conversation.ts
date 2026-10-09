@@ -145,6 +145,14 @@ type ZulipOutboundSessionRouteParams = {
   threadId?: string | number | null;
 };
 
+async function bindProgressRoute(params: ZulipOutboundSessionRouteParams, sessionKey: string, conversation: import("./zulip/progress-card.js").CardRoute["conversation"]): Promise<void> {
+  if (resolveZulipAccount({ cfg: params.cfg, accountId: params.accountId }).config.progressCard?.enabled !== true) return;
+  const account = await resolveZulipRuntimeAccount({ cfg: params.cfg, accountId: params.accountId });
+  if (!account.baseUrl || !account.email || !account.apiKey) return;
+  const { zulipProgressCards } = await import("./zulip/progress-card.js");
+  zulipProgressCards.bind(sessionKey, { accountId: account.accountId, conversation, enabled: () => account.config.progressCard?.enabled === true, activeEmoji: () => account.config.progressCard?.activeEmoji, client: createZulipClient({ baseUrl: account.baseUrl, email: account.email, apiKey: account.apiKey }) });
+}
+
 export async function resolveZulipOutboundSessionRoute(
   params: ZulipOutboundSessionRouteParams,
 ) {
@@ -185,6 +193,7 @@ export async function resolveZulipOutboundSessionRoute(
       botIdentity: account.email,
       senderIdentity: target.email,
     });
+    await bindProgressRoute(params, sessionKey, { kind: "dm", recipient: target.email });
     return {
       ...route,
       sessionKey,
@@ -212,6 +221,7 @@ export async function resolveZulipOutboundSessionRoute(
     topic,
   });
   const sessionKey = buildZulipStreamSessionKey({ agentId: params.agentId, conversationId: streamConversation.conversationId });
+  await bindProgressRoute(params, sessionKey, { kind: "stream", stream: streamId, topic });
   const route = buildChannelOutboundSessionRoute({
     cfg: params.cfg,
     agentId: params.agentId,

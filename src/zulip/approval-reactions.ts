@@ -1,4 +1,5 @@
 import { createLazyRuntimeSurface } from "openclaw/plugin-sdk/lazy-runtime";
+import { durableBindings, bindingScope, type DurableRecord } from "./durable-bindings.js";
 import { resolveZulipApprovers, zulipApprovalAuth } from "../approval-auth.js";
 import type { OpenClawConfig, ReplyPayload } from "../sdk.js";
 import { isZulipAccountConfigured, listZulipAccountIds, resolveZulipAccount } from "./accounts.js";
@@ -7,13 +8,34 @@ import { addZulipReaction, deleteZulipMessage, removeZulipReaction, editZulipMes
 import { resolveZulipReactionSpec } from "./status-reactions.js";
 
 type Binding = ApprovalBindingMetadata & {
+  approvers: string[];
   accountId: string; messageId: string; client: ZulipClient; sourceText: string;
   widgetMessageId?: string;
+  durable?: DurableRecord;
   resolvingActor?: { id: string; name: string };
   seeding?: Promise<PromiseSettledResult<void>[]>;
   expiresAtMs: number; emojis: Map<string, ApprovalDecision>; resolving: boolean;
 };
-type Terminal = { outcome: string; actor?: string; elsewhere?: boolean };
+type Terminal = { outcome: string; actor?: string; elsewhere?: boolean; systemResolver?: boolean; humanResolver?: boolean };
+
+const SYSTEM_RESOLVER_STATUSES: Readonly<Record<string, string>> = {
+  "approval-scope-closed": "⚪ Cancelled: approval session ended before a decision",
+  "permission-change": "⚪ Cancelled: permissions changed before a decision",
+  "no-approval-route": "⚪ Closed: no approval route available",
+  "storage-error": "⚪ Closed: approval storage unavailable",
+  "worker-dispatch": "⚪ Cancelled: approval session is no longer active",
+};
+
+function renderSystemTerminal(entry: Binding, terminal: Terminal): string | undefined {
+  const id = terminal.actor;
+  const identity = id?.replace(/^(?:zulip:|user:|dm:)/iu, "").toLowerCase();
+  const human = identity && (entry.approvers.includes(identity) || /^[^\s@]+@[^\s@]+$/u.test(identity));
+  if (terminal.humanResolver || human || (!terminal.systemResolver && (!id || !Object.hasOwn(SYSTEM_RESOLVER_STATUSES, id)))) return undefined;
+  return id && Object.hasOwn(SYSTEM_RESOLVER_STATUSES, id) ? SYSTEM_RESOLVER_STATUSES[id]
+    : terminal.outcome === "expired" ? "⌛ Expired"
+    : terminal.outcome === "cancelled" ? "⚪ Cancelled by the system"
+    : `⚪ Closed by the system${id ? ` (${inertStatusValue(id)})` : ""}`;
+}
 
 function escapeStatusValue(value: string): string {
   return value.replace(/[\r\n\u0000-\u001f\u007f]/gu, " ").replace(/@/gu, "@\u200b").replace(/[\\`*_\[\]<>~]/gu, "\\$&");
@@ -27,14 +49,15 @@ function inertStatusValue(value: string): string | undefined {
 
 function renderTerminal(entry: Binding, terminal: Terminal): string {
   const { outcome } = terminal;
-  const status = outcome === "expired" ? "⌛ Expired"
+  const systemStatus = renderSystemTerminal(entry, terminal);
+  const status = systemStatus ?? (outcome === "expired" ? "⌛ Expired"
     : outcome === "cancelled" ? "🚫 Cancelled"
     : outcome === "expired or already resolved" ? "⌛ Expired or already resolved"
     : terminal.elsewhere && !terminal.actor ? `Resolved elsewhere: ${escapeStatusValue(outcome)}`
     : outcome === "allow-once" ? "✅ Approved (allow once)"
     : outcome === "allow-always" ? "✅ Approved (allow always)"
-    : outcome === "deny" ? "❌ Denied" : "Resolved";
-  const actorText = terminal.actor && ["allow-once", "allow-always", "deny"].includes(outcome) ? inertStatusValue(terminal.actor) : undefined;
+    : outcome === "deny" ? "❌ Denied" : "Resolved");
+  const actorText = !systemStatus && terminal.actor && ["allow-once", "allow-always", "deny"].includes(outcome) ? inertStatusValue(terminal.actor) : undefined;
   const actor = actorText ? ` by ${actorText}` : "";
   // Retain only the command already displayed, never Gateway result metadata.
   const displayedCommand = entry.sourceText.match(/^(?:\*\*)?(?:Pending command|Command):(?:\*\*)?[ \t]*\n(?:[ \t]*\n)*(`{3,}|~{3,})[^\n]*\n([\s\S]*?)\n\1[ \t]*(?:\n|$)/imu)?.[2]
@@ -59,13 +82,16 @@ export function stripLeadingZulipApprovalBotMention(text: string, bot: { userId?
   return trimmed.slice(match[0].length);
 }
 
-export async function startZulipApprovalObserver(params: { cfg: OpenClawConfig; accountId: string; abortSignal?: AbortSignal; onError: (error: unknown) => void }): Promise<() => void> {
+export async function startZulipApprovalObserver(params: { cfg: OpenClawConfig; accountId: string; zulipClient?: ZulipClient; abortSignal?: AbortSignal; onError: (error: unknown) => void }): Promise<() => void> {
   if (!resolveZulipApprovers(params.cfg, params.accountId).length || params.abortSignal?.aborted) return () => {};
   const { createOperatorApprovalsGatewayClient, startGatewayClientWhenEventLoopReady } = await import("openclaw/plugin-sdk/gateway-runtime");
   const client = await createOperatorApprovalsGatewayClient({
     config: params.cfg, clientDisplayName: "Zulip approval terminal observer",
     onEvent: (event) => { void zulipApprovalReactions.observeTerminal(params.accountId, event).catch(params.onError); },
     onConnectError: params.onError,
+    onHelloOk: () => {
+      if (params.zulipClient) void zulipApprovalReactions.restore({ ...params, client: params.zulipClient, request: (method) => client.request(method, {}) }).catch(params.onError);
+    },
   });
   const stop = () => { client.stop(); params.abortSignal?.removeEventListener("abort", stop); };
   params.abortSignal?.addEventListener("abort", stop, { once: true });
@@ -130,8 +156,9 @@ export class ZulipApprovalReactions {
     if (this.bindings.has(key) || this.bindings.size >= this.maxEntries) return;
     const config = resolveZulipAccount({ cfg: params.cfg, accountId: params.accountId }).config.approvalReactions;
     const specs = resolveZulipApprovalReactionControls(metadata.allowedDecisions, config);
-    const binding: Binding = { ...metadata, accountId: params.accountId, messageId: params.messageId, widgetMessageId: params.widgetMessageId, client: params.client, sourceText: params.sourceText, expiresAtMs: Date.now() + TARGET_TTL_MS, resolving: false, emojis: new Map(specs.map(({ spec, decision }) => [spec.emojiName, decision])) };
+    const binding: Binding = { ...metadata, approvers: resolveZulipApprovers(params.cfg, params.accountId), accountId: params.accountId, messageId: params.messageId, widgetMessageId: params.widgetMessageId, client: params.client, sourceText: params.sourceText, expiresAtMs: Date.now() + TARGET_TTL_MS, resolving: false, emojis: new Map(specs.map(({ spec, decision }) => [spec.emojiName, decision])) };
     this.bindings.set(key, binding);
+    binding.durable = await durableBindings.claim(`approval:${key}`, { kind: "approval", accountId: binding.accountId, scope: bindingScope(binding.client), messageId: binding.messageId, companionId: binding.widgetMessageId, id: binding.approvalId, approvalKind: binding.approvalKind, decisions: binding.allowedDecisions, emojis: [...binding.emojis], expiresAt: binding.expiresAtMs });
     await this.targets.register(key, binding);
     const terminal = this.terminals.get(JSON.stringify([params.accountId, metadata.approvalKind, metadata.approvalId]));
     if (terminal) {
@@ -140,6 +167,30 @@ export class ZulipApprovalReactions {
     }
     binding.seeding = Promise.allSettled(specs.map(({ spec }) => addZulipReaction(params.client, { messageId: params.messageId, ...spec })));
     await binding.seeding;
+  }
+  async restore(params: { cfg: OpenClawConfig; accountId: string; client: ZulipClient; request: (method: string) => Promise<unknown> }): Promise<void> {
+    const records = (await durableBindings.records(params.accountId, params.client)).filter(({ record }) => record.kind === "approval");
+    if (!records.length) return;
+    const pending = new Map<string, Set<string>>();
+    for (const kind of new Set(records.map(({ record }) => record.approvalKind!))) {
+      const list = await params.request(`${kind}.approval.list`);
+      if (!Array.isArray(list)) throw new Error("Invalid public approval replay list");
+      pending.set(kind, new Set(list.map(entry => entry.id)));
+    }
+    for (const { key, record } of records) {
+      if (!record.id || !record.approvalKind || !record.decisions || !record.emojis) continue;
+      const bindingKey = this.key(params.accountId, record.messageId);
+      if (this.bindings.has(bindingKey)) continue;
+      const claimed = await durableBindings.claim(key, record);
+      if (!claimed) continue;
+      const binding: Binding = { approvers: resolveZulipApprovers(params.cfg, params.accountId), approvalId: record.id, approvalKind: record.approvalKind, allowedDecisions: record.decisions as ApprovalDecision[], accountId: params.accountId, messageId: record.messageId, widgetMessageId: record.companionId, client: params.client, sourceText: "", expiresAtMs: record.expiresAt, emojis: new Map(record.emojis as [string, ApprovalDecision][]), resolving: false, durable: claimed };
+      if (record.expiresAt <= Date.now() || !pending.get(record.approvalKind)?.has(record.id)) {
+        // Pending lists deliberately do not expose resolved command content.
+        await this.finish([binding], { outcome: record.expiresAt <= Date.now() ? "expired" : "expired or already resolved" });
+        continue;
+      }
+      this.bindings.set(bindingKey, binding); await this.targets.register(bindingKey, binding);
+    }
   }
   async react(params: { abortSignal?: AbortSignal; getConfig?: () => OpenClawConfig; cfg: OpenClawConfig; accountId: string; botUserId: string; event: ZulipEvent; client: ZulipClient }): Promise<void> {
     this.prune();
@@ -173,13 +224,15 @@ export class ZulipApprovalReactions {
     if (this.terminals.has(key)) return;
     const actorId = typeof payload.resolvedBy === "string" ? payload.resolvedBy.trim() || undefined : undefined;
     const knownActor = [...this.bindings.values()].find((entry) => entry.accountId === accountId && entry.approvalId === payload.id && entry.approvalKind === kind && entry.resolvingActor?.id === actorId)?.resolvingActor;
-    const terminal: Terminal = { outcome, actor: knownActor?.name || actorId, elsewhere: true };
+    const terminal: Terminal = { outcome, actor: knownActor?.name || actorId, humanResolver: Boolean(knownActor), elsewhere: true };
     this.terminals.set(key, { ...terminal, expiresAtMs: Date.now() + TARGET_TTL_MS });
     while (this.terminals.size > this.maxEntries) this.terminals.delete(this.terminals.keys().next().value!);
     if (![...this.bindings.values()].some((entry) => entry.accountId === accountId && entry.approvalId === payload.id && entry.approvalKind === kind)) return;
     await this.finish(this.retire(accountId, payload.id), terminal);
   }
   private async finish(entries: Binding[], terminal: Terminal): Promise<void> {
+    const current = await Promise.all(entries.map(async entry => !entry.durable || await durableBindings.current(`approval:${this.key(entry.accountId, entry.messageId)}`, entry.durable)));
+    entries = entries.filter((_, index) => current[index]);
     // Zulip widgets are immutable. Edit the prompt, delete its companion zform,
     // and remove bot-seeded reactions independently even if an API call fails.
     await Promise.all(entries.map((entry) => entry.seeding));
@@ -191,6 +244,7 @@ export class ZulipApprovalReactions {
     const results = await Promise.allSettled(operations);
     const failure = results.find((result) => result.status === "rejected");
     if (failure?.status === "rejected") throw failure.reason;
+    await Promise.all(entries.map(entry => entry.durable ? durableBindings.remove(`approval:${this.key(entry.accountId, entry.messageId)}`, entry.durable) : Promise.resolve()));
   }
   private canSettle(params: { cfg: OpenClawConfig; accountId: string; senderId: string; binding: Binding; abortSignal?: AbortSignal }): boolean {
     const { binding, cfg, accountId } = params;
@@ -224,6 +278,7 @@ export class ZulipApprovalReactions {
           const resolve = await loadResolver();
           return async (request) => {
             const cfg = params.getConfig?.() ?? params.cfg;
+            if (binding.durable && !await durableBindings.current(`approval:${this.key(binding.accountId, binding.messageId)}`, binding.durable)) throw new Error("Stale Zulip approval generation");
             if (!this.canSettle({ ...params, cfg })) {
               throw new Error("Zulip approval authorization changed before settlement");
             }
@@ -234,8 +289,10 @@ export class ZulipApprovalReactions {
         onResolved: (result) => {
           const resolver = result.approval.resolver;
           terminal = {
-            outcome: "decision" in result.approval ? result.approval.decision : result.approval.status,
-            actor: result.applied ? params.senderName?.trim() || params.senderId : resolver?.kind === "channel" ? resolver.id : undefined,
+            outcome: result.approval.status === "expired" || result.approval.status === "cancelled" ? result.approval.status : result.approval.decision,
+            actor: result.applied ? params.senderName?.trim() || params.senderId : resolver?.kind === "channel" || resolver?.kind === "system" ? resolver.id ?? undefined : undefined,
+            systemResolver: !result.applied && resolver?.kind === "system",
+            humanResolver: result.applied,
             elsewhere: !result.applied,
           };
         },

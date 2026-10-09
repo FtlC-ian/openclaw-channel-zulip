@@ -26,8 +26,82 @@ vi.mock("./client.js", () => ({
 }));
 
 import { ZulipQuestionZformStore } from "./question-zform.js";
+import { DurableBindings, durableBindings, bindingHash, type DurableRecord } from "./durable-bindings.js";
+
+it.each(["source deletion", "record removal", "deletion checkpoint", "ambiguous send", "concurrent recovery"])("does not replay terminal question notices after %s", async (fault) => {
+  const key = "question:default:abcdefghijklmnopqrstuv";
+  let row: DurableRecord | undefined = { kind: "question", accountId: "default", scope: "hash", generation: "old", messageId: "9001", id: "ask_0123456789abcdef0123456789abcdef", nonce: "abcdefghijklmnopqrstuv", senderHash: bindingHash("alice@example.test"), optionHashes: [bindingHash("staging")], expiresAt: Date.now() + 60000, conversation: { kind: "stream", stream: "18", topic: "restart" } };
+  let fail = true;
+  const storage = {
+    lookup: async () => row && structuredClone(row),
+    entries: async () => row ? [{ key, value: structuredClone(row) }] : [],
+    update: async (_key: string, fn: (current: DurableRecord | undefined) => DurableRecord | undefined) => {
+      const next = fn(row && structuredClone(row));
+      if (!next) return false;
+      if (fault === "deletion checkpoint" && next.terminalState === "source-deleted" && fail) { fail = false; throw new Error("checkpoint failed"); }
+      row = structuredClone(next); return true;
+    },
+    deleteIf: async (_key: string, predicate: (current: DurableRecord) => boolean) => {
+      if (!row || !predicate(row)) return false;
+      if (fault === "record removal" && fail) { fail = false; throw new Error("remove failed"); }
+      row = undefined; return true;
+    },
+  };
+  const bindings = new DurableBindings(async () => storage);
+  const spies = [vi.spyOn(durableBindings, "records").mockImplementation(async () => row ? [{ key, record: structuredClone(row) }] : []), ...(["claim", "save", "current", "remove"] as const).map(method => vi.spyOn(durableBindings, method).mockImplementation(bindings[method].bind(bindings) as never))];
+  const params = { cfg: {}, accountId: "default", client: {} as never, hostVersion: "2026.10.1-beta.2" };
+  try {
+    mocks.resolveOption.mockResolvedValue({ status: "already-terminal" });
+    if (fault === "source deletion") mocks.deleteZulipMessage.mockRejectedValueOnce(new Error("delete failed"));
+    if (fault === "deletion checkpoint") mocks.deleteZulipMessage.mockResolvedValueOnce(undefined).mockRejectedValueOnce(Object.assign(new Error("Invalid message(s)"), { status: 400 }));
+    if (fault === "ambiguous send") mocks.sendZulipStreamMessage.mockRejectedValueOnce(new Error("connection lost after POST"));
+    if (fault === "concurrent recovery") await Promise.all([new ZulipQuestionZformStore().restore(params), new ZulipQuestionZformStore().restore(params)]);
+    else await new ZulipQuestionZformStore().restore(params).catch(() => undefined);
+    await new ZulipQuestionZformStore().restore(params);
+    await new ZulipQuestionZformStore().restore(params);
+    expect(mocks.sendZulipStreamMessage).toHaveBeenCalledTimes(1);
+    expect(mocks.sendZulipStreamMessage).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ maxRetries: 0 }));
+    expect(mocks.deleteZulipMessage).toHaveBeenCalledTimes(fault === "source deletion" || fault === "deletion checkpoint" ? 2 : 1);
+    expect(row).toBeUndefined();
+  } finally { for (const spy of spies) spy.mockRestore(); }
+});
+
+it.each(["2026.9.6", "2026.10.1-beta.2", "2026.9.3"])("reconciles a question restart safely on %s", async (hostVersion) => {
+  const nonce = "abcdefghijklmnopqrstuv";
+  const record: DurableRecord = { kind: "question", accountId: "default", scope: "hash", generation: "old", messageId: "9001", id: "ask_0123456789abcdef0123456789abcdef", nonce, senderHash: bindingHash("alice@example.test"), optionHashes: [bindingHash("staging"), bindingHash("production")], expiresAt: Date.now() + 60000, conversation: { kind: "stream", stream: "18", topic: "restart" } };
+  const spies = [vi.spyOn(durableBindings, "records").mockResolvedValue([{ key: `question:default:${nonce}`, record }]), vi.spyOn(durableBindings, "claim").mockImplementation(async (_key, value) => ({ ...value, generation: "new" })), vi.spyOn(durableBindings, "save").mockResolvedValue(true), vi.spyOn(durableBindings, "current").mockResolvedValue(true), vi.spyOn(durableBindings, "remove").mockResolvedValue()];
+  const store = new ZulipQuestionZformStore();
+  try {
+    mocks.resolveOption.mockResolvedValue({ status: "denied" });
+    await store.restore({ cfg: {}, accountId: "default", client: {} as never, hostVersion });
+    if (hostVersion === "2026.9.3") { expect(mocks.resolveOption).not.toHaveBeenCalled(); expect(mocks.deleteZulipMessage).toHaveBeenCalledWith(expect.anything(), { messageId: "9001" }); return; }
+    expect(await mocks.resolveOption.mock.calls[0][0].authorize()).toBe(false);
+    expect(durableBindings.claim).toHaveBeenCalledWith(`question:default:${nonce}`, expect.objectContaining({ senderHash: record.senderHash, optionHashes: record.optionHashes, expiresAt: record.expiresAt }), "old");
+    mocks.resolveOption.mockResolvedValue({ status: "answered", optionValue: "Staging" });
+    const message = { accountId: "default", conversation: record.conversation!, senderId: "alice@example.test", text: `ocq1:${nonce}:0` };
+    expect((await store.intercept({ cfg: {}, message }))).toMatchObject({ status: "answered", optionValue: "Staging" });
+    expect(mocks.resolveOption).toHaveBeenLastCalledWith(expect.objectContaining({ optionIndex: 0, authorize: expect.any(Function) }));
+    expect((await store.intercept({ cfg: {}, message }))).toMatchObject({ status: "stale" });
+    expect(mocks.resolveOption).toHaveBeenCalledTimes(2);
+  } finally { store.clear(); for (const spy of spies) spy.mockRestore(); }
+});
 
 const questionId = "ask_0123456789abcdef0123456789abcdef";
+it("drops a lost question recovery claim and fences its registered terminal callback", async () => {
+  const nonce = "abcdefghijklmnopqrstuv";
+  const record: DurableRecord = { kind: "question", accountId: "default", scope: "hash", generation: "old", messageId: "9001", id: questionId, nonce, senderHash: bindingHash("alice@example.test"), optionHashes: [bindingHash("staging"), bindingHash("production")], expiresAt: Date.now() + 60000, conversation: { kind: "stream", stream: "18", topic: "restart" } };
+  const spies = [vi.spyOn(durableBindings, "records").mockResolvedValue([{ key: `question:default:${nonce}`, record }]), vi.spyOn(durableBindings, "claim").mockResolvedValue(undefined)];
+  const store = new ZulipQuestionZformStore();
+  try {
+    mocks.resolveOption.mockResolvedValue({ status: "denied" });
+    await store.restore({ cfg: {}, accountId: "default", client: {} as never, hostVersion: "2026.10.1-beta.2" });
+    expect(await store.intercept({ cfg: {}, message: { accountId: "default", conversation: record.conversation!, senderId: "alice@example.test", text: `ocq1:${nonce}:0` } })).toMatchObject({ status: "stale" });
+    expect(mocks.resolveOption).toHaveBeenCalledTimes(1);
+    await mocks.registerChannelDelivery.mock.calls[0][0].finalize("Answered");
+    expect(mocks.sendZulipStreamMessage).not.toHaveBeenCalled();
+    expect(mocks.deleteZulipMessage).not.toHaveBeenCalled();
+  } finally { store.clear(); for (const spy of spies) spy.mockRestore(); }
+});
 const options = ["Staging", "Production"];
 
 function payload(overrides: Record<string, unknown> = {}) {
@@ -215,6 +289,7 @@ describe("ZulipQuestionZformStore resolution", () => {
       cfg: {},
       questionId,
       optionValue: "Staging",
+      authorize: expect.any(Function),
       senderId: "alice@example.test",
       gatewayUrl: "ws://127.0.0.1:18789",
       clientDisplayName: "Zulip question (alice@example.test)",

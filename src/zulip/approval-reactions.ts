@@ -161,6 +161,7 @@ export class ZulipApprovalReactions {
       const bindingKey = this.key(params.accountId, record.messageId);
       if (this.bindings.has(bindingKey)) continue;
       const claimed = await durableBindings.claim(key, record);
+      if (!claimed) continue;
       const binding: Binding = { approvalId: record.id, approvalKind: record.approvalKind, allowedDecisions: record.decisions as ApprovalDecision[], accountId: params.accountId, messageId: record.messageId, widgetMessageId: record.companionId, client: params.client, sourceText: "", expiresAtMs: record.expiresAt, emojis: new Map(record.emojis as [string, ApprovalDecision][]), resolving: false, durable: claimed };
       if (record.expiresAt <= Date.now() || !pending.get(record.approvalKind)?.has(record.id)) {
         // Pending lists deliberately do not expose resolved command content.

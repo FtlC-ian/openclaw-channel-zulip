@@ -38,18 +38,32 @@ export class ZulipProgressCards {
   private readonly cards = new Map<string, Card>();
   bind(sessionKey: string, route: CardRoute): void {
     const existing = this.cards.get(sessionKey);
+    // Default-off traffic must not consume the finite active-route budget.
+    if (!route.enabled()) {
+      if (existing?.route.accountId === route.accountId) { existing.route = route; existing.pending.length = 0; if (existing.timer) clearTimeout(existing.timer); this.cards.delete(sessionKey); }
+      return;
+    }
     if (existing) { if (existing.route.accountId === route.accountId) existing.route = route; return; }
     if (this.cards.size >= 1000) return;
-    this.cards.set(sessionKey, { route, sessionKey, floor: -1, calls: new Set(), operation: Promise.resolve(), pending: [], retry: 0 });
+    const card: Card = { route, sessionKey, floor: -1, calls: new Set(), operation: Promise.resolve(), pending: [], retry: 0 };
+    this.cards.set(sessionKey, card);
+    card.operation = this.recover(card).catch(() => undefined);
+  }
+  private async recover(card: Card): Promise<void> {
+    const key = `card:${card.sessionKey}`;
+    const record = await durableBindings.get(key);
+    if (!record || record.kind !== "card" || record.accountId !== card.route.accountId || record.scope !== bindingScope(card.route.client) || record.expiresAt <= Date.now()) return;
+    const claimed = await durableBindings.claim(key, record);
+    if (!claimed) { card.pending.length = 0; if (this.cards.get(card.sessionKey) === card) this.cards.delete(card.sessionKey); return; }
+    card.durable = claimed; card.messageId = record.messageId; card.hash = record.hash; card.floor = Math.max(card.floor, record.revision ?? -1);
   }
   async restore(route: Omit<CardRoute, "conversation">): Promise<void> {
+    if (!route.enabled()) return;
     for (const { key, record } of await durableBindings.records(route.accountId, route.client)) {
       if (record.kind !== "card" || !record.sessionKey || !record.conversation) continue;
       if (record.expiresAt <= Date.now()) { await durableBindings.remove(key, record); continue; }
       this.bind(record.sessionKey, { ...route, conversation: record.conversation });
-      const card = this.cards.get(record.sessionKey)!;
-      card.durable = await durableBindings.claim(key, record);
-      card.messageId = record.messageId; card.hash = record.hash; card.floor = record.revision ?? -1;
+      await this.cards.get(record.sessionKey)?.operation;
     }
   }
   private async checkpoint(card: Card, floor: number): Promise<void> {
@@ -81,6 +95,8 @@ export class ZulipProgressCards {
   private async flush(card: Card): Promise<void> {
     const update = card.pending.shift();
     if (!update || !card.route.enabled()) return;
+    if (update.revision !== null && update.revision <= (card.durable?.revision ?? -1)) return;
+    update.floor = Math.max(update.floor ?? -1, card.durable?.revision ?? -1);
     if (card.durable && !await durableBindings.current(`card:${card.sessionKey}`, card.durable)) return;
     const hash = createHash("sha256").update(update.text).digest("hex");
     if (hash === card.hash) { await this.checkpoint(card, update.floor ?? card.floor); return; }

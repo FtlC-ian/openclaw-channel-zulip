@@ -381,11 +381,11 @@ export class ZulipQuestionZformStore {
         continue;
       }
       if (state.status !== "denied") continue;
-      this.register({ preparation: { nonce: record.nonce, questionId: record.id, optionValues: record.optionHashes, widgetContent: { widget_type: "zform", extra_data: { type: "choices", heading: "", choices: [] } } }, accountId: params.accountId, conversation: record.conversation, authorizedSenderId: record.senderHash, sourceMessageId: record.messageId, sourceText: "", client: params.client });
+      this.register({ preparation: { nonce: record.nonce, questionId: record.id, optionValues: record.optionHashes, widgetContent: { widget_type: "zform", extra_data: { type: "choices", heading: "", choices: [] } } }, accountId: params.accountId, conversation: record.conversation, authorizedSenderId: record.senderHash, sourceMessageId: record.messageId, sourceText: "", client: params.client, restoredRecord: record });
       const binding = this.bindings.get(record.nonce);
       if (binding) {
-        binding.restored = true; binding.expiresAt = record.expiresAt; await binding.durableReady;
-        if (binding.durable) { binding.durable.senderHash = record.senderHash; binding.durable.optionHashes = record.optionHashes; binding.durable.expiresAt = record.expiresAt; await durableBindings.save(key, binding.durable); }
+        await binding.durableReady;
+        if (!binding.durable) this.deleteBinding(binding);
       }
     }
   }
@@ -439,6 +439,7 @@ export class ZulipQuestionZformStore {
     sourceText: string;
     client: ZulipClient;
     logDebug?: (message: string) => void;
+    restoredRecord?: DurableRecord;
   }): boolean {
     const accountId = params.accountId.trim();
     const senderId = normalizeIdentity(params.authorizedSenderId);
@@ -466,13 +467,14 @@ export class ZulipQuestionZformStore {
       authorizedSenderId: senderId,
       sourceMessageId,
       sourceText: params.sourceText,
-      expiresAt: Date.now() + ACTIVE_TTL_MS,
+      expiresAt: params.restoredRecord?.expiresAt ?? Date.now() + ACTIVE_TTL_MS,
       terminal: false,
       resolving: false,
+      restored: Boolean(params.restoredRecord),
     };
     this.bindings.set(binding.nonce, binding);
-    binding.durableReady = durableBindings.claim(`question:${accountId}:${binding.nonce}`, { kind: "question", accountId, scope: bindingScope(params.client), messageId: sourceMessageId, id: binding.questionId, nonce: binding.nonce, conversation: binding.conversation, senderHash: bindingHash(senderId), optionHashes: binding.optionValues.map(value => bindingHash(value.trim().toLowerCase())), expiresAt: binding.expiresAt }).then(record => { binding.durable = record; });
-    binding.cleanupTimer = setTimeout(() => this.markTerminal(binding), ACTIVE_TTL_MS);
+    binding.durableReady = durableBindings.claim(`question:${accountId}:${binding.nonce}`, { kind: "question", accountId, scope: bindingScope(params.client), messageId: sourceMessageId, id: binding.questionId, nonce: binding.nonce, conversation: binding.conversation, senderHash: params.restoredRecord?.senderHash ?? bindingHash(senderId), optionHashes: params.restoredRecord?.optionHashes ?? binding.optionValues.map(value => bindingHash(value.trim().toLowerCase())), expiresAt: binding.expiresAt }, params.restoredRecord?.generation).then(record => { binding.durable = record; });
+    binding.cleanupTimer = setTimeout(() => this.markTerminal(binding), Math.max(0, binding.expiresAt - Date.now()));
     binding.cleanupTimer.unref?.();
     try {
       questionGatewayRuntime.registerChannelDelivery({

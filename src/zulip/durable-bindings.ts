@@ -38,11 +38,16 @@ async function loadStore(): Promise<Store | undefined> {
 }
 export class DurableBindings {
   constructor(private readonly open: () => Promise<Store | undefined> = loadStore) {}
-  async claim(key: string, record: Omit<DurableRecord, "generation">): Promise<DurableRecord | undefined> {
+  async claim(key: string, record: Omit<DurableRecord, "generation">, expectedGeneration?: string): Promise<DurableRecord | undefined> {
     const store = await this.open(); if (!store) return;
     const next = { ...record, generation: randomUUID() };
     // Atomic generation replacement ensures writers from the old lifetime lose.
-    await store.update(key, () => next); return next;
+    const expected = expectedGeneration ?? (record as DurableRecord).generation;
+    const claimed = await store.update(key, current => expected && current?.generation !== expected ? undefined : next);
+    return claimed ? next : undefined;
+  }
+  async get(key: string): Promise<DurableRecord | undefined> {
+    return (await this.open())?.lookup(key);
   }
   async save(key: string, record: DurableRecord): Promise<boolean> {
     const store = await this.open(); if (!store) return false;

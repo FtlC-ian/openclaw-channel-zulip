@@ -3,6 +3,18 @@ import { validateProgressCardEvent, ZulipProgressCards } from "./progress-card.j
 import { createZulipClient } from "./client.js";
 const event = (revision: number | null, markdown = "Working") => ({ toolName: "progress_card", params: { markdown }, result: { details: { revision, steps: null } } });
 describe("progress card trust boundary", () => {
+  it("does not let default-off traffic exhaust enabled conversation routes", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ result: "success", id: 42 })));
+      const client = createZulipClient({ baseUrl: "https://zulip.test", email: "bot@test", apiKey: "test", fetchImpl });
+      const cards = new ZulipProgressCards();
+      for (let i = 0; i < 1000; i++) cards.bind(`off-${i}`, { accountId: "default", client, enabled: () => false, conversation: { kind: "stream", stream: "18", topic: String(i) } });
+      cards.bind("enabled", { accountId: "default", client, enabled: () => true, conversation: { kind: "stream", stream: "18", topic: "enabled" } });
+      cards.accept(event(1), "enabled"); await vi.advanceTimersByTimeAsync(300);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    } finally { vi.useRealTimers(); }
+  });
   it("rejects impostors, errors and count mismatches", () => {
     expect(validateProgressCardEvent({ ...event(1), toolName: "mcp_progress_card" })).toBeUndefined();
     expect(validateProgressCardEvent({ ...event(1), error: "failed" })).toBeUndefined();

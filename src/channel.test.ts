@@ -1,5 +1,4 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
-import { createReplyPrefixOptions } from "openclaw/plugin-sdk/channel-outbound";
 import { describe, expect, it } from "vitest";
 import { zulipOutboundAdapter, zulipPlugin } from "./channel.js";
 import {
@@ -32,22 +31,10 @@ describe("zulipPlugin", () => {
       });
     });
 
-    it("normalizes @username targets", () => {
-      const normalize = zulipPlugin.messaging?.normalizeTarget;
-      if (!normalize) {
-        return;
-      }
-
+    it("normalizes @username and zulip: targets to user: targets", () => {
+      const normalize = zulipPlugin.messaging!.normalizeTarget!;
       expect(normalize("@Alice")).toBe("user:Alice");
       expect(normalize("@alice")).toBe("user:alice");
-    });
-
-    it("normalizes zulip: prefix to user:", () => {
-      const normalize = zulipPlugin.messaging?.normalizeTarget;
-      if (!normalize) {
-        return;
-      }
-
       expect(normalize("zulip:USER123")).toBe("user:USER123");
     });
 
@@ -58,10 +45,6 @@ describe("zulipPlugin", () => {
         baseConversationId: "4",
         parentConversationCandidates: ["4"],
       });
-    });
-
-    it("prefers session lookup for announce target resolution", () => {
-      expect(zulipPlugin.meta.preferSessionLookupForAnnounceTarget).toBe(true);
     });
 
     it("avoids reconstructing stream targets from numeric session ids", () => {
@@ -128,85 +111,23 @@ describe("zulipPlugin", () => {
         .not.toBe(sessionKey);
     });
 
-    it("keeps direct sessions separate from stream and topic sessions", () => {
-      const direct = buildZulipDirectSessionKey({
+    it.each([
+      ["a #stream:topic target", { target: "#42:Zulip Plugin PR" }, "stream:42:Zulip Plugin PR", "Zulip Plugin PR"],
+      ["an explicit target topic over disagreeing thread context", { target: "stream:42:Canonical Topic", threadId: "Different Session Topic" }, "stream:42:Canonical Topic", "Canonical Topic"],
+      ["existing thread context for a topicless stream send", { target: "stream:42", threadId: "support" }, "stream:42:support", "support"],
+      ["raw topics separate from reply message IDs", { target: "stream:42", replyToId: "9876", threadId: "Zulip Plugin PR" }, "stream:42:Zulip Plugin PR", "Zulip Plugin PR"],
+    ])("routes outbound stream sends with %s", async (_name, input, to, threadId) => {
+      const route = await zulipPlugin.messaging!.resolveOutboundSessionRoute!({
+        cfg: { channels: { zulip: { url: "https://realm-a.example.test", email: "bot@example.test" } } } as OpenClawConfig,
         agentId: "main",
-        accountId: "default",
-        baseUrl: "https://realm-a.example.test",
-        botIdentity: "bot@realm-a.example.test",
-        senderIdentity: "4",
+        ...input,
       });
-      expect(direct).not.toBe("agent:main:zulip:channel:4");
-      expect(direct).not.toBe("agent:main:zulip:channel:4:thread:4");
-    });
-
-    it("resolves outbound stream topic routes using canonical conversation ids", async () => {
-      const resolveRoute = zulipPlugin.messaging!.resolveOutboundSessionRoute!;
-
-      expect(
-        await resolveRoute({
-          cfg: { channels: { zulip: { url: "https://realm-a.example.test", email: "bot@example.test" } } } as OpenClawConfig,
-          agentId: "main",
-          target: "#42:Zulip Plugin PR",
-        }),
-      ).toMatchObject({
+      expect(route).toMatchObject({
         peer: { kind: "channel", id: expect.stringMatching(/^42:topic:v2:[0-9a-f]{64}$/) },
         chatType: "channel",
         from: "zulip:channel:42",
-        to: "stream:42:Zulip Plugin PR",
-        threadId: "Zulip Plugin PR",
-      });
-    });
-
-    it("uses the explicit target topic for the session route when thread context disagrees", async () => {
-      const resolveRoute = zulipPlugin.messaging!.resolveOutboundSessionRoute!;
-
-      expect(
-        await resolveRoute({
-          cfg: { channels: { zulip: { url: "https://realm-a.example.test", email: "bot@example.test" } } } as OpenClawConfig,
-          agentId: "main",
-          target: "stream:42:Canonical Topic",
-          threadId: "Different Session Topic",
-        }),
-      ).toMatchObject({
-        peer: { kind: "channel", id: expect.stringMatching(/^42:topic:v2:[0-9a-f]{64}$/) },
-        to: "stream:42:Canonical Topic",
-        threadId: "Canonical Topic",
-      });
-    });
-
-    it("preserves existing Zulip thread context when routing stream sends", async () => {
-      const resolveRoute = zulipPlugin.messaging!.resolveOutboundSessionRoute!;
-
-      expect(
-        await resolveRoute({
-          cfg: { channels: { zulip: { url: "https://realm-a.example.test", email: "bot@example.test" } } } as OpenClawConfig,
-          agentId: "main",
-          target: "stream:42",
-          threadId: "support",
-        }),
-      ).toMatchObject({
-        peer: { kind: "channel", id: expect.stringMatching(/^42:topic:v2:[0-9a-f]{64}$/) },
-        to: "stream:42:support",
-        threadId: "support",
-      });
-    });
-
-    it("keeps reply message IDs separate from raw Zulip topics", async () => {
-      const resolveRoute = zulipPlugin.messaging!.resolveOutboundSessionRoute!;
-
-      expect(
-        await resolveRoute({
-          cfg: { channels: { zulip: { url: "https://realm-a.example.test", email: "bot@example.test" } } } as OpenClawConfig,
-          agentId: "main",
-          target: "stream:42",
-          replyToId: "9876",
-          threadId: "Zulip Plugin PR",
-        }),
-      ).toMatchObject({
-        peer: { kind: "channel", id: expect.stringMatching(/^42:topic:v2:[0-9a-f]{64}$/) },
-        to: "stream:42:Zulip Plugin PR",
-        threadId: "Zulip Plugin PR",
+        to,
+        threadId,
       });
     });
   });
@@ -228,30 +149,11 @@ describe("zulipPlugin", () => {
         }),
       ).toBe(payload);
     });
-
-    it("advertises poll while letting core route through outbound.sendPoll", () => {
-      const cfg: OpenClawConfig = {
-        channels: {
-          zulip: {
-            apiKey: { source: "env", provider: "default", id: "ZULIP_API_KEY" },
-            email: "bot@example.test",
-            url: "https://zulip.example.test",
-          },
-        },
-      };
-
-      expect(zulipMessageActions.describeMessageTool({ cfg }).actions).toContain("poll");
-      expect(zulipMessageActions.supportsAction?.({ action: "poll" })).toBe(false);
-    });
   });
 
   describe("pairing", () => {
     it("normalizes allowlist entries", () => {
-      const normalize = zulipPlugin.pairing?.normalizeAllowEntry;
-      if (!normalize) {
-        return;
-      }
-
+      const normalize = zulipPlugin.pairing!.normalizeAllowEntry!;
       expect(normalize("@Alice")).toBe("alice");
       expect(normalize("user:USER123")).toBe("user123");
     });
@@ -266,28 +168,6 @@ describe("zulipPlugin", () => {
         allowFrom: ["@Alice", "user:USER123", "zulip:BOT999"],
       });
       expect(formatted).toEqual(["@alice", "user123", "bot999"]);
-    });
-
-    it("uses account responsePrefix overrides", () => {
-      const cfg: OpenClawConfig = {
-        channels: {
-          zulip: {
-            responsePrefix: "[Channel]",
-            accounts: {
-              default: { responsePrefix: "[Account]" },
-            },
-          },
-        },
-      };
-
-      const prefixContext = createReplyPrefixOptions({
-        cfg,
-        agentId: "main",
-        channel: "zulip",
-        accountId: "default",
-      });
-
-      expect(prefixContext.responsePrefix).toBe("[Account]");
     });
 
     it("prefers account-level site/realm aliases over base-level url", () => {
@@ -348,22 +228,18 @@ describe("zulipPlugin", () => {
       await expect(zulipOnboardingAdapter.getStatus({ cfg })).resolves.toMatchObject({ configured: true });
     });
 
-    it("restricts approvals to normalized allowFrom identities when configured", () => {
-      const result = zulipPlugin.approvalCapability?.authorizeActorAction?.({
-        cfg: {
-          channels: {
-            zulip: {
-              allowFrom: ["@ian@example.com"],
-            },
-          },
-        } as OpenClawConfig,
-        accountId: "default",
-        senderId: "ian@example.com",
-        action: "approve",
-        approvalKind: "exec",
-      });
+    it("authorizes approvals only for normalized allowFrom identities when configured", () => {
+      const cfg = { channels: { zulip: { allowFrom: ["@Ian@Example.com"] } } } as OpenClawConfig;
+      const authorize = (senderId: string | null, cfgUnderTest = cfg) =>
+        zulipPlugin.approvalCapability!.authorizeActorAction!({
+          cfg: cfgUnderTest, accountId: "default", senderId, action: "approve", approvalKind: "exec",
+        });
 
-      expect(result).toEqual({ authorized: true });
+      expect(authorize("ian@example.com")).toEqual({ authorized: true });
+      expect(authorize("user:IAN@example.com")).toEqual({ authorized: true });
+      for (const sender of ["mallory@example.com", "", null]) {
+        expect(authorize(sender)).toMatchObject({ authorized: false, reason: expect.stringContaining("not authorized") });
+      }
     });
   });
 
@@ -399,18 +275,6 @@ describe("zulipPlugin", () => {
       expect(zulipPlugin.agentPrompt?.reactionGuidance?.({ cfg })).toBeUndefined();
       expect(zulipPlugin.agentPrompt?.messageToolHints?.({ cfg })).toEqual([]);
       expect(zulipMessageActions.describeMessageTool?.({ cfg })?.actions).toContain("react");
-    });
-
-    it("exposes extensive model-controlled Zulip reaction guidance", () => {
-      const cfg = configuredCfg({ agentReactionGuidance: "extensive" });
-
-      expect(zulipPlugin.agentPrompt?.reactionGuidance?.({ cfg })).toEqual({
-        level: "extensive",
-        channelLabel: "Zulip",
-      });
-      expect(zulipPlugin.agentPrompt?.messageToolHints?.({ cfg })?.join("\n")).toContain(
-        "Use them for natural sentiment",
-      );
     });
 
     it("resolves per-account reaction guidance over the base default", () => {

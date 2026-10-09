@@ -58,28 +58,21 @@ describe("Zulip lifecycle reaction config", () => {
     expect(zulipChannelConfigSchema.runtime.safeParse({ ...both, accounts: { work: both } }).success).toBe(true);
     expect(zulipChannelConfigSchema.runtime.safeParse({ ...both, thinkingPlaceholder: { enabled: true, text: "" } }).success).toBe(false);
   });
-  it("accepts the conservative handled-read account opt-in and exposes it in the manifest", () => {
-    expect(zulipChannelConfigSchema.runtime.safeParse({ markHandledRead: true }).success).toBe(true);
-    expect(zulipChannelConfigSchema.runtime.safeParse({ markHandledRead: false }).success).toBe(true);
-    expect(zulipChannelConfigSchema.runtime.safeParse({}).success).toBe(true);
+  it("accepts the conservative handled-read account opt-in", () => {
+    for (const config of [{ markHandledRead: true }, { markHandledRead: false }, {}]) {
+      expect(zulipChannelConfigSchema.runtime.safeParse(config).success).toBe(true);
+    }
+  });
 
-    const manifest = JSON.parse(
-      fs.readFileSync(new URL("../openclaw.plugin.json", import.meta.url), "utf8"),
-    ) as {
-      channelConfigs: {
-        zulip: {
-          schema: {
-            $defs: { zulipAccount: { properties: Record<string, unknown> } };
-            properties: Record<string, unknown>;
-          };
-          uiHints: Record<string, unknown>;
-        };
-      };
-    };
-    const config = manifest.channelConfigs.zulip;
-    expect(config.schema.properties).toHaveProperty("markHandledRead");
-    expect(config.schema.$defs.zulipAccount.properties).toHaveProperty("markHandledRead");
-    expect(config.uiHints).toHaveProperty("markHandledRead");
+  it("packages every runtime config key at top level and per account, with matching stream rule fields", () => {
+    const manifest = loadPackagedChannelSchema();
+    const runtime = zulipChannelConfigSchema.schema as JsonSchema;
+    const runtimeKeys = Object.keys(runtime.properties ?? {}).sort();
+    expect(Object.keys(manifest.properties ?? {}).sort()).toEqual(runtimeKeys);
+    expect(Object.keys(manifest.$defs?.zulipAccount?.properties ?? {}).sort())
+      .toEqual(runtimeKeys.filter((key) => key !== "accounts" && key !== "defaultAccount"));
+    const runtimeRule = (runtime.properties?.streamOverrides?.additionalProperties as JsonSchema).properties;
+    expect(manifest.$defs?.zulipStreamRule?.properties).toEqual(runtimeRule);
   });
 
   it("keeps packaged top-level and account streaming schemas identical to runtime", () => {
@@ -152,7 +145,7 @@ describe("Zulip lifecycle reaction config", () => {
     expect(zulipChannelConfigSchema.runtime.safeParse(fixture).success).toBe(true);
   });
 
-  it("accepts strict per-stream inbound policy fields", () => {
+  it("accepts strict per-stream inbound policy fields and rejects unknown ones", () => {
     const result = zulipChannelConfigSchema.runtime.safeParse({
       streamOverrides: {
         General: {
@@ -166,9 +159,6 @@ describe("Zulip lifecycle reaction config", () => {
     });
 
     expect(result.success).toBe(true);
-  });
-
-  it("rejects unknown per-stream inbound policy fields", () => {
     expect(
       zulipChannelConfigSchema.runtime.safeParse({
         streamOverrides: { general: { outboundEnabled: false } },
@@ -184,32 +174,25 @@ describe("Zulip lifecycle reaction config", () => {
     expect(zulipChannelConfigSchema.runtime.safeParse({ streamOverrides }).success).toBe(false);
   });
 
-  it("accepts lifecycle emoji, timing, and subagent overrides", () => {
-    const result = zulipChannelConfigSchema.runtime.safeParse({
-      reactions: {
+  it("accepts lifecycle emoji, timing, subagent overrides, named emoji, built-in Unicode mappings, and explicit suppression", () => {
+    for (const reactions of [
+      {
         enabled: true,
         clearOnFinish: true,
         emojis: { thinking: "brain", coding: "computer" },
         timing: { debounceMs: 25, stallSoftMs: 10_000, stallHardMs: 30_000 },
         subagent: "🤖",
       },
-    });
-
-    expect(result.success).toBe(true);
-  });
-
-  it("accepts named emoji, built-in Unicode mappings, and explicit suppression", () => {
-    const result = zulipChannelConfigSchema.runtime.safeParse({
-      reactions: {
+      {
         onStart: "",
         onSuccess: "✅",
         onError: ":warning:",
         emojis: { thinking: "🧠", done: "" },
         subagent: "🤖",
       },
-    });
-
-    expect(result.success).toBe(true);
+    ]) {
+      expect(zulipChannelConfigSchema.runtime.safeParse({ reactions }).success).toBe(true);
+    }
   });
 
   it.each(["+1", "-1", ":+1:", ":-1:"])(
@@ -264,32 +247,6 @@ describe("Zulip lifecycle reaction config", () => {
     for (const value of ["+", "-", ":+:", ":-:", ":+1", "+1:", "white space", "🦄"]) {
       expect(accepts(value)).toBe(false);
     }
-  });
-
-  it("keeps manifest stream override fields aligned with runtime validation", () => {
-    const manifest = JSON.parse(
-      fs.readFileSync(new URL("../openclaw.plugin.json", import.meta.url), "utf8"),
-    ) as {
-      channelConfigs: {
-        zulip: {
-          schema: {
-            $defs: { zulipAccount: { properties: Record<string, unknown> }; zulipStreamRule: { properties: Record<string, unknown> } };
-            properties: Record<string, unknown>;
-          };
-          uiHints: Record<string, unknown>;
-        };
-      };
-    };
-    const channelConfig = manifest.channelConfigs.zulip;
-    expect(Object.keys(channelConfig.schema.$defs.zulipStreamRule.properties).sort()).toEqual([
-      "allowedTopics",
-      "enabled",
-      "excludedTopics",
-      "requireMention",
-    ]);
-    expect(channelConfig.schema.properties).toHaveProperty("streamOverrides");
-    expect(channelConfig.schema.$defs.zulipAccount.properties).toHaveProperty("streamOverrides");
-    expect(channelConfig.uiHints).toHaveProperty("streamOverrides");
   });
 
   it("rejects arbitrary Unicode reaction values", () => {

@@ -350,25 +350,10 @@ describe("reachable action routes", () => {
 });
 
 describe("splitStreamTarget", () => {
-  it("parses canonical stream targets with colon topics", () => {
-    expect(splitStreamTarget("stream:debbie:Zulip Plugin PR")).toEqual({
-      stream: "debbie",
-      topic: "Zulip Plugin PR",
-    });
-  });
-
-  it("keeps legacy slash topic parsing for unprefixed streams", () => {
-    expect(splitStreamTarget("debbie/Zulip Plugin PR")).toEqual({
-      stream: "debbie",
-      topic: "Zulip Plugin PR",
-    });
-  });
-
-  it("parses core-inferred stream topic targets without the stream prefix", () => {
-    expect(splitStreamTarget("debbie:Zulip Plugin PR")).toEqual({
-      stream: "debbie",
-      topic: "Zulip Plugin PR",
-    });
+  it("parses canonical, legacy slash, and core-inferred unprefixed stream targets", () => {
+    for (const raw of ["stream:debbie:Zulip Plugin PR", "debbie/Zulip Plugin PR", "debbie:Zulip Plugin PR"]) {
+      expect(splitStreamTarget(raw), raw).toEqual({ stream: "debbie", topic: "Zulip Plugin PR" });
+    }
   });
 });
 
@@ -387,21 +372,9 @@ describe("zulipMessageActions react", () => {
     expect(new URLSearchParams(String(init?.body)).get("emoji_name")).toBe("octopus");
   });
 
-  it("maps common Unicode approval reactions to Zulip unicode emoji parameters", async () => {
-    const { fetchImpl } = await runReactAction({
-      messageId: 456,
-      emoji: "👍",
-    });
-
-    const [, init] = fetchImpl.mock.calls[0] ?? [];
-    const body = new URLSearchParams(String(init?.body));
-    expect(body.get("emoji_name")).toBe("thumbs_up");
-    expect(body.get("emoji_code")).toBe("1f44d");
-    expect(body.get("reaction_type")).toBe("unicode_emoji");
-  });
-
-  it("maps common expressive Unicode reactions to Zulip emoji names", async () => {
+  it("maps Unicode reactions to Zulip unicode emoji parameters", async () => {
     const cases = [
+      { emoji: "👍", name: "thumbs_up", code: "1f44d" },
       { emoji: "🧠", name: "brain", code: "1f9e0" },
       { emoji: "🤔", name: "thinking", code: "1f914" },
       { emoji: "😂", name: "joy", code: "1f602" },
@@ -411,16 +384,11 @@ describe("zulipMessageActions react", () => {
     ];
 
     for (const { emoji, name, code } of cases) {
-      const { fetchImpl } = await runReactAction({
-        messageId: 456,
-        emoji,
-      });
-
+      const { fetchImpl } = await runReactAction({ messageId: 456, emoji });
       const [, init] = fetchImpl.mock.calls[0] ?? [];
       const body = new URLSearchParams(String(init?.body));
-      expect(body.get("emoji_name")).toBe(name);
-      expect(body.get("emoji_code")).toBe(code);
-      expect(body.get("reaction_type")).toBe("unicode_emoji");
+      expect([emoji, body.get("emoji_name"), body.get("emoji_code"), body.get("reaction_type")])
+        .toEqual([emoji, name, code, "unicode_emoji"]);
     }
   });
 

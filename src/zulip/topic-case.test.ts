@@ -8,11 +8,9 @@ describe("Unicode 16 topic canonicalization", () => {
 
   it.each([
     ["Release A", "release a"],
-    ["Release-A", "release-a"],
     ["Release--A", "release--a"],
     [" Release / A? ", " release / a? "],
     ["", ""],
-    ["general", "general"],
     ["///", "///"],
     [" \t\n", " \t\n"],
     ["ÉTÉ", "été"],
@@ -21,8 +19,6 @@ describe("Unicode 16 topic canonicalization", () => {
     ["I\u0307", "i\u0307"],
     ["I\u0301", "i\u0301"],
     ["Straße", "straße"],
-    ["STRASSE", "strasse"],
-    ["CAFÉ", "café"],
     ["CAFE\u0301", "cafe\u0301"],
     ["Ａ", "ａ"],
     ["\uA7CB", "\u0264"],

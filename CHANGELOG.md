@@ -9,6 +9,7 @@
 
 ### Bug Fixes
 - **Pin/unpin removed** (#3): Stop advertising and handling `pin` and `unpin`. Zulip has no shared pinning; the old implementation only set the bot account's personal `starred` flag, which nobody else can see. Both actions now fail as unsupported before any network call. The README and `docs/ACTION_CAPABILITIES.md` no longer list them.
+- **System approval outcomes**: Render core closure reasons as short human statuses rather than approver names; preserve human attribution and inert formatting for unclassified resolver IDs.
 
 ## 2026.10.9
 

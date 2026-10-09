@@ -610,6 +610,9 @@ After resolution, the prompt starts with a clear status such as
 Only the ID and already-displayed command remain; obsolete instructions are
 removed along with the companion zform and bot-seeded reactions. Unknown remote
 approvers are not invented (`Resolved elsewhere: allow-once`).
+Core closures use human statuses such as “⚪ Cancelled: approval session ended
+before a decision”, not internal resolver codes as approver names. Unrecognized
+explicit system resolvers show `⚪ Closed by the system` with an inert reason.
 
 Reaction approvals are enabled on audited hosts 2026.9.3, 2026.9.6 and
 2026.10.1-beta.1/beta.2 using only public SDK exports. Delivered targets expire

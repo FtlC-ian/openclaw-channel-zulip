@@ -28,9 +28,9 @@ three destructive actions additionally require the exact boolean
 ## Unsupported shared actions
 
 OpenClaw's shared `pin` and `unpin` actions mean provider-visible shared
-pinning. Zulip's message-flag API only exposes the authenticated account's
-personal `starred` flag, so this plugin deliberately does not advertise or
-handle either action. It also does not expose a misleading shared-action alias
+pinning. Zulip has no shared pin; its message flags, such as `starred`, are
+per-user, so this plugin deliberately does not advertise or handle either
+action. It also does not expose a misleading shared-action alias
 for personal starring.
 
 ## Removed provider-specific actions

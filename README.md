@@ -621,3 +621,12 @@ The web client implements zform; desktop embeds the web client. Flutter currentl
 supports poll submessages but explicitly leaves zform unsupported. See
 [approval implementation and verification notes](docs/APPROVAL_REACTIONS.md)
 for source references, lifecycle details and limitations.
+# Session progress card (opt-in)
+
+Set `channels.zulip.progressCard.enabled: true` (or under an account) to mirror
+the agent's core `progress_card` calls into one editable message per conversation.
+It is off by default and independent of the per-turn `streaming.mode: "progress"` draft.
+Cards show markdown and ordered ✅ / ▶ / ◻ steps; clearing leaves a short inert state.
+Control UI edits do not show until the agent's next tool update. Exact mirroring
+requires an upstream hook-bound read (GitLab #8). Unknown session routes are ignored.
+

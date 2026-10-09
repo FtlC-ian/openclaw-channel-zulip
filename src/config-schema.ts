@@ -224,6 +224,7 @@ const ZulipAccountSchemaBase = z
     textChunkLimit: z.number().int().positive().optional(),
     chunkMode: z.enum(["length", "newline"]).optional(),
     streaming: ChannelStreamingSchema.optional(),
+    progressCard: z.object({ enabled: z.boolean().optional() }).strict().optional(),
     blockStreaming: z.boolean().optional(),
     blockStreamingCoalesce: BlockStreamingCoalesceSchema.optional(),
     responsePrefix: z.string().optional(),

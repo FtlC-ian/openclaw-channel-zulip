@@ -1,4 +1,5 @@
 import { startZulipApprovalObserver, stripLeadingZulipApprovalBotMention, zulipApprovalReactions } from "./approval-reactions.js";
+import { zulipProgressCards } from "./progress-card.js";
 import { ZulipConnection } from "./connection.js";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -29,7 +30,7 @@ import {
 } from "openclaw/plugin-sdk/channel-outbound";
 import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/temp-path";
 import { getZulipRuntime } from "../runtime.js";
-import { resolveZulipRuntimeAccount } from "./accounts.js";
+import { resolveZulipAccount, resolveZulipRuntimeAccount } from "./accounts.js";
 import {
   createZulipClient,
   fetchZulipMe,
@@ -1207,6 +1208,8 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
           conversationId: streamConversation!.conversationId,
         });
 
+    // Bind only keys constructed by the v2 account-scoped routing helpers.
+    zulipProgressCards.bind(sessionKey, { accountId: account.accountId, client, conversation: questionConversation, enabled: () => resolveZulipAccount({ cfg: opts.getConfig?.() ?? cfg, accountId: account.accountId }).config.progressCard?.enabled === true });
     const timestamp = message.timestamp ? message.timestamp * 1000 : undefined;
     const textWithId = `${bodyText}\n[zulip message id: ${messageId}]`;
     const body = formatInboundEnvelope({

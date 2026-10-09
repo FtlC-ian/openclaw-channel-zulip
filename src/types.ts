@@ -126,6 +126,7 @@ export type ZulipAccountConfig = {
   blockStreaming?: boolean;
   /** Opt-in task-progress draft; explicit progress mode takes precedence over thinkingPlaceholder. */
   streaming?: ChannelPreviewStreamingConfig;
+  progressCard?: { enabled?: boolean };
   /** Merge streamed block replies before sending. */
   blockStreamingCoalesce?: BlockStreamingCoalesceConfig;
   /** Outbound response prefix override for this channel/account. */

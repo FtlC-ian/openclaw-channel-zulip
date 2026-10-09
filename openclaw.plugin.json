@@ -593,7 +593,7 @@
                   },
                   "activeEmoji": {
                     "type": "string",
-                    "pattern": "^[a-zA-Z0-9_+-]+$(?![\\s\\S])"
+                    "pattern": "^[a-zA-Z0-9_-]+$(?![\\s\\S])"
                   }
                 },
                 "additionalProperties": false
@@ -1012,7 +1012,7 @@
               },
               "activeEmoji": {
                 "type": "string",
-                "pattern": "^[a-zA-Z0-9_+-]+$(?![\\s\\S])"
+                "pattern": "^[a-zA-Z0-9_-]+$(?![\\s\\S])"
               }
             },
             "additionalProperties": false

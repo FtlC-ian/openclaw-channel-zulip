@@ -13,7 +13,7 @@ describe("progress card trust boundary", () => {
       return new Response(JSON.stringify({ result: "success", id: calls.length + 40 }));
     } });
     const cards = new ZulipProgressCards();
-    let activeEmoji: string | undefined = "waiting";
+    let activeEmoji: string | undefined = "dark-waiting";
     const planEvent = (revision: number) => ({ toolName: "progress_card", params: { plan: [
       { step: "Done", status: "completed" }, { step: "Working", status: "in_progress" }, { step: "Next", status: "pending" },
     ] }, result: { details: { revision, steps: { completed: 1, total: 3 } } } });
@@ -22,7 +22,7 @@ describe("progress card trust boundary", () => {
       cards.bind("default", { accountId: "default", client, enabled: () => true, conversation: { kind: "stream", stream: "18", topic: "default" } });
       cards.accept(planEvent(1), "animated"); cards.accept(planEvent(1), "default");
       await vi.advanceTimersByTimeAsync(300);
-      expect(calls.find(call => call.topic === "animated")?.content).toBe("**Progress card**\n\n✅ Done\n:waiting: Working\n◻ Next");
+      expect(calls.find(call => call.topic === "animated")?.content).toBe("**Progress card**\n\n✅ Done\n:dark-waiting: Working\n◻ Next");
       expect(calls.find(call => call.topic === "default")?.content).toBe("**Progress card**\n\n✅ Done\n▶ Working\n◻ Next");
       cards.accept(planEvent(2), "animated"); await vi.advanceTimersByTimeAsync(300);
       expect(calls).toHaveLength(2);

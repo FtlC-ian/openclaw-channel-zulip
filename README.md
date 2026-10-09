@@ -630,7 +630,7 @@ Cards show markdown and ordered ✅ / ▶ / ◻ steps; clearing leaves a short i
 Set `channels.zulip.progressCard.activeEmoji: "waiting"` (or
 `channels.zulip.accounts.<accountId>.progressCard.activeEmoji`) to replace ▶ with
 `:waiting:` for the in-progress step. Use a simple emoji name without colons
-(letters, digits, underscores, hyphens or plus signs). Custom GIF emoji animate
+(letters, digits, underscores or hyphens; for example `dark-waiting`). Custom GIF emoji animate
 in Zulip messages; upload the emoji to your realm first. Completed and pending
 steps are unchanged, and omitting `activeEmoji` keeps ▶.
 Control UI edits do not show until the agent's next tool update. Exact mirroring

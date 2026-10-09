@@ -23,6 +23,16 @@ for (const version of ["2026.9.3", "2026.9.6", "2026.10.1-beta.1", "2026.10.1-be
       import assert from "node:assert/strict";
       await import("./dist/index.js");
       await import("./dist/setup-entry.js");
+      const stateSdk = await import("openclaw/plugin-sdk/plugin-state-store-runtime");
+      const createDurableStore = stateSdk.createPluginStateKeyedStore ?? stateSdk.createPluginStateSyncKeyedStore;
+      assert.equal(typeof createDurableStore, "function");
+      const durableStore = createDurableStore("zulip", { namespace: "zulip.host-smoke.bindings", maxEntries: 2, defaultTtlMs: 60000, env: { ...process.env, OPENCLAW_STATE_DIR: ${JSON.stringify(scratch)} + "/state" } });
+      await durableStore.register("card", { generation: "first", messageId: "42" });
+      assert.equal(await durableStore.update("card", row => row.generation === "first" ? { ...row, generation: "second" } : undefined), true);
+      assert.equal(await durableStore.update("card", row => row.generation === "first" ? { ...row, messageId: "wrong" } : undefined), false);
+      assert.equal((await durableStore.entries())[0].value.messageId, "42");
+      assert.equal(await durableStore.deleteIf("card", row => row.generation === "first"), false);
+      await durableStore.clear();
       const reactions = await import("openclaw/plugin-sdk/approval-reaction-runtime");
       for (const name of ["createApprovalReactionTargetStore", "readApprovalReactionTargetRecord", "listApprovalReactionBindings", "settleApprovalReaction", "readApprovalReactionPresentationBinding", "readApprovalReactionDeliveryMetadata"]) assert.equal(typeof reactions[name], "function", name);
       assert.equal(typeof (await import("openclaw/plugin-sdk/lazy-runtime")).createLazyRuntimeSurface, "function");

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Features
+- **Session progress card** (GitLab #9): Opt-in `progressCard.enabled` mirrors validated core tool updates into an editable, conversation-isolated Zulip card, independently of per-turn drafts.
+- **Restart bindings** (GitLab #7): Bounded public plugin-state records retain approval controls, native question indices, draft ids and card mappings. Startup reconciles public pending runtimes; generation checks reject stale writes. No credentials or message content are stored.
+
 ### Bug Fixes
 - **Pin/unpin removed** (#3): Stop advertising and handling `pin` and `unpin`. Zulip has no shared pinning; the old implementation only set the bot account's personal `starred` flag, which nobody else can see. Both actions now fail as unsupported before any network call. The README and `docs/ACTION_CAPABILITIES.md` no longer list them.
 

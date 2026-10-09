@@ -1,11 +1,19 @@
 {
   "id": "zulip",
-  "channels": ["zulip"],
+  "channels": [
+    "zulip"
+  ],
   "doctorContract": {
     "stateMigrations": []
   },
   "channelEnvVars": {
-    "zulip": ["ZULIP_API_KEY", "ZULIP_EMAIL", "ZULIP_URL", "ZULIP_SITE", "ZULIP_REALM"]
+    "zulip": [
+      "ZULIP_API_KEY",
+      "ZULIP_EMAIL",
+      "ZULIP_URL",
+      "ZULIP_SITE",
+      "ZULIP_REALM"
+    ]
   },
   "configSchema": {
     "type": "object",
@@ -22,14 +30,36 @@
             "type": "object",
             "additionalProperties": false,
             "properties": {
-              "source": { "type": "string", "enum": ["env", "file", "exec"] },
-              "provider": { "type": "string" },
-              "id": { "type": "string" }
+              "source": {
+                "type": "string",
+                "enum": [
+                  "env",
+                  "file",
+                  "exec"
+                ]
+              },
+              "provider": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              }
             },
-            "required": ["source", "provider", "id"]
+            "required": [
+              "source",
+              "provider",
+              "id"
+            ]
           },
           "secretInput": {
-            "anyOf": [{ "type": "string" }, { "$ref": "#/$defs/secretRef" }]
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "$ref": "#/$defs/secretRef"
+              }
+            ]
           },
           "zulipReactionEmoji": {
             "anyOf": [
@@ -39,7 +69,27 @@
               },
               {
                 "type": "string",
-                "enum": ["", "👀", "🧠", "🛠", "🛠️", "💻", "🌐", "🛫", "🏗", "🏗️", "💁", "✅", "❌", "⏳", "⚠", "⚠️", "🗜", "🗜️", "🤖"]
+                "enum": [
+                  "",
+                  "👀",
+                  "🧠",
+                  "🛠",
+                  "🛠️",
+                  "💻",
+                  "🌐",
+                  "🛫",
+                  "🏗",
+                  "🏗️",
+                  "💁",
+                  "✅",
+                  "❌",
+                  "⏳",
+                  "⚠",
+                  "⚠️",
+                  "🗜",
+                  "🗜️",
+                  "🤖"
+                ]
               }
             ]
           },
@@ -47,84 +97,249 @@
             "type": "object",
             "additionalProperties": false,
             "properties": {
-              "queued": { "$ref": "#/$defs/zulipReactionEmoji" },
-              "thinking": { "$ref": "#/$defs/zulipReactionEmoji" },
-              "tool": { "$ref": "#/$defs/zulipReactionEmoji" },
-              "coding": { "$ref": "#/$defs/zulipReactionEmoji" },
-              "web": { "$ref": "#/$defs/zulipReactionEmoji" },
-              "deploy": { "$ref": "#/$defs/zulipReactionEmoji" },
-              "build": { "$ref": "#/$defs/zulipReactionEmoji" },
-              "concierge": { "$ref": "#/$defs/zulipReactionEmoji" },
-              "done": { "$ref": "#/$defs/zulipReactionEmoji" },
-              "error": { "$ref": "#/$defs/zulipReactionEmoji" },
-              "stallSoft": { "$ref": "#/$defs/zulipReactionEmoji" },
-              "stallHard": { "$ref": "#/$defs/zulipReactionEmoji" },
-              "compacting": { "$ref": "#/$defs/zulipReactionEmoji" }
+              "queued": {
+                "$ref": "#/$defs/zulipReactionEmoji"
+              },
+              "thinking": {
+                "$ref": "#/$defs/zulipReactionEmoji"
+              },
+              "tool": {
+                "$ref": "#/$defs/zulipReactionEmoji"
+              },
+              "coding": {
+                "$ref": "#/$defs/zulipReactionEmoji"
+              },
+              "web": {
+                "$ref": "#/$defs/zulipReactionEmoji"
+              },
+              "deploy": {
+                "$ref": "#/$defs/zulipReactionEmoji"
+              },
+              "build": {
+                "$ref": "#/$defs/zulipReactionEmoji"
+              },
+              "concierge": {
+                "$ref": "#/$defs/zulipReactionEmoji"
+              },
+              "done": {
+                "$ref": "#/$defs/zulipReactionEmoji"
+              },
+              "error": {
+                "$ref": "#/$defs/zulipReactionEmoji"
+              },
+              "stallSoft": {
+                "$ref": "#/$defs/zulipReactionEmoji"
+              },
+              "stallHard": {
+                "$ref": "#/$defs/zulipReactionEmoji"
+              },
+              "compacting": {
+                "$ref": "#/$defs/zulipReactionEmoji"
+              }
             }
           },
           "statusReactionTiming": {
             "type": "object",
             "additionalProperties": false,
             "properties": {
-              "debounceMs": { "type": "integer", "minimum": 0 },
-              "stallSoftMs": { "type": "integer", "minimum": 0 },
-              "stallHardMs": { "type": "integer", "minimum": 0 },
-              "doneHoldMs": { "type": "integer", "minimum": 0 },
-              "errorHoldMs": { "type": "integer", "minimum": 0 }
+              "debounceMs": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "stallSoftMs": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "stallHardMs": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "doneHoldMs": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "errorHoldMs": {
+                "type": "integer",
+                "minimum": 0
+              }
             }
           },
           "zulipStreamRule": {
             "type": "object",
             "additionalProperties": false,
             "properties": {
-              "enabled": { "type": "boolean" },
-              "requireMention": { "type": "boolean" },
-              "allowedTopics": { "type": "array", "items": { "type": "string" } },
-              "excludedTopics": { "type": "array", "items": { "type": "string" } }
+              "enabled": {
+                "type": "boolean"
+              },
+              "requireMention": {
+                "type": "boolean"
+              },
+              "allowedTopics": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "excludedTopics": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
             }
           },
           "zulipAccount": {
             "type": "object",
             "additionalProperties": true,
             "properties": {
-              "name": { "type": "string" },
-              "capabilities": { "type": "array", "items": { "type": "string" } },
+              "name": {
+                "type": "string"
+              },
+              "capabilities": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
               "markdown": {
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
-                  "tables": { "type": "string", "enum": ["native", "codeblock", "disabled"] }
+                  "tables": {
+                    "type": "string",
+                    "enum": [
+                      "native",
+                      "codeblock",
+                      "disabled"
+                    ]
+                  }
                 }
               },
-              "enabled": { "type": "boolean" },
-              "configWrites": { "type": "boolean" },
-              "enableAdminActions": { "type": "boolean" },
-              "url": { "type": "string" },
-              "site": { "type": "string" },
-              "realm": { "type": "string" },
-              "email": { "type": "string" },
-              "apiKey": { "$ref": "#/$defs/secretInput" },
-              "streams": { "type": "array", "items": { "type": "string" } },
-              "topics": { "type": "array", "items": { "type": "string" } },
+              "enabled": {
+                "type": "boolean"
+              },
+              "configWrites": {
+                "type": "boolean"
+              },
+              "enableAdminActions": {
+                "type": "boolean"
+              },
+              "url": {
+                "type": "string"
+              },
+              "site": {
+                "type": "string"
+              },
+              "realm": {
+                "type": "string"
+              },
+              "email": {
+                "type": "string"
+              },
+              "apiKey": {
+                "$ref": "#/$defs/secretInput"
+              },
+              "streams": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "topics": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
               "streamTopics": {
                 "type": "object",
-                "additionalProperties": { "type": "array", "items": { "type": "string" } }
+                "additionalProperties": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
               },
               "streamOverrides": {
                 "type": "object",
-                "additionalProperties": { "$ref": "#/$defs/zulipStreamRule" }
+                "additionalProperties": {
+                  "$ref": "#/$defs/zulipStreamRule"
+                }
               },
-              "defaultTopic": { "type": "string" },
-              "routingDiagnosticsTarget": { "type": "string", "pattern": "^stream:[^:\\/#]+[:\\/#].*$" },
-              "chatmode": { "type": "string", "enum": ["oncall", "onmessage", "onchar"] },
-              "oncharPrefixes": { "type": "array", "items": { "type": "string" } },
-              "requireMention": { "type": "boolean" },
-              "dmPolicy": { "type": "string", "enum": ["pairing", "allowlist", "open", "disabled"] },
-              "allowFrom": { "type": "array", "items": { "anyOf": [{ "type": "string" }, { "type": "number" }] } },
-              "groupAllowFrom": { "type": "array", "items": { "anyOf": [{ "type": "string" }, { "type": "number" }] } },
-              "groupPolicy": { "type": "string", "enum": ["open", "disabled", "allowlist"] },
-              "mediaMaxMb": { "type": "integer", "minimum": 1 },
-              "markHandledRead": { "type": "boolean" },
+              "defaultTopic": {
+                "type": "string"
+              },
+              "routingDiagnosticsTarget": {
+                "type": "string",
+                "pattern": "^stream:[^:\\/#]+[:\\/#].*$"
+              },
+              "chatmode": {
+                "type": "string",
+                "enum": [
+                  "oncall",
+                  "onmessage",
+                  "onchar"
+                ]
+              },
+              "oncharPrefixes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "requireMention": {
+                "type": "boolean"
+              },
+              "dmPolicy": {
+                "type": "string",
+                "enum": [
+                  "pairing",
+                  "allowlist",
+                  "open",
+                  "disabled"
+                ]
+              },
+              "allowFrom": {
+                "type": "array",
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "number"
+                    }
+                  ]
+                }
+              },
+              "groupAllowFrom": {
+                "type": "array",
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "number"
+                    }
+                  ]
+                }
+              },
+              "groupPolicy": {
+                "type": "string",
+                "enum": [
+                  "open",
+                  "disabled",
+                  "allowlist"
+                ]
+              },
+              "mediaMaxMb": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "markHandledRead": {
+                "type": "boolean"
+              },
               "approvalReactions": {
                 "type": "object",
                 "properties": {
@@ -143,19 +358,51 @@
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
-                  "enabled": { "type": "boolean" },
-                  "clearOnFinish": { "type": "boolean" },
-                  "onStart": { "$ref": "#/$defs/zulipReactionEmoji" },
-                  "onSuccess": { "$ref": "#/$defs/zulipReactionEmoji" },
-                  "onError": { "$ref": "#/$defs/zulipReactionEmoji" },
-                  "emojis": { "$ref": "#/$defs/statusReactionEmojis" },
-                  "timing": { "$ref": "#/$defs/statusReactionTiming" },
-                  "subagent": { "$ref": "#/$defs/zulipReactionEmoji" }
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "clearOnFinish": {
+                    "type": "boolean"
+                  },
+                  "onStart": {
+                    "$ref": "#/$defs/zulipReactionEmoji"
+                  },
+                  "onSuccess": {
+                    "$ref": "#/$defs/zulipReactionEmoji"
+                  },
+                  "onError": {
+                    "$ref": "#/$defs/zulipReactionEmoji"
+                  },
+                  "emojis": {
+                    "$ref": "#/$defs/statusReactionEmojis"
+                  },
+                  "timing": {
+                    "$ref": "#/$defs/statusReactionTiming"
+                  },
+                  "subagent": {
+                    "$ref": "#/$defs/zulipReactionEmoji"
+                  }
                 }
               },
-              "agentReactionGuidance": { "type": "string", "enum": ["off", "minimal", "extensive"] },
-              "textChunkLimit": { "type": "integer", "minimum": 1 },
-              "chunkMode": { "type": "string", "enum": ["length", "newline"] },
+              "agentReactionGuidance": {
+                "type": "string",
+                "enum": [
+                  "off",
+                  "minimal",
+                  "extensive"
+                ]
+              },
+              "textChunkLimit": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "chunkMode": {
+                "type": "string",
+                "enum": [
+                  "length",
+                  "newline"
+                ]
+              },
               "streaming": {
                 "type": "object",
                 "properties": {
@@ -321,54 +568,184 @@
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
-                  "minChars": { "type": "integer", "minimum": 1 },
-                  "maxChars": { "type": "integer", "minimum": 1 },
-                  "idleMs": { "type": "integer", "minimum": 0 }
+                  "minChars": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "maxChars": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "idleMs": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
                 }
               },
-              "responsePrefix": { "type": "string" }
+              "responsePrefix": {
+                "type": "string"
+              },
+              "progressCard": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": false
+              }
             }
           }
         },
         "properties": {
-          "name": { "type": "string" },
-          "capabilities": { "type": "array", "items": { "type": "string" } },
+          "name": {
+            "type": "string"
+          },
+          "capabilities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "markdown": {
             "type": "object",
             "additionalProperties": false,
             "properties": {
-              "tables": { "type": "string", "enum": ["native", "codeblock", "disabled"] }
+              "tables": {
+                "type": "string",
+                "enum": [
+                  "native",
+                  "codeblock",
+                  "disabled"
+                ]
+              }
             }
           },
-          "enabled": { "type": "boolean" },
-          "configWrites": { "type": "boolean" },
-          "enableAdminActions": { "type": "boolean" },
-          "url": { "type": "string" },
-          "site": { "type": "string" },
-          "realm": { "type": "string" },
-          "email": { "type": "string" },
-          "apiKey": { "$ref": "#/$defs/secretInput" },
-          "streams": { "type": "array", "items": { "type": "string" } },
-          "topics": { "type": "array", "items": { "type": "string" } },
+          "enabled": {
+            "type": "boolean"
+          },
+          "configWrites": {
+            "type": "boolean"
+          },
+          "enableAdminActions": {
+            "type": "boolean"
+          },
+          "url": {
+            "type": "string"
+          },
+          "site": {
+            "type": "string"
+          },
+          "realm": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "apiKey": {
+            "$ref": "#/$defs/secretInput"
+          },
+          "streams": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "topics": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "streamTopics": {
             "type": "object",
-            "additionalProperties": { "type": "array", "items": { "type": "string" } }
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
           },
           "streamOverrides": {
             "type": "object",
-            "additionalProperties": { "$ref": "#/$defs/zulipStreamRule" }
+            "additionalProperties": {
+              "$ref": "#/$defs/zulipStreamRule"
+            }
           },
-          "defaultTopic": { "type": "string" },
-          "routingDiagnosticsTarget": { "type": "string", "pattern": "^stream:[^:\\/#]+[:\\/#].*$" },
-          "chatmode": { "type": "string", "enum": ["oncall", "onmessage", "onchar"] },
-          "oncharPrefixes": { "type": "array", "items": { "type": "string" } },
-          "requireMention": { "type": "boolean" },
-          "dmPolicy": { "type": "string", "enum": ["pairing", "allowlist", "open", "disabled"] },
-          "allowFrom": { "type": "array", "items": { "anyOf": [{ "type": "string" }, { "type": "number" }] } },
-          "groupAllowFrom": { "type": "array", "items": { "anyOf": [{ "type": "string" }, { "type": "number" }] } },
-          "groupPolicy": { "type": "string", "enum": ["open", "disabled", "allowlist"] },
-          "mediaMaxMb": { "type": "integer", "minimum": 1 },
-          "markHandledRead": { "type": "boolean" },
+          "defaultTopic": {
+            "type": "string"
+          },
+          "routingDiagnosticsTarget": {
+            "type": "string",
+            "pattern": "^stream:[^:\\/#]+[:\\/#].*$"
+          },
+          "chatmode": {
+            "type": "string",
+            "enum": [
+              "oncall",
+              "onmessage",
+              "onchar"
+            ]
+          },
+          "oncharPrefixes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "requireMention": {
+            "type": "boolean"
+          },
+          "dmPolicy": {
+            "type": "string",
+            "enum": [
+              "pairing",
+              "allowlist",
+              "open",
+              "disabled"
+            ]
+          },
+          "allowFrom": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                }
+              ]
+            }
+          },
+          "groupAllowFrom": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                }
+              ]
+            }
+          },
+          "groupPolicy": {
+            "type": "string",
+            "enum": [
+              "open",
+              "disabled",
+              "allowlist"
+            ]
+          },
+          "mediaMaxMb": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "markHandledRead": {
+            "type": "boolean"
+          },
           "approvalReactions": {
             "type": "object",
             "properties": {
@@ -387,19 +764,51 @@
             "type": "object",
             "additionalProperties": false,
             "properties": {
-              "enabled": { "type": "boolean" },
-              "clearOnFinish": { "type": "boolean" },
-              "onStart": { "$ref": "#/$defs/zulipReactionEmoji" },
-              "onSuccess": { "$ref": "#/$defs/zulipReactionEmoji" },
-              "onError": { "$ref": "#/$defs/zulipReactionEmoji" },
-              "emojis": { "$ref": "#/$defs/statusReactionEmojis" },
-              "timing": { "$ref": "#/$defs/statusReactionTiming" },
-              "subagent": { "$ref": "#/$defs/zulipReactionEmoji" }
+              "enabled": {
+                "type": "boolean"
+              },
+              "clearOnFinish": {
+                "type": "boolean"
+              },
+              "onStart": {
+                "$ref": "#/$defs/zulipReactionEmoji"
+              },
+              "onSuccess": {
+                "$ref": "#/$defs/zulipReactionEmoji"
+              },
+              "onError": {
+                "$ref": "#/$defs/zulipReactionEmoji"
+              },
+              "emojis": {
+                "$ref": "#/$defs/statusReactionEmojis"
+              },
+              "timing": {
+                "$ref": "#/$defs/statusReactionTiming"
+              },
+              "subagent": {
+                "$ref": "#/$defs/zulipReactionEmoji"
+              }
             }
           },
-          "agentReactionGuidance": { "type": "string", "enum": ["off", "minimal", "extensive"] },
-          "textChunkLimit": { "type": "integer", "minimum": 1 },
-          "chunkMode": { "type": "string", "enum": ["length", "newline"] },
+          "agentReactionGuidance": {
+            "type": "string",
+            "enum": [
+              "off",
+              "minimal",
+              "extensive"
+            ]
+          },
+          "textChunkLimit": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "chunkMode": {
+            "type": "string",
+            "enum": [
+              "length",
+              "newline"
+            ]
+          },
           "streaming": {
             "type": "object",
             "properties": {
@@ -558,22 +967,48 @@
             },
             "additionalProperties": false
           },
-          "blockStreaming": { "type": "boolean" },
+          "blockStreaming": {
+            "type": "boolean"
+          },
           "blockStreamingCoalesce": {
             "type": "object",
             "additionalProperties": false,
             "properties": {
-              "minChars": { "type": "integer", "minimum": 1 },
-              "maxChars": { "type": "integer", "minimum": 1 },
-              "idleMs": { "type": "integer", "minimum": 0 }
+              "minChars": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "maxChars": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "idleMs": {
+                "type": "integer",
+                "minimum": 0
+              }
             }
           },
-          "responsePrefix": { "type": "string" },
+          "responsePrefix": {
+            "type": "string"
+          },
           "accounts": {
             "type": "object",
-            "additionalProperties": { "$ref": "#/$defs/zulipAccount" }
+            "additionalProperties": {
+              "$ref": "#/$defs/zulipAccount"
+            }
           },
-          "defaultAccount": { "type": "string" }
+          "defaultAccount": {
+            "type": "string"
+          },
+          "progressCard": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          }
         }
       },
       "uiHints": {

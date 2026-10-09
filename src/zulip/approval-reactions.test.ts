@@ -5,6 +5,7 @@ import type { OpenClawConfig } from "../sdk.js";
 import type { ZulipClient, ZulipEvent } from "./client.js";
 import { ZulipApprovalReactions, zulipApprovalReactions } from "./approval-reactions.js";
 import { readApprovalBinding } from "./approval-sdk.js";
+import { durableBindings, type DurableRecord } from "./durable-bindings.js";
 const mocks = vi.hoisted(() => ({ resolve: vi.fn() }));
 vi.mock("openclaw/plugin-sdk/approval-gateway-runtime", () => ({ resolveApprovalOverGateway: mocks.resolve }));
 
@@ -34,6 +35,16 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); zulipApprovalReactions.clearAccount("default"); zulipApprovalReactions.clearAccount("other"); });
 
 describe("approval reaction control boundary", () => {
+  it.each([true, false])("reconciles restart approval pending=%s without replaying a resolution", async (pending) => {
+    const record: DurableRecord = { kind: "approval", accountId: "default", scope: "hash", generation: "old", messageId: "10", companionId: "11", id: "req-1", approvalKind: "exec", decisions: ["allow-once", "deny"], emojis: [["check", "allow-once"], ["cross_mark", "deny"]], expiresAt: Date.now() + 60000 };
+    const spies = [vi.spyOn(durableBindings, "records").mockResolvedValue([{ key: 'approval:["default","10"]', record }]), vi.spyOn(durableBindings, "claim").mockImplementation(async (_key, value) => ({ ...value, generation: "new" })), vi.spyOn(durableBindings, "current").mockResolvedValue(true), vi.spyOn(durableBindings, "remove").mockResolvedValue()];
+    try {
+      await store.restore({ cfg, accountId: "default", client, request: async () => pending ? [{ id: "req-1" }] : [] });
+      expect(mocks.resolve).not.toHaveBeenCalled();
+      if (pending) { await command(); await command(); expect(mocks.resolve).toHaveBeenCalledTimes(1); }
+      else { expect(request.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true); expect(await command()).toBe(false); }
+    } finally { for (const spy of spies) spy.mockRestore(); }
+  });
   it.each([buildExecApprovalPendingReplyPayload, buildTypedExecApprovalPendingReplyPayload])("accepts SDK exec pending payloads without a state field", async (build) => {
     const pending = build({ approvalId: "req-1", approvalSlug: "req-1", command: "true", host: "gateway", allowedDecisions: ["allow-once", "deny"] });
     expect(readApprovalBinding({ payload: pending })).toMatchObject({ approvalId: "req-1", approvalKind: "exec" });

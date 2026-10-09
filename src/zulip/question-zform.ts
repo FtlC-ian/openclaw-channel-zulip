@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomBytes } from "node:crypto";
+import { bindingHash, bindingScope, durableBindings, type DurableRecord } from "./durable-bindings.js";
 import { questionGatewayRuntime } from "openclaw/plugin-sdk/question-gateway-runtime";
 import type { MessagePresentation } from "../sdk.js";
 import type { OpenClawConfig, ReplyPayload } from "../sdk.js";
@@ -34,6 +35,9 @@ type ZulipQuestionBinding = {
   expiresAt: number;
   terminal: boolean;
   resolving: boolean;
+  restored?: boolean;
+  durable?: DurableRecord;
+  durableReady?: Promise<void>;
   cleanupTimer?: ReturnType<typeof setTimeout>;
 };
 
@@ -300,7 +304,7 @@ function resolveFallbackOption(
   }
   if (selection.kind === "text") {
     const optionValue = binding.optionValues.find(
-      (value) => value.trim().toLowerCase() === selection.optionText.trim().toLowerCase(),
+      (value) => value.trim().toLowerCase() === (binding.restored ? bindingHash(selection.optionText.trim().toLowerCase()) : selection.optionText.trim().toLowerCase()),
     );
     return optionValue ? { kind: "match", optionValue } : { kind: "none" };
   }
@@ -311,7 +315,7 @@ function resolveFallbackOption(
   if (!selection.optionText) {
     return { kind: "match", optionValue };
   }
-  const selectedText = selection.optionText.trim().toLowerCase();
+  const selectedText = binding.restored ? bindingHash(selection.optionText.trim().toLowerCase()) : selection.optionText.trim().toLowerCase();
   const namedOption = binding.optionValues.find(
     (value) => value.trim().toLowerCase() === selectedText,
   );
@@ -360,6 +364,31 @@ export class ZulipQuestionZformStore {
   private readonly bindings = new Map<string, ZulipQuestionBinding>();
 
   constructor(private readonly maxBindings = MAX_BINDINGS) {}
+
+  async restore(params: { cfg: OpenClawConfig; accountId: string; client: ZulipClient; hostVersion?: string }): Promise<void> {
+    for (const { key, record } of await durableBindings.records(params.accountId, params.client)) {
+      if (record.kind !== "question" || !record.id || !record.nonce || !record.conversation || !record.senderHash || !record.optionHashes || this.bindings.has(record.nonce)) continue;
+      // The public authorizer runs after the read and before any write. A denied
+      // probe detects pending state without replaying an answer.
+      // 9.3 ignores authorize and would submit the probe as a real answer. Its
+      // recovery is deliberately inert rather than risking duplicate resolution.
+      const version = params.hostVersion?.match(/^(\d+)\.(\d+)\.(\d+)/)?.slice(1).map(Number);
+      const safeProbe = version && (version[0] > 2026 || version[0] === 2026 && (version[1] > 9 || version[1] === 9 && version[2] >= 6));
+      const state = safeProbe ? await questionGatewayRuntime.resolveOption({ cfg: params.cfg, questionId: record.id, optionIndex: 0, authorize: () => false }) : { status: "already-terminal" as const };
+      if (record.expiresAt <= Date.now() || state.status === "already-terminal") {
+        const replacement = await sendTerminalReplacement({ client: params.client, conversation: record.conversation, content: record.expiresAt <= Date.now() ? "⌛ Question expired" : "Question already resolved or unavailable" });
+        if (replacement) { await deleteZulipMessage(params.client, { messageId: record.messageId }); await durableBindings.remove(key, record); }
+        continue;
+      }
+      if (state.status !== "denied") continue;
+      this.register({ preparation: { nonce: record.nonce, questionId: record.id, optionValues: record.optionHashes, widgetContent: { widget_type: "zform", extra_data: { type: "choices", heading: "", choices: [] } } }, accountId: params.accountId, conversation: record.conversation, authorizedSenderId: record.senderHash, sourceMessageId: record.messageId, sourceText: "", client: params.client });
+      const binding = this.bindings.get(record.nonce);
+      if (binding) {
+        binding.restored = true; binding.expiresAt = record.expiresAt; await binding.durableReady;
+        if (binding.durable) { binding.durable.senderHash = record.senderHash; binding.durable.optionHashes = record.optionHashes; binding.durable.expiresAt = record.expiresAt; await durableBindings.save(key, binding.durable); }
+      }
+    }
+  }
 
   prepare(payload: Pick<ReplyPayload, "channelData" | "presentation">):
     | ZulipQuestionZformPreparation
@@ -442,6 +471,7 @@ export class ZulipQuestionZformStore {
       resolving: false,
     };
     this.bindings.set(binding.nonce, binding);
+    binding.durableReady = durableBindings.claim(`question:${accountId}:${binding.nonce}`, { kind: "question", accountId, scope: bindingScope(params.client), messageId: sourceMessageId, id: binding.questionId, nonce: binding.nonce, conversation: binding.conversation, senderHash: bindingHash(senderId), optionHashes: binding.optionValues.map(value => bindingHash(value.trim().toLowerCase())), expiresAt: binding.expiresAt }).then(record => { binding.durable = record; });
     binding.cleanupTimer = setTimeout(() => this.markTerminal(binding), ACTIVE_TTL_MS);
     binding.cleanupTimer.unref?.();
     try {
@@ -471,6 +501,8 @@ export class ZulipQuestionZformStore {
           }
           try {
             await deleteZulipMessage(params.client, { messageId: sourceMessageId });
+            await binding.durableReady;
+            if (binding.durable) await durableBindings.remove(`question:${binding.accountId}:${binding.nonce}`, binding.durable);
           } catch (sourceDeleteError) {
             params.logDebug?.(
               `zulip: unable to delete finalized ask_user source message ${sourceMessageId}: ${String(sourceDeleteError)}`,
@@ -506,7 +538,7 @@ export class ZulipQuestionZformStore {
   private identityBindings(message: ZulipQuestionControlMessage): ZulipQuestionBinding[] {
     return [...this.bindings.values()].filter((binding) =>
       binding.accountId === message.accountId.trim() &&
-      binding.authorizedSenderId === normalizeIdentity(message.senderId) &&
+      binding.authorizedSenderId === (binding.restored ? bindingHash(normalizeIdentity(message.senderId)) : normalizeIdentity(message.senderId)) &&
       conversationsMatch(binding.conversation, message.conversation),
     );
   }
@@ -528,6 +560,7 @@ export class ZulipQuestionZformStore {
       return { recognized: true, status: "rejected", feedback: "That question control is invalid." };
     }
     const binding = this.bindings.get(parsed.nonce);
+    await binding?.durableReady;
     if (!binding || binding.terminal || binding.expiresAt <= Date.now()) {
       if (binding) {
         this.markTerminal(binding);
@@ -539,7 +572,7 @@ export class ZulipQuestionZformStore {
     }
     if (
       binding.accountId !== params.message.accountId.trim() ||
-      binding.authorizedSenderId !== normalizeIdentity(params.message.senderId) ||
+      binding.authorizedSenderId !== (binding.restored ? bindingHash(normalizeIdentity(params.message.senderId)) : normalizeIdentity(params.message.senderId)) ||
       !conversationsMatch(binding.conversation, params.message.conversation)
     ) {
       return { recognized: true, status: "rejected", feedback: "That question control is not valid here." };
@@ -553,7 +586,8 @@ export class ZulipQuestionZformStore {
       const result = await questionGatewayRuntime.resolveOption({
         cfg: params.cfg,
         questionId: binding.questionId,
-        optionValue,
+        ...(binding.restored ? { optionIndex: parsed.optionIndex } : { optionValue }),
+        authorize: async () => !binding.terminal && (!binding.durable || await durableBindings.current(`question:${binding.accountId}:${binding.nonce}`, binding.durable)),
         senderId: params.message.senderId,
         gatewayUrl: params.gatewayUrl,
         clientDisplayName: `Zulip question (${params.message.senderId})`,
@@ -562,12 +596,12 @@ export class ZulipQuestionZformStore {
         this.markTerminal(binding);
         return { recognized: true, status: "stale", feedback: "That question is no longer active." };
       }
-      if (result.status !== "answered" || result.optionValue !== optionValue) {
+      if (result.status !== "answered" || (!binding.restored && result.optionValue !== optionValue)) {
         this.markTerminal(binding);
         return { recognized: true, status: "rejected", feedback: "That question answer was not accepted." };
       }
       this.markTerminal(binding);
-      return { recognized: true, status: "answered", optionValue };
+      return { recognized: true, status: "answered", optionValue: result.optionValue };
     } catch (error) {
       if (!binding.terminal) {
         binding.resolving = false;
@@ -640,12 +674,14 @@ export class ZulipQuestionZformStore {
     }
     const optionValue = resolution.optionValue;
 
+    await binding.durableReady;
     binding.resolving = true;
     try {
       const result = await questionGatewayRuntime.resolveOption({
         cfg: params.cfg,
         questionId: binding.questionId,
-        optionValue,
+        ...(binding.restored ? { optionIndex: binding.optionValues.indexOf(optionValue) } : { optionValue }),
+        authorize: async () => !binding.terminal && (!binding.durable || await durableBindings.current(`question:${binding.accountId}:${binding.nonce}`, binding.durable)),
         senderId: params.message.senderId,
         gatewayUrl: params.gatewayUrl,
         clientDisplayName: `Zulip question (${params.message.senderId})`,
@@ -654,12 +690,12 @@ export class ZulipQuestionZformStore {
         this.markTerminal(binding);
         return { recognized: true, status: "stale", feedback: "That question is no longer active." };
       }
-      if (result.status !== "answered" || result.optionValue !== optionValue) {
+      if (result.status !== "answered" || (!binding.restored && result.optionValue !== optionValue)) {
         this.markTerminal(binding);
         return { recognized: true, status: "rejected", feedback: "That question answer was not accepted." };
       }
       this.markTerminal(binding);
-      return { recognized: true, status: "answered", optionValue };
+      return { recognized: true, status: "answered", optionValue: result.optionValue };
     } catch (error) {
       if (!binding.terminal) {
         binding.resolving = false;

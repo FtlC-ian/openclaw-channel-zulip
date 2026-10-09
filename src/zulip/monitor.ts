@@ -1,5 +1,6 @@
 import { startZulipApprovalObserver, stripLeadingZulipApprovalBotMention, zulipApprovalReactions } from "./approval-reactions.js";
 import { zulipProgressCards } from "./progress-card.js";
+import { startDurableBindings, durableBindings, bindingScope, type DurableRecord } from "./durable-bindings.js";
 import { ZulipConnection } from "./connection.js";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -1464,6 +1465,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       progressDraftActive && resolveChannelStreamingPreviewCommandText(messageAccount.config) !== "raw";
     let progressMessageId: string | undefined;
     const progressMessageIds = new Set<string>();
+    const durableDrafts = new Map<string, DurableRecord>();
     let progressOperation = Promise.resolve();
     let progressClosing = false;
     let progressRotationUsed = false;
@@ -1486,6 +1488,8 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       for (let attempt = 0; attempt < PROGRESS_DELETE_MAX_ATTEMPTS; attempt += 1) {
         try {
           await deleteZulipMessage(client, { messageId });
+          const durable = durableDrafts.get(messageId);
+          if (durable) { await durableBindings.remove(`draft:${account.accountId}:${messageId}`, durable); durableDrafts.delete(messageId); }
           progressMessageIds.delete(messageId);
           if (progressMessageId === messageId) {
             progressMessageId = undefined;
@@ -1606,6 +1610,8 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         if (sent.messageId !== "unknown") {
           progressMessageId = sent.messageId;
           progressMessageIds.add(sent.messageId);
+          const durable = await durableBindings.claim(`draft:${account.accountId}:${sent.messageId}`, { kind: "draft", accountId: account.accountId, scope: bindingScope(client), messageId: sent.messageId, expiresAt: Date.now() + 86400_000 });
+          if (durable) durableDrafts.set(sent.messageId, durable);
         }
         progressEditRetryAttempt = 0;
         core.channel.activity.record({
@@ -2618,8 +2624,21 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
 
   activeMonitorReactionCleanups.add(cleanupActiveReactionLifecycles);
   try {
+    startDurableBindings((options) => core.state.openKeyedStore(options as Parameters<typeof core.state.openKeyedStore>[0]));
+    const reconcile = async (operation: () => Promise<void>) => {
+      try { await operation(); } catch (error) { runtime.error?.(`zulip: durable binding reconciliation failed (retained for retry): ${String(error)}`); }
+    };
+    await reconcile(() => zulipProgressCards.restore({ accountId: account.accountId, client, enabled: () => !opts.abortSignal?.aborted && resolveZulipAccount({ cfg: opts.getConfig?.() ?? cfg, accountId: account.accountId }).config.progressCard?.enabled === true }));
+    await reconcile(async () => {
+    for (const { key, record } of await durableBindings.records(account.accountId, client)) {
+      if (record.kind !== "draft") continue;
+      await deleteZulipMessage(client, { messageId: record.messageId });
+      await durableBindings.remove(key, record);
+    }
+    });
+    await reconcile(() => zulipQuestionZformStore.restore({ cfg, accountId: account.accountId, client, hostVersion: core.version }));
     stopApprovalObserver = await startZulipApprovalObserver({
-      cfg, accountId: account.accountId, abortSignal: opts.abortSignal,
+      cfg, accountId: account.accountId, zulipClient: client, abortSignal: opts.abortSignal,
       onError: (error) => runtime.error?.(`zulip: approval terminal observer failed: ${String(error)}`),
     });
 

@@ -630,3 +630,14 @@ Cards show markdown and ordered ✅ / ▶ / ◻ steps; clearing leaves a short i
 Control UI edits do not show until the agent's next tool update. Exact mirroring
 requires an upstream hook-bound read (GitLab #8). Unknown session routes are ignored.
 
+Restart records use the public plugin state store and contain only identifiers,
+conversation topics, hashes and revision floors, never message content or credentials.
+They share a bounded 40-record budget across accounts (legacy hosts reserve 950
+of the 1000 plugin-state rows for ingress); records expire after 30 days.
+Pending approval controls are rebound from the public pending lists. Native
+questions are probed with a denied authorizer on 2026.9.6 and later. On 2026.9.3,
+which lacks that safety capability, question widgets are terminalized instead
+of risking an answer replay. Resolved/unknown recovery states have generic
+inert labels because message content and terminal decision history are not stored.
+Interrupted per-turn drafts are deleted on startup; cards retain their message ids.
+

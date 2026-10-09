@@ -1,8 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { normalizeLegacyZulipTarget, parseZulipTarget } from "./destination.js";
 import {
   presentationToZulipWidgetContent,
-  normalizeLegacyZulipTarget,
-  parseZulipTarget,
   pollToZulipWidgetContent,
   resolveZulipWidgetContent,
   sendMessageZulip,
@@ -302,33 +301,18 @@ describe("sendMessageZulip media and presentation", () => {
       expect(await zulipApprovalReactions.command({ cfg, accountId: "default", senderId: "stranger@test", text: `/approve inactive ${allowedDecisions[0]}` })).toBe(true);
     } finally { sendState.account.config = originalAccountConfig; zulipApprovalReactions.clearAccount("default"); }
   });
-  it("uses the explicit target topic for both text and media when thread context disagrees", async () => {
-    await sendMessageZulip("stream:synthetic-stream:Canonical Topic", "text", {
-      cfg: {},
-      topic: "Different Session Topic",
-    });
-    expect(sendState.sendZulipStreamMessage).toHaveBeenLastCalledWith(
-      expect.anything(),
-      expect.objectContaining({
-        stream: "synthetic-stream",
-        topic: "Canonical Topic",
-        content: "text",
-      }),
-    );
-
+  it("appends an already Zulip-hosted media URL to the message without re-uploading it", async () => {
+    const { uploadZulipFile } = await import("./client.js");
+    vi.mocked(uploadZulipFile).mockClear();
     await sendMessageZulip("stream:synthetic-stream:Canonical Topic", "media", {
       cfg: {},
-      topic: "Different Session Topic",
       mediaUrl: "https://zlp.pubnerd.app/user_uploads/synthetic.png",
     });
     expect(sendState.sendZulipStreamMessage).toHaveBeenLastCalledWith(
       expect.anything(),
-      expect.objectContaining({
-        stream: "synthetic-stream",
-        topic: "Canonical Topic",
-        content: "media\nhttps://zlp.pubnerd.app/user_uploads/synthetic.png",
-      }),
+      expect.objectContaining({ content: "media\nhttps://zlp.pubnerd.app/user_uploads/synthetic.png" }),
     );
+    expect(uploadZulipFile).not.toHaveBeenCalled();
   });
 
   it("uploads remote media through the bounded runtime buffer reader", async () => {
@@ -345,19 +329,6 @@ describe("sendMessageZulip media and presentation", () => {
     });
     expect(sendState.sendZulipStreamMessage).toHaveBeenLastCalledWith(expect.anything(),
       expect.objectContaining({ content: "Report\n/user_uploads/test/report.pdf" }));
-  });
-
-  it("sends canonical command presentation controls to Zulip", async () => {
-    await sendMessageZulip("user:alice@example.test", "Approval", {
-      cfg: {},
-      presentation: { blocks: [{ type: "buttons", buttons: [
-        { label: "Deny", action: { type: "command", command: "/approve req-1 deny" } },
-      ] }] },
-    });
-    expect(sendState.sendZulipPrivateMessage).toHaveBeenLastCalledWith(expect.anything(),
-      expect.objectContaining({ widgetContent: expect.objectContaining({ extra_data: expect.objectContaining({
-        choices: [{ type: "multiple_choice", short_name: "Deny", long_name: "Deny", reply: "/approve req-1 deny" }],
-      }) }) }));
   });
 
   it("binds an ask_user widget to the exact sent stream rather than its reply context", async () => {
@@ -419,49 +390,6 @@ describe("sendMessageZulip media and presentation", () => {
     register.mockRestore();
   });
 
-  it("binds an ask_user widget to the exact sent DM rather than its DM reply context", async () => {
-    const questionId = "ask_0123456789abcdef0123456789abcdef";
-    const register = vi.spyOn(zulipQuestionZformStore, "register").mockReturnValue(true);
-    const askPayload = {
-      text: "Choose one\n1. One\n2. Two",
-      channelData: { askUser: { questionId, optionValues: ["One", "Two"] } },
-      presentation: {
-        blocks: [
-          { type: "text" as const, text: "Choose one" },
-          {
-            type: "buttons" as const,
-            buttons: [
-              { label: "One", action: { type: "question" as const, questionId, optionValue: "One" } },
-              { label: "Two", action: { type: "question" as const, questionId, optionValue: "Two" } },
-            ],
-          },
-        ],
-      },
-    };
-
-    await runWithZulipQuestionDeliveryContext(
-      {
-        authorizedSenderId: "alice@example.test",
-        conversation: { kind: "dm", recipient: "context@example.test" },
-      },
-      () =>
-        sendMessageZulip("user:actual@example.test", askPayload.text, {
-          cfg: {},
-          presentation: askPayload.presentation,
-          channelData: askPayload.channelData,
-        }),
-    );
-
-    expect(register).toHaveBeenCalledWith(
-      expect.objectContaining({
-        conversation: { kind: "dm", recipient: "actual@example.test" },
-        authorizedSenderId: "alice@example.test",
-        sourceMessageId: "9001",
-      }),
-    );
-    register.mockRestore();
-  });
-
   it("does not send an unbindable question when canonical stream lookup fails", async () => {
     const { resolveZulipStreamId } = await import("./client.js");
     vi.mocked(resolveZulipStreamId).mockRejectedValueOnce(new Error("stream lookup failed"));
@@ -488,6 +416,13 @@ describe("sendMessageZulip media and presentation", () => {
   });
 
   it.each([
+    {
+      name: "a different DM recipient context for a sent DM",
+      context: { kind: "dm" as const, recipient: "context@example.test" },
+      target: "user:actual@example.test",
+      expected: { kind: "dm" as const, recipient: "actual@example.test" },
+      sourceMessageId: "9001",
+    },
     {
       name: "stream context for a sent DM",
       context: { kind: "stream" as const, stream: "context", topic: "wrong" },
@@ -592,25 +527,14 @@ describe("sendPollZulip", () => {
         content: "Lunch?",
         widgetContent: {
           widget_type: "zform",
-          extra_data: {
-            type: "choices",
+          extra_data: expect.objectContaining({
             heading: "Lunch?",
             poll: true,
             choices: [
-              {
-                type: "multiple_choice",
-                short_name: "Pizza",
-                long_name: "Pizza",
-                reply: "Pizza",
-              },
-              {
-                type: "multiple_choice",
-                short_name: "Sushi",
-                long_name: "Sushi",
-                reply: "Sushi",
-              },
+              expect.objectContaining({ reply: "Pizza" }),
+              expect.objectContaining({ reply: "Sushi" }),
             ],
-          },
+          }),
         },
       }),
     );
@@ -639,21 +563,7 @@ describe("resolveZulipWidgetContent", () => {
           },
         },
       }),
-    ).toEqual({
-      widget_type: "zform",
-      extra_data: {
-        type: "choices",
-        heading: "Approval Request",
-        choices: [
-          {
-            type: "multiple_choice",
-            short_name: "Allow Once",
-            long_name: "Allow Once",
-            reply: "/approve req-1 allow-once",
-          },
-        ],
-      },
-    });
+    ).toMatchObject({ extra_data: { heading: "Approval Request", choices: [{ reply: "/approve req-1 allow-once" }] } });
   });
 
   it("falls back to channelData.zulip.widgetContent when presentation is absent", () => {

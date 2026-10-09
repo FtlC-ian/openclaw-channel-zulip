@@ -14,7 +14,7 @@ Fixture root: /Volumes/WorkingSpace/openclaw/tmp/zulip-92-sdk-audit/<version>/pa
 | Host | HTTP passes session key | MCP completion reports hook | Public hook dispatch/context |
 | --- | --- | --- | --- |
 | Installed 2026.9.9 | mcp-http-Berf_32X.mjs:435-456 (key at 443) | mcp-http.handlers-duvz4qAA.mjs:73-86,134-145 (key at 80) | hook-helpers-88BXuErh.mjs:10-34 (key at 30) |
-| 2026.9.6 | mcp-http-DAU57R_3.mjs:465-469 | mcp-http.handlers-DHGn0cSX.mjs:87-99,159 (key at 93) | hook-helpers-Ds5Wl0Rf.mjs:18-34 (key at 30) |
+| 2026.9.6 | mcp-http-DAU57R_3.mjs:465-469 | mcp-http.handlers-DHGn0cSX.mjs:87-99,157-170 (key at 93) | hook-helpers-Ds5Wl0Rf.mjs:18-34 (key at 30) |
 | beta.1 | mcp-http-CaXouB9g.mjs:451-455 | mcp-http.handlers-BMRPr0jE.mjs:73-86,134-145 (key at 80) | hook-helpers-gxghQtQL.mjs:18-34 (key at 30) |
 | beta.2 | mcp-http-D2zzQKU6.mjs:452-456 | mcp-http.handlers-D6jdXLo7.mjs:73-86,134-145 (key at 80) | hook-helpers-C_PrFtBr.mjs:18-34 (key at 30) |
 
@@ -42,7 +42,9 @@ Read-only inspection of /tmp/openclaw/openclaw-2026-10-09.log found:
 - Line 5209, 15:46:00 CDT: reload still deferred after 150880 ms.
 - Line 5222, 15:46:30 CDT: reload still deferred after 180973 ms.
 
-Thus revision 10 occurred while application of the setting was still deferred.
+If revision 10 occurred at approximately 15:46 CDT as reported in the task,
+application of the setting was still deferred at that time. These log receipts
+do not independently establish the timestamp of the revision-10 tool call.
 This is a concrete confounder, **not proof** of which runtime acceptance check
 rejected that update: the log does not record the card hook event, bound route,
 or rejection reason. The monitor binds routes on inbound dispatch

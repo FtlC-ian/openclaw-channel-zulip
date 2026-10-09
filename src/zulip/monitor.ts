@@ -2624,7 +2624,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
 
   activeMonitorReactionCleanups.add(cleanupActiveReactionLifecycles);
   try {
-    startDurableBindings((options) => core.state.openKeyedStore(options as Parameters<typeof core.state.openKeyedStore>[0]));
+    startDurableBindings();
     const reconcile = async (operation: () => Promise<void>) => {
       try { await operation(); } catch (error) { runtime.error?.(`zulip: durable binding reconciliation failed (retained for retry): ${String(error)}`); }
     };

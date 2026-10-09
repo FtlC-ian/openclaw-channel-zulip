@@ -33,6 +33,15 @@ for (const version of ["2026.9.3", "2026.9.6", "2026.10.1-beta.1", "2026.10.1-be
       assert.equal((await durableStore.entries())[0].value.messageId, "42");
       assert.equal(await durableStore.deleteIf("card", row => row.generation === "first"), false);
       await durableStore.clear();
+      process.env.OPENCLAW_STATE_DIR = ${JSON.stringify(scratch)} + "/state";
+      const { durableBindings, startDurableBindings } = await import("./dist/src/zulip/durable-bindings.js");
+      startDurableBindings();
+      const record = await durableBindings.claim("smoke-card", { kind: "card", accountId: "default", scope: "hash", messageId: "42", revision: 7, companionId: undefined, expiresAt: Date.now() + 60000 });
+      assert.ok(record, "production guarded factory enables durability");
+      assert.equal((await durableBindings.get("smoke-card")).messageId, "42");
+      assert.equal(Object.hasOwn(await durableBindings.get("smoke-card"), "companionId"), false, "optional absent fields never reach strict SDK serialization");
+      assert.equal(await durableBindings.claim("smoke-card", record, record.generation, () => false), undefined);
+      await durableBindings.remove("smoke-card", record);
       const reactions = await import("openclaw/plugin-sdk/approval-reaction-runtime");
       for (const name of ["createApprovalReactionTargetStore", "readApprovalReactionTargetRecord", "listApprovalReactionBindings", "settleApprovalReaction", "readApprovalReactionPresentationBinding", "readApprovalReactionDeliveryMetadata"]) assert.equal(typeof reactions[name], "function", name);
       assert.equal(typeof (await import("openclaw/plugin-sdk/lazy-runtime")).createLazyRuntimeSurface, "function");

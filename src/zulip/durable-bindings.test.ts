@@ -15,6 +15,8 @@ it("restart claims invalidate old writes and cleanup, without losing the card ma
   await oldProcess.remove("card:session", original);
   expect(await restarted.current("card:session", current)).toBe(true);
   expect(await oldProcess.current("card:session", original)).toBe(false);
+  expect(await oldProcess.claim("card:session", current, current.generation, () => false)).toBeUndefined();
+  expect(await restarted.current("card:session", current)).toBe(true);
   expect(await restarted.records("other", client)).toEqual([]);
   expect(JSON.stringify([...rows.values()])).not.toContain("secret");
 });

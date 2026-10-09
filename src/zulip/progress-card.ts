@@ -49,12 +49,19 @@ export class ZulipProgressCards {
     this.cards.set(sessionKey, card);
     card.operation = this.recover(card).catch(() => undefined);
   }
-  private async recover(card: Card): Promise<void> {
+  private async recover(card: Card, retried = false): Promise<void> {
+    const isCurrent = () => this.cards.get(card.sessionKey) === card && card.route.enabled();
     const key = `card:${card.sessionKey}`;
     const record = await durableBindings.get(key);
-    if (!record || record.kind !== "card" || record.accountId !== card.route.accountId || record.scope !== bindingScope(card.route.client) || record.expiresAt <= Date.now()) return;
-    const claimed = await durableBindings.claim(key, record);
-    if (!claimed) { card.pending.length = 0; if (this.cards.get(card.sessionKey) === card) this.cards.delete(card.sessionKey); return; }
+    if (!isCurrent() || !record || record.kind !== "card" || record.accountId !== card.route.accountId || record.scope !== bindingScope(card.route.client) || record.expiresAt <= Date.now()) return;
+    // Recheck inside the atomic store mutation: a retired lookup must not
+    // acquire authority after an off/on transition creates a replacement route.
+    const claimed = await durableBindings.claim(key, record, record.generation, isCurrent);
+    if (!isCurrent()) return;
+    if (!claimed) {
+      if (!retried) { await this.recover(card, true); return; }
+      card.pending.length = 0; this.cards.delete(card.sessionKey); return;
+    }
     card.durable = claimed; card.messageId = record.messageId; card.hash = record.hash; card.floor = Math.max(card.floor, record.revision ?? -1);
   }
   async restore(route: Omit<CardRoute, "conversation">): Promise<void> {
@@ -116,9 +123,22 @@ export class ZulipProgressCards {
       }
     }
     const conversation = card.route.conversation;
-    const sent = conversation.kind === "dm"
-      ? await sendZulipPrivateMessage(card.route.client, { to: conversation.recipient, content: update.text })
-      : await sendZulipStreamMessage(card.route.client, { stream: conversation.stream, topic: conversation.topic, content: update.text });
+    let sent;
+    try {
+      sent = conversation.kind === "dm"
+        ? await sendZulipPrivateMessage(card.route.client, { to: conversation.recipient, content: update.text, maxRetries: 0 })
+        : await sendZulipStreamMessage(card.route.client, { stream: conversation.stream, topic: conversation.topic, content: update.text, maxRetries: 0 });
+    } catch (error) {
+      // Only an explicit rejection can safely replay a POST without its receipt.
+      // The compositor owns 429 timing rather than the transport's capped retry.
+      const err = error as { status?: number; retryAfterMs?: number };
+      if (err.status === 429) {
+        card.pending.unshift(update);
+        if (!card.timer) card.timer = setTimeout(() => { card.timer = undefined; card.operation = card.operation.then(() => this.drain(card)).catch(() => undefined); }, Math.max(1000, err.retryAfterMs ?? 1000 * 2 ** Math.min(card.retry++, 6)));
+        card.timer?.unref?.();
+      }
+      return;
+    }
     if (sent.id !== undefined) { card.messageId = String(sent.id); card.hash = hash; card.retry = 0; await this.checkpoint(card, update.floor ?? card.floor); }
   }
   private async drain(card: Card): Promise<void> {

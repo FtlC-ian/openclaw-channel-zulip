@@ -210,6 +210,8 @@ export class ZulipApprovalReactions {
     await this.finish(this.retire(accountId, payload.id), terminal);
   }
   private async finish(entries: Binding[], terminal: Terminal): Promise<void> {
+    const current = await Promise.all(entries.map(async entry => !entry.durable || await durableBindings.current(`approval:${this.key(entry.accountId, entry.messageId)}`, entry.durable)));
+    entries = entries.filter((_, index) => current[index]);
     // Zulip widgets are immutable. Edit the prompt, delete its companion zform,
     // and remove bot-seeded reactions independently even if an API call fails.
     await Promise.all(entries.map((entry) => entry.seeding));

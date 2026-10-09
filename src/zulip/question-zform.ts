@@ -481,6 +481,8 @@ export class ZulipQuestionZformStore {
         questionId: binding.questionId,
         deliveryId: `zulip-zform:${accountId}:${sourceMessageId}`,
         finalize: async (statusLine) => {
+          await binding.durableReady;
+          if (binding.restored && !binding.durable || binding.durable && !await durableBindings.current(`question:${binding.accountId}:${binding.nonce}`, binding.durable)) return;
           this.markTerminal(binding);
           let replacementMessageId: string | undefined;
           try {

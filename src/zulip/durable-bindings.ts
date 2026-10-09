@@ -17,8 +17,7 @@ export const bindingHash = (value: string) => createHash("sha256").update(value)
 export const bindingScope = (client: ZulipClient) => bindingHash(`${client.baseUrl}\n${Buffer.from((client.authHeader ?? "").replace(/^Basic /, ""), "base64").toString().split(":")[0]}`);
 let storePromise: Promise<Store | undefined> | undefined;
 let active = false;
-let runtimeOpen: ((options: Record<string, unknown>) => unknown) | undefined;
-export function startDurableBindings(open?: (options: Record<string, unknown>) => unknown): void { active = true; runtimeOpen = open; storePromise = undefined; }
+export function startDurableBindings(): void { active = true; storePromise = undefined; }
 async function loadStore(): Promise<Store | undefined> {
   if (!active) return;
   return storePromise ??= (async () => {
@@ -30,7 +29,7 @@ async function loadStore(): Promise<Store | undefined> {
       if (typeof create !== "function") return;
       // Legacy hosts share a 1000-row plugin budget: ingress reserves 950 rows.
       const options = { namespace: "zulip.durable-bindings.v1", maxEntries: 40, overflowPolicy: "reject-new", defaultTtlMs: 30 * 86400_000 };
-      const store = runtimeOpen ? await runtimeOpen(options) : create("zulip", options);
+      const store = create("zulip", options);
       if (typeof store.update !== "function" || typeof store.deleteIf !== "function") return;
       return store as Store;
     } catch { return; }
@@ -38,12 +37,12 @@ async function loadStore(): Promise<Store | undefined> {
 }
 export class DurableBindings {
   constructor(private readonly open: () => Promise<Store | undefined> = loadStore) {}
-  async claim(key: string, record: Omit<DurableRecord, "generation">, expectedGeneration?: string): Promise<DurableRecord | undefined> {
+  async claim(key: string, record: Omit<DurableRecord, "generation">, expectedGeneration?: string, isCurrent?: () => boolean): Promise<DurableRecord | undefined> {
     const store = await this.open(); if (!store) return;
-    const next = { ...record, generation: randomUUID() };
+    const next = { ...Object.fromEntries(Object.entries(record).filter(([, value]) => value !== undefined)), generation: randomUUID() } as DurableRecord;
     // Atomic generation replacement ensures writers from the old lifetime lose.
     const expected = expectedGeneration ?? (record as DurableRecord).generation;
-    const claimed = await store.update(key, current => expected && current?.generation !== expected ? undefined : next);
+    const claimed = await store.update(key, current => isCurrent && !isCurrent() || expected && current?.generation !== expected ? undefined : next);
     return claimed ? next : undefined;
   }
   async get(key: string): Promise<DurableRecord | undefined> {
@@ -51,7 +50,8 @@ export class DurableBindings {
   }
   async save(key: string, record: DurableRecord): Promise<boolean> {
     const store = await this.open(); if (!store) return false;
-    return store.update(key, current => current?.generation === record.generation ? record : undefined);
+    const value = Object.fromEntries(Object.entries(record).filter(([, field]) => field !== undefined)) as DurableRecord;
+    return store.update(key, current => current?.generation === record.generation ? value : undefined);
   }
   async current(key: string, record: DurableRecord): Promise<boolean> {
     const store = await this.open(); return !store || (await store.lookup(key))?.generation === record.generation;

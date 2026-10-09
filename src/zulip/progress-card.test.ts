@@ -1,8 +1,64 @@
 import { describe, it, expect, vi } from "vitest";
 import { validateProgressCardEvent, ZulipProgressCards } from "./progress-card.js";
 import { createZulipClient } from "./client.js";
+import { durableBindings, bindingScope, type DurableRecord } from "./durable-bindings.js";
 const event = (revision: number | null, markdown = "Working") => ({ toolName: "progress_card", params: { markdown }, result: { details: { revision, steps: null } } });
 describe("progress card trust boundary", () => {
+  it("honors a POST Retry-After without an early transport retry", async () => {
+    vi.useFakeTimers();
+    let attempts = 0;
+    const fetchImpl = vi.fn(async () => ++attempts === 1 ? new Response(JSON.stringify({ result: "error" }), { status: 429, headers: { "Retry-After": "5" } }) : new Response(JSON.stringify({ result: "success", id: 42 })));
+    const client = createZulipClient({ baseUrl: "https://zulip.test", email: "bot@test", apiKey: "test", fetchImpl });
+    const cards = new ZulipProgressCards();
+    try {
+      cards.bind("one", { accountId: "default", client, enabled: () => true, conversation: { kind: "stream", stream: "18", topic: "one" } });
+      cards.accept(event(1), "one"); await vi.advanceTimersByTimeAsync(300);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(4900); expect(fetchImpl).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(100); expect(fetchImpl).toHaveBeenCalledTimes(2);
+    } finally { cards.stop(); vi.useRealTimers(); }
+  });
+  it("rotates exactly once after a permanent edit failure and skips unchanged text", async () => {
+    vi.useFakeTimers();
+    const calls: { url: string; method?: string }[] = [];
+    const client = createZulipClient({ baseUrl: "https://zulip.test", email: "bot@test", apiKey: "test", fetchImpl: async (url, init) => { calls.push({ url: String(url), method: init?.method }); return init?.method === "PATCH" ? new Response(JSON.stringify({ result: "error" }), { status: 403 }) : new Response(JSON.stringify({ result: "success", id: calls.length === 1 ? 42 : 99 })); } });
+    const cards = new ZulipProgressCards();
+    try {
+      cards.bind("one", { accountId: "default", client, enabled: () => true, conversation: { kind: "stream", stream: "18", topic: "one" } });
+      cards.accept(event(1), "one"); await vi.advanceTimersByTimeAsync(300);
+      cards.accept(event(2, "Changed"), "one"); await vi.advanceTimersByTimeAsync(300);
+      expect(calls.map(call => call.method)).toEqual(["POST", "PATCH", "POST"]);
+      cards.accept(event(3, "Changed"), "one"); await vi.advanceTimersByTimeAsync(300);
+      expect(calls).toHaveLength(3);
+    } finally { cards.stop(); vi.useRealTimers(); }
+  });
+  it("fences a retired off-on recovery and edits the persisted card with its revision floor", async () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ result: "success", id: 99 })));
+    const client = createZulipClient({ baseUrl: "https://zulip.test", email: "bot@test", apiKey: "test", fetchImpl });
+    const record: DurableRecord = { kind: "card", accountId: "default", scope: bindingScope(client), generation: "old", messageId: "42", sessionKey: "one", revision: 5, expiresAt: Date.now() + 60000 };
+    let releaseRetired!: () => void;
+    let entered!: () => void; const claiming = new Promise<void>(resolve => { entered = resolve; });
+    let claims = 0;
+    const spies = [vi.spyOn(durableBindings, "get").mockResolvedValue(record), vi.spyOn(durableBindings, "claim").mockImplementation(async (_key, value, _generation, isCurrent) => {
+      if (++claims === 1) { entered(); await new Promise<void>(resolve => { releaseRetired = resolve; }); }
+      return isCurrent?.() ? { ...value, generation: "new" } : undefined;
+    }), vi.spyOn(durableBindings, "current").mockResolvedValue(true), vi.spyOn(durableBindings, "save").mockResolvedValue(true)];
+    const cards = new ZulipProgressCards();
+    const route = { accountId: "default", client, enabled: () => true, conversation: { kind: "stream" as const, stream: "18", topic: "one" } };
+    try {
+      cards.bind("one", route); await claiming;
+      cards.bind("one", { ...route, enabled: () => false });
+      cards.bind("one", route);
+      releaseRetired();
+      cards.accept(event(4), "one"); await vi.advanceTimersByTimeAsync(300);
+      expect(fetchImpl).not.toHaveBeenCalled();
+      cards.accept(event(6, "After restart"), "one"); await vi.advanceTimersByTimeAsync(300);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(String(fetchImpl.mock.calls[0][0])).toContain("/messages/42");
+      expect(fetchImpl.mock.calls[0][1]?.method).toBe("PATCH");
+    } finally { cards.stop(); for (const spy of spies) spy.mockRestore(); vi.useRealTimers(); }
+  });
   it("does not let default-off traffic exhaust enabled conversation routes", async () => {
     vi.useFakeTimers();
     try {

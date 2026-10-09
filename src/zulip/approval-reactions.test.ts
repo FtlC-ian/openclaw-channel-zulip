@@ -35,6 +35,16 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); zulipApprovalReactions.clearAccount("default"); zulipApprovalReactions.clearAccount("other"); });
 
 describe("approval reaction control boundary", () => {
+  it("keeps a failed approval recovery claim inert", async () => {
+    const record: DurableRecord = { kind: "approval", accountId: "default", scope: "hash", generation: "old", messageId: "10", id: "req-1", approvalKind: "exec", decisions: ["allow-once", "deny"], emojis: [["check", "allow-once"]], expiresAt: Date.now() + 60000 };
+    const spies = [vi.spyOn(durableBindings, "records").mockResolvedValue([{ key: 'approval:["default","10"]', record }]), vi.spyOn(durableBindings, "claim").mockResolvedValue(undefined)];
+    try {
+      await store.restore({ cfg, accountId: "default", client, request: async () => [{ id: "req-1" }] });
+      expect(await command()).toBe(false);
+      expect(mocks.resolve).not.toHaveBeenCalled();
+      expect(request).not.toHaveBeenCalled();
+    } finally { for (const spy of spies) spy.mockRestore(); }
+  });
   it.each([true, false])("reconciles restart approval pending=%s without replaying a resolution", async (pending) => {
     const record: DurableRecord = { kind: "approval", accountId: "default", scope: "hash", generation: "old", messageId: "10", companionId: "11", id: "req-1", approvalKind: "exec", decisions: ["allow-once", "deny"], emojis: [["check", "allow-once"], ["cross_mark", "deny"]], expiresAt: Date.now() + 60000 };
     const spies = [vi.spyOn(durableBindings, "records").mockResolvedValue([{ key: 'approval:["default","10"]', record }]), vi.spyOn(durableBindings, "claim").mockImplementation(async (_key, value) => ({ ...value, generation: "new" })), vi.spyOn(durableBindings, "current").mockResolvedValue(true), vi.spyOn(durableBindings, "remove").mockResolvedValue()];

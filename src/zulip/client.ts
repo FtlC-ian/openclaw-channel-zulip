@@ -558,6 +558,7 @@ export async function sendZulipStreamMessage(
     topic: string;
     content: string;
     widgetContent?: unknown;
+    maxRetries?: number;
   },
 ): Promise<{ id?: number }> {
   const body = new URLSearchParams({
@@ -579,6 +580,7 @@ export async function sendZulipStreamMessage(
       method: "POST",
       body: body.toString(),
     },
+    { maxRetries: params.maxRetries },
   );
   assertSuccess(payload, "Zulip stream send failed");
   return { id: payload.id };
@@ -590,6 +592,7 @@ export async function sendZulipPrivateMessage(
     to: string | string[];
     content: string;
     widgetContent?: unknown;
+    maxRetries?: number;
   },
 ): Promise<{ id?: number }> {
   const recipients = Array.isArray(params.to) ? params.to : [params.to];
@@ -608,6 +611,7 @@ export async function sendZulipPrivateMessage(
       method: "POST",
       body: body.toString(),
     },
+    { maxRetries: params.maxRetries },
   );
   assertSuccess(payload, "Zulip private send failed");
   return { id: payload.id };

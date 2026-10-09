@@ -38,6 +38,7 @@ it.each(["2026.9.6", "2026.10.1-beta.2", "2026.9.3"])("reconciles a question res
     await store.restore({ cfg: {}, accountId: "default", client: {} as never, hostVersion });
     if (hostVersion === "2026.9.3") { expect(mocks.resolveOption).not.toHaveBeenCalled(); expect(mocks.deleteZulipMessage).toHaveBeenCalledWith(expect.anything(), { messageId: "9001" }); return; }
     expect(await mocks.resolveOption.mock.calls[0][0].authorize()).toBe(false);
+    expect(durableBindings.claim).toHaveBeenCalledWith(`question:default:${nonce}`, expect.objectContaining({ senderHash: record.senderHash, optionHashes: record.optionHashes, expiresAt: record.expiresAt }), "old");
     mocks.resolveOption.mockResolvedValue({ status: "answered", optionValue: "Staging" });
     const message = { accountId: "default", conversation: record.conversation!, senderId: "alice@example.test", text: `ocq1:${nonce}:0` };
     expect((await store.intercept({ cfg: {}, message }))).toMatchObject({ status: "answered", optionValue: "Staging" });
@@ -48,6 +49,21 @@ it.each(["2026.9.6", "2026.10.1-beta.2", "2026.9.3"])("reconciles a question res
 });
 
 const questionId = "ask_0123456789abcdef0123456789abcdef";
+it("drops a lost question recovery claim and fences its registered terminal callback", async () => {
+  const nonce = "abcdefghijklmnopqrstuv";
+  const record: DurableRecord = { kind: "question", accountId: "default", scope: "hash", generation: "old", messageId: "9001", id: questionId, nonce, senderHash: bindingHash("alice@example.test"), optionHashes: [bindingHash("staging"), bindingHash("production")], expiresAt: Date.now() + 60000, conversation: { kind: "stream", stream: "18", topic: "restart" } };
+  const spies = [vi.spyOn(durableBindings, "records").mockResolvedValue([{ key: `question:default:${nonce}`, record }]), vi.spyOn(durableBindings, "claim").mockResolvedValue(undefined)];
+  const store = new ZulipQuestionZformStore();
+  try {
+    mocks.resolveOption.mockResolvedValue({ status: "denied" });
+    await store.restore({ cfg: {}, accountId: "default", client: {} as never, hostVersion: "2026.10.1-beta.2" });
+    expect(await store.intercept({ cfg: {}, message: { accountId: "default", conversation: record.conversation!, senderId: "alice@example.test", text: `ocq1:${nonce}:0` } })).toMatchObject({ status: "stale" });
+    expect(mocks.resolveOption).toHaveBeenCalledTimes(1);
+    await mocks.registerChannelDelivery.mock.calls[0][0].finalize("Answered");
+    expect(mocks.sendZulipStreamMessage).not.toHaveBeenCalled();
+    expect(mocks.deleteZulipMessage).not.toHaveBeenCalled();
+  } finally { store.clear(); for (const spy of spies) spy.mockRestore(); }
+});
 const options = ["Staging", "Production"];
 
 function payload(overrides: Record<string, unknown> = {}) {

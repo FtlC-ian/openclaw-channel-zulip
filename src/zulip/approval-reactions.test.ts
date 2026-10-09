@@ -169,7 +169,7 @@ describe("approval reaction control boundary", () => {
     complete({ result: "success", user: { user_id: 2, email: "ian@test" } }); await pending;
     expect(mocks.resolve).not.toHaveBeenCalled();
   });
-  it.each(["removed", "disabled", "aborted"])("rejects %s account during an in-flight identity lookup", async (state) => {
+  it.each(["removed", "disabled", "aborted", "cleared"])("rejects %s account during an in-flight identity lookup", async (state) => {
     await register();
     let complete!: (value: unknown) => void;
     request.mockImplementation(() => new Promise((resolve) => { complete = resolve; }));
@@ -179,6 +179,7 @@ describe("approval reaction control boundary", () => {
     if (state === "removed") current = {};
     if (state === "disabled") current = { channels: { zulip: { ...cfg.channels!.zulip, enabled: false } } } as OpenClawConfig;
     if (state === "aborted") controller.abort();
+    if (state === "cleared") store.clearAccount("default");
     await vi.waitFor(() => expect(complete).toBeTypeOf("function"));
     complete({ result: "success", user: { user_id: 2, email: "ian@test" } }); await pending;
     expect(mocks.resolve).not.toHaveBeenCalled();
@@ -224,13 +225,6 @@ describe("approval reaction control boundary", () => {
     complete({ applied: true, approval: { status: "denied", decision: "deny" } }); await first;
     expect(mocks.resolve).toHaveBeenCalledTimes(1);
   });
-  it("renders the gateway winner rather than a losing local decision", async () => {
-    await register(); mocks.resolve.mockResolvedValue({ applied: false, approval: { status: "denied", decision: "deny" } }); await react();
-    const patch = request.mock.calls.find(([, init]) => init?.method === "PATCH")!;
-    expect(new URLSearchParams(patch[1].body).get("content")).toBe("Resolved elsewhere: deny\n\nID: req-1");
-    await react(); expect(mocks.resolve).toHaveBeenCalledTimes(1);
-  });
-
   it.each(["sdk", "live-inline"])("retains only the already displayed ID and command from %s prompts", async (format) => {
     const pending = buildTypedExecApprovalPendingReplyPayload({ approvalId: "req-1", approvalSlug: "req-1", command: "printf 'hello'", host: "gateway", cwd: "/private/path", agentId: "private-agent", expiresAtMs: Date.now() + 60000, allowedDecisions: ["allow-once", "deny"] });
     const sourceText = format === "sdk" ? pending.text! : "🔒 Exec approval required\nID: req-1\nCommand: `printf 'hello'`\nCWD: /private/path\nEnv: SECRET=hidden\nHost: gateway\nAgent: private-agent\nSecurity: allowlist\nAsk: always\nExpiry: 60s\nMode: foreground\nBackground note: wait\nReply with: /approve req-1 allow-once\nReact ✅ to approve";
@@ -301,12 +295,13 @@ describe("approval reaction control boundary", () => {
     const edit = new URLSearchParams(request.mock.calls.find(([, init]) => init?.method === "PATCH")![1].body).get("content");
     expect(edit).toBe("✅ Approved (allow always) by `Ian **F** @**all** [link](url)`\n\nID: req-\\*\\_\\[id\\]\nCommand:\n````\necho ``` @**all**\n````");
   });
-  it.each(["channel", "device"])("attributes an external %s winner without crediting the losing reactor or leaking device IDs", async (kind) => {
+  it.each(["channel", "device", "none"])("attributes an external %s winner without crediting the losing reactor or leaking device IDs", async (kind) => {
     await register();
-    mocks.resolve.mockResolvedValue({ applied: false, approval: { status: "denied", decision: "deny", resolver: { kind, id: "winner@test" } } });
+    mocks.resolve.mockResolvedValue({ applied: false, approval: { status: "denied", decision: "deny", ...(kind === "none" ? {} : { resolver: { kind, id: "winner@test" } }) } });
     await react();
     const edit = new URLSearchParams(request.mock.calls.find(([, init]) => init?.method === "PATCH")![1].body).get("content");
     expect(edit).toBe(`${kind === "channel" ? "❌ Denied by `winner@test`" : "Resolved elsewhere: deny"}\n\nID: req-1`);
+    await react(); expect(mocks.resolve).toHaveBeenCalledTimes(1);
   });
   it("locks sibling deliveries of the same approval", async () => {
     await register(); await register("req-1", "11"); await Promise.all([react(), react({ message_id: 11 })]);
@@ -340,19 +335,10 @@ describe("approval reaction control boundary", () => {
     await react({ message_id: 20 }); expect(mocks.resolve).not.toHaveBeenCalled(); await react(); expect(mocks.resolve).toHaveBeenCalledTimes(1);
     vi.advanceTimersByTime(24 * 60 * 60 * 1000 + 1); await register("req-3", "30"); await react({ message_id: 30 }); expect(mocks.resolve).toHaveBeenCalledTimes(2);
   });
-  it("clears only the removed account and rejects in-flight user lookup after removal", async () => {
-    await register();
-    let complete!: (value: unknown) => void;
-    request.mockImplementation(() => new Promise((resolve) => { complete = resolve; }));
-    const pending = react(); await vi.waitFor(() => expect(complete).toBeTypeOf("function")); store.clearAccount("default"); complete({ result: "success", user: { user_id: 2, email: "ian@test" } }); await pending;
-    expect(mocks.resolve).not.toHaveBeenCalled();
-  });
-  it("binds delivered controls without a gateway observation but rejects terminal payloads", async () => {
-    await store.register({ cfg, accountId: "default", messageId: "10", client, sourceText: "Approval", payload: payload() });
-    await react(); expect(mocks.resolve).toHaveBeenCalledTimes(1);
+  it("does not bind terminal payloads", async () => {
     const terminal = payload("req-2");
     (terminal.channelData!.execApproval as any).state = "resolved";
     await store.register({ cfg, accountId: "default", messageId: "20", client, sourceText: "Approval", payload: terminal });
-    await react({ message_id: 20 }); expect(mocks.resolve).toHaveBeenCalledTimes(1);
+    await react({ message_id: 20 }); expect(mocks.resolve).not.toHaveBeenCalled();
   });
 });

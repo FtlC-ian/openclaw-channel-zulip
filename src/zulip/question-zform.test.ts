@@ -738,9 +738,11 @@ describe("ZulipQuestionZformStore resolution", () => {
     ).resolves.toMatchObject({ recognized: true, status: "stale" });
   });
 
-  it("cleans up the replacement when deleting the widget source fails", async () => {
+  it("cleans up the replacement, and logs a cleanup failure, when deleting the widget source fails", async () => {
     const logDebug = vi.fn();
-    mocks.deleteZulipMessage.mockRejectedValueOnce(new Error("synthetic source delete failure"));
+    mocks.deleteZulipMessage
+      .mockRejectedValueOnce(new Error("synthetic source delete failure"))
+      .mockRejectedValueOnce(new Error("synthetic cleanup delete failure"));
     const store = new ZulipQuestionZformStore();
     const preparation = register(store, { logDebug });
     const finalize = mocks.registerChannelDelivery.mock.calls[0]![0].finalize as (
@@ -755,33 +757,6 @@ describe("ZulipQuestionZformStore resolution", () => {
     expect(mocks.deleteZulipMessage).toHaveBeenNthCalledWith(2, expect.anything(), {
       messageId: "9102",
     });
-    expect(logDebug).toHaveBeenCalledWith(expect.stringContaining("synthetic source delete failure"));
-    await expect(
-      store.intercept({
-        message: {
-          accountId: "default",
-          conversation: { kind: "stream", stream: "debbie", topic: "deploys" },
-          senderId: "alice@example.test",
-          text: preparation.widgetContent.extra_data.choices[0]!.reply,
-        },
-        cfg: {},
-      }),
-    ).resolves.toMatchObject({ recognized: true, status: "stale" });
-  });
-
-  it("logs replacement cleanup failure after widget source deletion fails", async () => {
-    const logDebug = vi.fn();
-    mocks.deleteZulipMessage
-      .mockRejectedValueOnce(new Error("synthetic source delete failure"))
-      .mockRejectedValueOnce(new Error("synthetic cleanup delete failure"));
-    const store = new ZulipQuestionZformStore();
-    const preparation = register(store, { logDebug });
-    const finalize = mocks.registerChannelDelivery.mock.calls[0]![0].finalize as (
-      statusLine: string,
-    ) => Promise<void>;
-
-    await expect(finalize("Answered: Staging")).resolves.toBeUndefined();
-
     expect(logDebug).toHaveBeenCalledWith(expect.stringContaining("synthetic source delete failure"));
     expect(logDebug).toHaveBeenCalledWith(expect.stringContaining("synthetic cleanup delete failure"));
     await expect(

@@ -95,8 +95,6 @@ export type ZulipSendResult = {
   meta?: { routingFallback: ZulipRoutingFallback };
 };
 
-export { normalizeLegacyZulipTarget, parseZulipTarget, type ZulipTarget } from "./destination.js";
-
 const getCore = () => getZulipRuntime();
 
 function presentationToZulipWidgetContent(

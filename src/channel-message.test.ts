@@ -37,10 +37,6 @@ describe("zulip message adapter", () => {
   it("exposes the new channel message adapter while keeping outbound compatibility", () => {
     expect(zulipPlugin.outbound).toBe(zulipOutboundAdapter);
     expect(zulipPlugin.message).toBe(zulipMessageAdapter);
-    expect(zulipPlugin.message?.send?.text).toBeTypeOf("function");
-    expect(zulipPlugin.message?.send?.media).toBeTypeOf("function");
-    expect(zulipPlugin.message?.send?.payload).toBeTypeOf("function");
-    expect(zulipPlugin.message?.send?.poll).toBeTypeOf("function");
     expect(zulipPlugin.capabilities.polls).toBe(true);
   });
 

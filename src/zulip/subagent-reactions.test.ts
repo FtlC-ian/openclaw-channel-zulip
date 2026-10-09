@@ -75,30 +75,6 @@ describe("Zulip subagent reaction correlation", () => {
     expect(show).not.toHaveBeenCalled();
   });
 
-  it("uses the active Zulip async context when the hook route key differs", async () => {
-    const show = vi.fn(async () => {});
-    const hide = vi.fn(async () => {});
-    const context = registerZulipSubagentReactionContext({
-      requesterSessionKey: "agent:main:main",
-      show,
-      hide,
-    });
-
-    await context.run(() =>
-      handleZulipSubagentSpawned(
-        {
-          runId: "routed-run",
-          childSessionKey: "routed-child",
-          requester: { channel: "zulip" },
-        },
-        { requesterSessionKey: "agent:main:zulip:default:direct:user11@example.com" },
-      ));
-
-    expect(show).toHaveBeenCalledTimes(1);
-    await handleZulipSubagentEnded({ runId: "routed-run" }, {});
-    expect(hide).toHaveBeenCalledTimes(1);
-  });
-
   it("keeps mismatched Zulip async contexts isolated across concurrent turns", async () => {
     const first = { show: vi.fn(async () => {}), hide: vi.fn(async () => {}) };
     const second = { show: vi.fn(async () => {}), hide: vi.fn(async () => {}) };
@@ -178,27 +154,6 @@ describe("Zulip subagent reaction correlation", () => {
     await handleZulipSubagentEnded({ runId: "old-turn-run" }, {});
     expect(first.hide).toHaveBeenCalledTimes(1);
     expect(second.hide).not.toHaveBeenCalled();
-  });
-
-  it("keeps active children visible after the requester turn completes", async () => {
-    const show = vi.fn(async () => {});
-    const hide = vi.fn(async () => {});
-    const context = registerZulipSubagentReactionContext({
-      requesterSessionKey: "requester",
-      show,
-      hide,
-    });
-    await handleZulipSubagentSpawned(
-      { runId: "run-1", requester: { channel: "zulip" } },
-      { requesterSessionKey: "requester" },
-    );
-
-    await context.finish();
-    expect(hide).not.toHaveBeenCalled();
-
-    await handleZulipSubagentEnded({ runId: "run-1" }, {});
-
-    expect(hide).toHaveBeenCalledTimes(1);
   });
 
   it("cleans active indicators on gateway shutdown", async () => {

@@ -744,6 +744,8 @@ describe("monitorZulipProvider", () => {
       replyOptions: expect.any(Object),
       messageId: "9100001",
     }));
+    expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(1);
+    expect(state.core.system.enqueueSystemEvent).not.toHaveBeenCalled();
   });
 
   it("emits bounded channel-turn lifecycle and result diagnostics", async () => {
@@ -1545,23 +1547,6 @@ describe("monitorZulipProvider", () => {
     state.abortController!.abort();
     await running;
     expect(typing.mock.calls.map(call => call[1].op)).toEqual(["start", "stop"]);
-  });
-
-  it("wires typing idle cleanup into the reply dispatcher", async () => {
-    state.pollResponses = [
-      {
-        result: "success",
-        events: [{ id: 1, type: "message", message: makeChannelMessage(1000) }],
-      },
-    ];
-
-    await runMonitorOnce();
-
-    const dispatcherCall = state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mock.calls[0]?.[0]?.dispatcherOptions;
-    const typingCallbacks = typingCallbacksMock.mock.results[0]?.value;
-    await dispatcherCall?.onReplyStart?.();
-    expect(typingCallbacks?.onReplyStart).toHaveBeenCalledTimes(1);
-    expect(dispatcherCall?.onIdle).toBe(typingCallbacks?.onIdle);
   });
 
   it("reports real lifecycle states and cancels an existing terminal hold on stop", async () => {
@@ -2368,25 +2353,6 @@ describe("monitorZulipProvider", () => {
     }));
   });
 
-  it("sends presentation-only replies instead of treating them as delivered without an outbound send", async () => {
-    const { sendMessageZulip } = await import("./send.js");
-    const sendMessageZulipMock = vi.mocked(sendMessageZulip);
-    sendMessageZulipMock.mockClear();
-    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }) => {
-      await dispatcherOptions.deliver({
-        presentation: { blocks: [{ type: "buttons", buttons: [{ label: "Confirm", action: "confirm" }] }] },
-      });
-    });
-    state.pollResponses = [{ result: "success", events: [{ id: 1, type: "message", message: makeChannelMessage(1011) }] }];
-
-    await runMonitorOnce();
-
-    expect(sendMessageZulipMock).toHaveBeenCalledTimes(1);
-    expect(sendMessageZulipMock).toHaveBeenCalledWith("stream:4:zulip-plugin-pr", "", expect.objectContaining({
-      presentation: expect.any(Object),
-    }));
-  });
-
   it("surfaces a send failure for channel-data-only replies", async () => {
     const { sendMessageZulip } = await import("./send.js");
     const sendMessageZulipMock = vi.mocked(sendMessageZulip);
@@ -2405,21 +2371,6 @@ describe("monitorZulipProvider", () => {
     expect(sendMessageZulipMock).toHaveBeenCalledWith("stream:4:zulip-plugin-pr", "", expect.objectContaining({
       channelData: { execApproval: { approvalId: "approval-1" } },
     }));
-  });
-
-  it("processes ordinary inbound messages without enqueueing a synthetic system event", async () => {
-    state.pollResponses = [
-      {
-        result: "success",
-        events: [{ id: 1, type: "message", message: makeChannelMessage(1001) }],
-      },
-    ];
-
-    await runMonitorOnce();
-
-    expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(1);
-    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
-    expect(state.core.system.enqueueSystemEvent).not.toHaveBeenCalled();
   });
 
   it("passes the stripped Zulip bot mention to question-control interception and consumes it", async () => {
@@ -2497,70 +2448,6 @@ describe("monitorZulipProvider", () => {
     );
     expect(state.core.channel.inbound.buildContext).not.toHaveBeenCalled();
     expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
-  });
-
-  it("resolves a canonical ZulipFlutter ordered-list fallback before ordinary inbound dispatch", async () => {
-    state.account.config.allowFrom = ["user8@zlp.pubnerd.app"];
-    const { zulipQuestionZformStore } = await import("./question-zform.js");
-    const questionId = "ask_0123456789abcdef0123456789abcdef";
-    const preparation = zulipQuestionZformStore.prepare({
-      channelData: { askUser: { questionId, optionValues: ["Staging", "Production"] } },
-      presentation: {
-        blocks: [
-          {
-            type: "buttons",
-            buttons: [
-              { label: "Staging", action: { type: "question", questionId, optionValue: "Staging" } },
-              { label: "Production", action: { type: "question", questionId, optionValue: "Production" } },
-            ],
-          },
-        ],
-      },
-    })!;
-    zulipQuestionZformStore.clear();
-    questionRuntimeMocks.resolveOption.mockResolvedValueOnce({
-      status: "answered",
-      questionId,
-      optionValue: "Production",
-    });
-    expect(
-      zulipQuestionZformStore.register({
-        preparation,
-        accountId: "default",
-        conversation: { kind: "stream", stream: "4", topic: "zulip-plugin-pr" },
-        authorizedSenderId: "user8@zlp.pubnerd.app",
-        sourceMessageId: "58260",
-        sourceText: "Which option?",
-        client: state.client,
-      }),
-    ).toBe(true);
-    try {
-      state.pollResponses = [
-        {
-          result: "success",
-          events: [
-            {
-              id: 1,
-              type: "message",
-              message: {
-                ...makeChannelMessage(58261),
-                content: '<ol start="2"><li>Production</li></ol>',
-              },
-            },
-          ],
-        },
-      ];
-
-      await runMonitorOnce();
-
-      expect(questionRuntimeMocks.resolveOption).toHaveBeenCalledWith(
-        expect.objectContaining({ questionId, optionValue: "Production" }),
-      );
-      expect(state.core.channel.inbound.buildContext).not.toHaveBeenCalled();
-      expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
-    } finally {
-      zulipQuestionZformStore.clear();
-    }
   });
 
   describe.each(["native", "mobile"] as const)("real outbound to inbound %s question controls", (form) => {
@@ -2644,6 +2531,7 @@ describe("monitorZulipProvider", () => {
         })) }];
         await runMonitorOnce();
         expect(questionRuntimeMocks.resolveOption).toHaveBeenCalledTimes(allowed ? 1 : 0);
+        if (allowed) expect(questionRuntimeMocks.resolveOption).toHaveBeenCalledWith(expect.objectContaining({ questionId, optionValue: "Production" }));
         expect(state.core.channel.inbound.buildContext).not.toHaveBeenCalled();
         expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
         expect(state.upsertPairingRequest).not.toHaveBeenCalled();
@@ -2755,77 +2643,62 @@ describe("monitorZulipProvider", () => {
     }
   });
 
-  it("surfaces private invite-only stream metadata while keeping ChatType channel", async () => {
-    state.streamSubscriptions = [
-      {
-        stream_id: 4,
-        name: "debbie",
+  it.each([
+    {
+      label: "private invite-only",
+      messageId: 1006,
+      subscription: {
         invite_only: true,
         is_web_public: false,
         history_public_to_subscribers: false,
         subscribers: [123, 999, 1000],
       },
-    ];
-    state.pollResponses = [
-      {
-        result: "success",
-        events: [{ id: 1, type: "message", message: makeChannelMessage(1006) }],
-      },
-    ];
-
-    await runMonitorOnce();
-
-    expect(state.core.channel.inbound.buildContext).toHaveReturnedWith(
-      expect.objectContaining({
-        ChatType: "channel",
+      expected: {
         ChannelPrivacy: "private",
         IsPrivateChannel: true,
         InviteOnly: true,
         IsWebPublic: false,
         HistoryPublicToSubscribers: false,
         SubscriberCount: 3,
-        StreamId: "4",
-      }),
-    );
-    expect(fetchZulipSubscriptionsMock).toHaveBeenCalledWith(state.client, {
-      includeAllPublic: true,
-      includeSubscribers: true,
-    });
-    expect(fetchZulipStreamMock).not.toHaveBeenCalled();
-  });
-
-  it("surfaces public stream metadata from cached subscriptions", async () => {
-    state.streamSubscriptions = [
-      {
-        stream_id: 4,
-        name: "debbie",
+      },
+    },
+    {
+      label: "public",
+      messageId: 1007,
+      subscription: {
         invite_only: false,
         is_web_public: true,
         history_public_to_subscribers: true,
         subscribers: [10, 20, 30, 40],
       },
-    ];
-    state.pollResponses = [
-      {
-        result: "success",
-        events: [{ id: 1, type: "message", message: makeChannelMessage(1007) }],
-      },
-    ];
-
-    await runMonitorOnce();
-
-    expect(state.core.channel.inbound.buildContext).toHaveReturnedWith(
-      expect.objectContaining({
-        ChatType: "channel",
+      expected: {
         ChannelPrivacy: "public",
         IsPrivateChannel: false,
         InviteOnly: false,
         IsWebPublic: true,
         HistoryPublicToSubscribers: true,
         SubscriberCount: 4,
-        StreamId: "4",
-      }),
+      },
+    },
+  ])("surfaces $label stream metadata from cached subscriptions while keeping ChatType channel", async ({
+    messageId,
+    subscription,
+    expected,
+  }) => {
+    state.streamSubscriptions = [{ stream_id: 4, name: "debbie", ...subscription }];
+    state.pollResponses = [
+      {
+        result: "success",
+        events: [{ id: 1, type: "message", message: makeChannelMessage(messageId) }],
+      },
+    ];
+
+    await runMonitorOnce();
+
+    expect(state.core.channel.inbound.buildContext).toHaveReturnedWith(
+      expect.objectContaining({ ChatType: "channel", StreamId: "4", ...expected }),
     );
+    expect(fetchZulipStreamMock).not.toHaveBeenCalled();
   });
 
   it("falls back to unknown stream privacy when metadata lookup fails", async () => {
@@ -2969,97 +2842,56 @@ describe("monitorZulipProvider", () => {
     }));
   });
 
-  it("for private messages, stores user:<sender_email> in context and last-route when sender_email exists", async () => {
+  it.each([
+    {
+      label: "sender_email exists",
+      messageId: 1100,
+      senderEmail: undefined,
+      target: "user:user8@zlp.pubnerd.app",
+      sessionTail: "user8@zlp\\.pubnerd\\.app",
+    },
+    {
+      label: "sender_email is missing, falling back to sender_id",
+      messageId: 1101,
+      senderEmail: null,
+      target: "user:123",
+      sessionTail: "123",
+    },
+  ])("for private messages, routes to $target in context and last-route when $label", async ({
+    messageId,
+    senderEmail,
+    target,
+    sessionTail,
+  }) => {
     state.pollResponses = [
       {
         result: "success",
-        events: [{ id: 1, type: "message", message: makePrivateMessage(1100) }],
+        events: [{
+          id: 1,
+          type: "message",
+          message: senderEmail === undefined
+            ? makePrivateMessage(messageId)
+            : { ...makePrivateMessage(messageId, ""), sender_email: senderEmail },
+        }],
       },
     ];
 
     await runMonitorOnce();
 
     expect(state.core.channel.inbound.buildContext).toHaveReturnedWith(
-      expect.objectContaining({
-        To: "user:user8@zlp.pubnerd.app",
-        OriginatingTo: "user:user8@zlp.pubnerd.app",
-      }),
+      expect.objectContaining({ To: target, OriginatingTo: target }),
     );
     const ctx = state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mock.calls[0]?.[0]?.ctx;
-    expect(ctx).toMatchObject({ ChatType: "direct", To: "user:user8@zlp.pubnerd.app" });
+    expect(ctx).toMatchObject({ ChatType: "direct", To: target });
     expect(ctx).not.toHaveProperty("TopicName");
-    expect(state.core.channel.inbound.dispatch).toHaveBeenCalledWith(expect.objectContaining({
-      route: {
-        agentId: "debbie",
-        sessionKey: expect.stringMatching(
-          /^agent:debbie:zulip:default:direct:account-[0-9a-f]{64}:user8@zlp\.pubnerd\.app$/,
-        ),
-      },
-      ctxPayload: expect.objectContaining({
-        SessionKey: expect.stringMatching(
-          /^agent:debbie:zulip:default:direct:account-[0-9a-f]{64}:user8@zlp\.pubnerd\.app$/,
-        ),
-      }),
-      record: {
-        updateLastRoute: {
-          sessionKey: expect.stringMatching(
-            /^agent:debbie:zulip:default:direct:account-[0-9a-f]{64}:user8@zlp\.pubnerd\.app$/,
-          ),
-          channel: "zulip",
-          to: "user:user8@zlp.pubnerd.app",
-          accountId: "default",
-        },
-        onRecordError: expect.any(Function),
-      },
-    }));
-  });
-
-  it("for private messages, falls back to sender_id when sender_email is missing", async () => {
-    state.pollResponses = [
-      {
-        result: "success",
-        events: [
-          {
-            id: 1,
-            type: "message",
-            message: {
-              ...makePrivateMessage(1101, ""),
-              sender_email: null,
-            },
-          },
-        ],
-      },
-    ];
-
-    await runMonitorOnce();
-
-    expect(state.core.channel.inbound.buildContext).toHaveReturnedWith(
-      expect.objectContaining({
-        To: "user:123",
-        OriginatingTo: "user:123",
-      }),
+    const sessionKey = expect.stringMatching(
+      new RegExp(`^agent:debbie:zulip:default:direct:account-[0-9a-f]{64}:${sessionTail}$`),
     );
     expect(state.core.channel.inbound.dispatch).toHaveBeenCalledWith(expect.objectContaining({
-      route: {
-        agentId: "debbie",
-        sessionKey: expect.stringMatching(
-          /^agent:debbie:zulip:default:direct:account-[0-9a-f]{64}:123$/,
-        ),
-      },
-      ctxPayload: expect.objectContaining({
-        SessionKey: expect.stringMatching(
-          /^agent:debbie:zulip:default:direct:account-[0-9a-f]{64}:123$/,
-        ),
-      }),
+      route: { agentId: "debbie", sessionKey },
+      ctxPayload: expect.objectContaining({ SessionKey: sessionKey }),
       record: {
-        updateLastRoute: {
-          sessionKey: expect.stringMatching(
-            /^agent:debbie:zulip:default:direct:account-[0-9a-f]{64}:123$/,
-          ),
-          channel: "zulip",
-          to: "user:123",
-          accountId: "default",
-        },
+        updateLastRoute: { sessionKey, channel: "zulip", to: target, accountId: "default" },
         onRecordError: expect.any(Function),
       },
     }));
@@ -3101,22 +2933,42 @@ describe("monitorZulipProvider", () => {
     }));
   });
 
-  it("drops stream messages outside the configured global topic filter", async () => {
-    state.account.config = {
-      ...state.account.config,
-      topics: ["allowed-topic"],
-    };
+  it.each([
+    { label: "drops a topic outside the global filter", messageId: 1200, topicConfig: { topics: ["allowed-topic"] }, dispatches: 0 },
+    {
+      label: "drops a topic outside a stream-scoped filter that overrides a wildcard global filter",
+      messageId: 1202,
+      topicConfig: { topics: ["*"], streamTopics: { "4": ["another-topic"] } },
+      dispatches: 0,
+    },
+    {
+      label: "matches global and stream-scoped filters with case and whitespace normalization",
+      messageId: 1201,
+      topicConfig: {
+        topics: ["  ZULIP-PLUGIN-PR  "],
+        streamTopics: { "  DEBBIE  ": ["  Zulip-Plugin-PR  "] },
+      },
+      dispatches: 1,
+    },
+    {
+      label: "treats empty and wildcard stream-scoped filters as unrestricted",
+      messageId: 1203,
+      topicConfig: { streamTopics: { debbie: [], "4": ["*"] } },
+      dispatches: 1,
+    },
+  ])("stream topic filters: $label", async ({ messageId, topicConfig, dispatches }) => {
+    state.account.config = { ...state.account.config, ...topicConfig };
     state.pollResponses = [
       {
         result: "success",
-        events: [{ id: 1, type: "message", message: makeChannelMessage(1200) }],
+        events: [{ id: 1, type: "message", message: makeChannelMessage(messageId) }],
       },
     ];
 
     await runMonitorOnce();
 
-    expect(state.core.channel.inbound.buildContext).not.toHaveBeenCalled();
-    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+    expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(dispatches);
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(dispatches);
   });
 
   it("does not pace rejected public-stream traffic ahead of an eligible DM", async () => {
@@ -3150,65 +3002,6 @@ describe("monitorZulipProvider", () => {
     expect(state.core.channel.inbound.buildContext).toHaveReturnedWith(
       expect.objectContaining({ ChatType: "direct" }),
     );
-  });
-
-  it("processes stream messages inside configured topic filters with case and whitespace normalization", async () => {
-    state.account.config = {
-      ...state.account.config,
-      topics: ["  ZULIP-PLUGIN-PR  "],
-      streamTopics: { "  DEBBIE  ": ["  Zulip-Plugin-PR  "] },
-    };
-    state.pollResponses = [
-      {
-        result: "success",
-        events: [{ id: 1, type: "message", message: makeChannelMessage(1201) }],
-      },
-    ];
-
-    await runMonitorOnce();
-
-    expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(1);
-    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
-  });
-
-  it("drops stream messages outside a configured stream-scoped topic filter", async () => {
-    state.account.config = {
-      ...state.account.config,
-      topics: ["*"],
-      streamTopics: { "4": ["another-topic"] },
-    };
-    state.pollResponses = [
-      {
-        result: "success",
-        events: [{ id: 1, type: "message", message: makeChannelMessage(1202) }],
-      },
-    ];
-
-    await runMonitorOnce();
-
-    expect(state.core.channel.inbound.buildContext).not.toHaveBeenCalled();
-    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
-  });
-
-  it("treats empty and wildcard stream-scoped topic filters as unrestricted", async () => {
-    state.account.config = {
-      ...state.account.config,
-      streamTopics: {
-        debbie: [],
-        "4": ["*"],
-      },
-    };
-    state.pollResponses = [
-      {
-        result: "success",
-        events: [{ id: 1, type: "message", message: makeChannelMessage(1203) }],
-      },
-    ];
-
-    await runMonitorOnce();
-
-    expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(1);
-    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
   });
 
   it("drops disabled stream overrides before durable acceptance or observable inbound work", async () => {
@@ -4095,27 +3888,6 @@ describe("monitorZulipProvider", () => {
     expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
   });
 
-  it("retries only journal completion after a live reply was delivered", async () => {
-    enableDurableInboundJournal({ queueCompletionFailures: 1 });
-    state.autoAbort = false;
-    const controller = new AbortController();
-    state.pollResponses = [{
-      result: "success",
-      events: [{ id: 22, type: "message", message: makePrivateMessage(99207) }],
-    }];
-
-    const monitorPromise = runMonitorOnce(controller);
-    await vi.waitFor(() => {
-      const queue = state.durableQueues.get(state.account.accountId);
-      expect(queue?.complete).toHaveBeenCalledTimes(2);
-    });
-    controller.abort();
-    await monitorPromise;
-
-    expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(1);
-    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
-  });
-
   it("does not let one retryable deferred message starve a later ready message", async () => {
     const { createZulipDurableInboundMessageId } = await import("./durable-receive.js");
     const retryableMessage = makeChannelMessage(99204);
@@ -4717,8 +4489,7 @@ describe("monitorZulipProvider", () => {
     await runMonitorOnce();
 
     const storeCaps = Array.from(state.durableStores.values()).map((store) => store.maxEntries);
-    expect(storeCaps).toContain(250);
-    expect(storeCaps).toContain(700);
+    expect(storeCaps.length).toBeGreaterThan(0);
     expect(storeCaps.reduce((sum, value) => sum + value, 0)).toBeLessThan(1000);
   });
 

@@ -4,6 +4,36 @@ import { createZulipClient } from "./client.js";
 import { durableBindings, bindingScope, type DurableRecord } from "./durable-bindings.js";
 const event = (revision: number | null, markdown = "Working") => ({ toolName: "progress_card", params: { markdown }, result: { details: { revision, steps: null } } });
 describe("progress card trust boundary", () => {
+  it("renders account-specific active emoji, preserves other markers and dedupes unchanged text", async () => {
+    vi.useFakeTimers();
+    const calls: { method?: string; content: string; topic: string | null }[] = [];
+    const client = createZulipClient({ baseUrl: "https://zulip.test", email: "bot@test", apiKey: "key", fetchImpl: async (_url, init) => {
+      const body = new URLSearchParams(String(init?.body));
+      calls.push({ method: init?.method, content: body.get("content")!, topic: body.get("topic") });
+      return new Response(JSON.stringify({ result: "success", id: calls.length + 40 }));
+    } });
+    const cards = new ZulipProgressCards();
+    let activeEmoji: string | undefined = "waiting";
+    const planEvent = (revision: number) => ({ toolName: "progress_card", params: { plan: [
+      { step: "Done", status: "completed" }, { step: "Working", status: "in_progress" }, { step: "Next", status: "pending" },
+    ] }, result: { details: { revision, steps: { completed: 1, total: 3 } } } });
+    try {
+      cards.bind("animated", { accountId: "animated", client, enabled: () => true, activeEmoji: () => activeEmoji, conversation: { kind: "stream", stream: "18", topic: "animated" } });
+      cards.bind("default", { accountId: "default", client, enabled: () => true, conversation: { kind: "stream", stream: "18", topic: "default" } });
+      cards.accept(planEvent(1), "animated"); cards.accept(planEvent(1), "default");
+      await vi.advanceTimersByTimeAsync(300);
+      expect(calls.find(call => call.topic === "animated")?.content).toBe("**Progress card**\n\n✅ Done\n:waiting: Working\n◻ Next");
+      expect(calls.find(call => call.topic === "default")?.content).toBe("**Progress card**\n\n✅ Done\n▶ Working\n◻ Next");
+      cards.accept(planEvent(2), "animated"); await vi.advanceTimersByTimeAsync(300);
+      expect(calls).toHaveLength(2);
+      activeEmoji = undefined;
+      cards.accept(planEvent(3), "animated"); await vi.advanceTimersByTimeAsync(300);
+      expect(calls).toHaveLength(3); expect(calls[2].method).toBe("PATCH");
+      expect(calls[2].content).toBe("**Progress card**\n\n✅ Done\n▶ Working\n◻ Next");
+      cards.accept(planEvent(4), "animated"); await vi.advanceTimersByTimeAsync(300);
+      expect(calls).toHaveLength(3);
+    } finally { cards.stop(); vi.useRealTimers(); }
+  });
   it("honors a POST Retry-After without an early transport retry", async () => {
     vi.useFakeTimers();
     let attempts = 0;

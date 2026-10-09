@@ -150,7 +150,7 @@ async function bindProgressRoute(params: ZulipOutboundSessionRouteParams, sessio
   const account = await resolveZulipRuntimeAccount({ cfg: params.cfg, accountId: params.accountId });
   if (!account.baseUrl || !account.email || !account.apiKey) return;
   const { zulipProgressCards } = await import("./zulip/progress-card.js");
-  zulipProgressCards.bind(sessionKey, { accountId: account.accountId, conversation, enabled: () => account.config.progressCard?.enabled === true, client: createZulipClient({ baseUrl: account.baseUrl, email: account.email, apiKey: account.apiKey }) });
+  zulipProgressCards.bind(sessionKey, { accountId: account.accountId, conversation, enabled: () => account.config.progressCard?.enabled === true, activeEmoji: () => account.config.progressCard?.activeEmoji, client: createZulipClient({ baseUrl: account.baseUrl, email: account.email, apiKey: account.apiKey }) });
 }
 
 export async function resolveZulipOutboundSessionRoute(

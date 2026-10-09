@@ -5,10 +5,10 @@ import { editZulipMessage, sendZulipPrivateMessage, sendZulipStreamMessage, type
 
 type Step = { step: string; status: "pending" | "in_progress" | "completed" };
 type Update = { revision: number | null; text: string; floor?: number };
-export type CardRoute = { accountId: string; client: ZulipClient; enabled: () => boolean; conversation: { kind: "dm"; recipient: string } | { kind: "stream"; stream: string; topic: string } };
+export type CardRoute = { accountId: string; client: ZulipClient; enabled: () => boolean; activeEmoji?: () => string | undefined; conversation: { kind: "dm"; recipient: string } | { kind: "stream"; stream: string; topic: string } };
 type Card = { route: CardRoute; sessionKey: string; durable?: DurableRecord; floor: number; messageId?: string; hash?: string; calls: Set<string>; operation: Promise<void>; pending: Update[]; retry: number; timer?: ReturnType<typeof setTimeout> };
 
-export function validateProgressCardEvent(event: { toolName: string; params: unknown; result?: unknown; error?: unknown }): Update | undefined {
+export function validateProgressCardEvent(event: { toolName: string; params: unknown; result?: unknown; error?: unknown }, activeEmoji?: string): Update | undefined {
   if (event.toolName !== "progress_card" || event.error != null || !event.params || typeof event.params !== "object" || Array.isArray(event.params)) return;
   const params = event.params as { markdown?: unknown; plan?: unknown };
   if (Object.keys(params).some(key => key !== "markdown" && key !== "plan")) return;
@@ -31,7 +31,7 @@ export function validateProgressCardEvent(event: { toolName: string; params: unk
     const counts = result.steps as { completed?: unknown; total?: unknown } | undefined;
     if (!Array.isArray(params.plan) || !counts || counts.total !== plan.length || counts.completed !== plan.filter(item => item.status === "completed").length) return;
   }
-  return { revision: result.revision, text: ["**Progress card**", markdown, plan.map(item => `${item.status === "completed" ? "✅" : item.status === "in_progress" ? "▶" : "◻"} ${item.step}`).join("\n")].filter(Boolean).join("\n\n") };
+  return { revision: result.revision, text: ["**Progress card**", markdown, plan.map(item => `${item.status === "completed" ? "✅" : item.status === "in_progress" ? (activeEmoji ? `:${activeEmoji}:` : "▶") : "◻"} ${item.step}`).join("\n")].filter(Boolean).join("\n\n") };
 }
 
 export class ZulipProgressCards {
@@ -82,7 +82,7 @@ export class ZulipProgressCards {
   }
   accept(event: { toolName: string; params: unknown; result?: unknown; error?: unknown; toolCallId?: string }, sessionKey?: string): void {
     const card = sessionKey ? this.cards.get(sessionKey) : undefined;
-    const update = validateProgressCardEvent(event);
+    const update = validateProgressCardEvent(event, card?.route.activeEmoji?.());
     if (!card || !card.route.enabled() || !update) return;
     // Hook completion arrival is execution order. Clears are not replayed and
     // retain the numeric floor, so they cannot admit stale numeric updates.

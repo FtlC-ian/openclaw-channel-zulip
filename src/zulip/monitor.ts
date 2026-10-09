@@ -1210,7 +1210,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         });
 
     // Bind only keys constructed by the v2 account-scoped routing helpers.
-    zulipProgressCards.bind(sessionKey, { accountId: account.accountId, client, conversation: questionConversation, enabled: () => resolveZulipAccount({ cfg: opts.getConfig?.() ?? cfg, accountId: account.accountId }).config.progressCard?.enabled === true });
+    zulipProgressCards.bind(sessionKey, { accountId: account.accountId, client, conversation: questionConversation, enabled: () => resolveZulipAccount({ cfg: opts.getConfig?.() ?? cfg, accountId: account.accountId }).config.progressCard?.enabled === true, activeEmoji: () => resolveZulipAccount({ cfg: opts.getConfig?.() ?? cfg, accountId: account.accountId }).config.progressCard?.activeEmoji });
     const timestamp = message.timestamp ? message.timestamp * 1000 : undefined;
     const textWithId = `${bodyText}\n[zulip message id: ${messageId}]`;
     const body = formatInboundEnvelope({
@@ -2628,7 +2628,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     const reconcile = async (operation: () => Promise<void>) => {
       try { await operation(); } catch (error) { runtime.error?.(`zulip: durable binding reconciliation failed (retained for retry): ${String(error)}`); }
     };
-    await reconcile(() => zulipProgressCards.restore({ accountId: account.accountId, client, enabled: () => !opts.abortSignal?.aborted && resolveZulipAccount({ cfg: opts.getConfig?.() ?? cfg, accountId: account.accountId }).config.progressCard?.enabled === true }));
+    await reconcile(() => zulipProgressCards.restore({ accountId: account.accountId, client, enabled: () => !opts.abortSignal?.aborted && resolveZulipAccount({ cfg: opts.getConfig?.() ?? cfg, accountId: account.accountId }).config.progressCard?.enabled === true, activeEmoji: () => resolveZulipAccount({ cfg: opts.getConfig?.() ?? cfg, accountId: account.accountId }).config.progressCard?.activeEmoji }));
     await reconcile(async () => {
     for (const { key, record } of await durableBindings.records(account.accountId, client)) {
       if (record.kind !== "draft") continue;

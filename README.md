@@ -627,6 +627,12 @@ Set `channels.zulip.progressCard.enabled: true` (or under an account) to mirror
 the agent's core `progress_card` calls into one editable message per conversation.
 It is off by default and independent of the per-turn `streaming.mode: "progress"` draft.
 Cards show markdown and ordered ✅ / ▶ / ◻ steps; clearing leaves a short inert state.
+Set `channels.zulip.progressCard.activeEmoji: "waiting"` (or
+`channels.zulip.accounts.<accountId>.progressCard.activeEmoji`) to replace ▶ with
+`:waiting:` for the in-progress step. Use a simple emoji name without colons
+(letters, digits, underscores, hyphens or plus signs). Custom GIF emoji animate
+in Zulip messages; upload the emoji to your realm first. Completed and pending
+steps are unchanged, and omitting `activeEmoji` keeps ▶.
 Control UI edits do not show until the agent's next tool update. Exact mirroring
 requires an upstream hook-bound read (GitLab #8). Unknown session routes are ignored.
 

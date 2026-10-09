@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Features
+- **Animated progress-card indicator**: Optional account-scoped `progressCard.activeEmoji` renders the in-progress step as a named Zulip emoji (for example `waiting`), including animated custom GIF emoji. The default remains ▶; unchanged cards still skip edits.
 - **Session progress card** (GitLab #9): Opt-in `progressCard.enabled` mirrors validated core tool updates into an editable, conversation-isolated Zulip card, independently of per-turn drafts.
 - **Restart bindings** (GitLab #7): Bounded public plugin-state records retain approval controls, native question indices, draft ids and card mappings. Startup reconciles public pending runtimes; generation checks reject stale writes. No credentials or message content are stored.
 

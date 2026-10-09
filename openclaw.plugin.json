@@ -590,6 +590,10 @@
                 "properties": {
                   "enabled": {
                     "type": "boolean"
+                  },
+                  "activeEmoji": {
+                    "type": "string",
+                    "pattern": "^[a-zA-Z0-9_+-]+$(?![\\s\\S])"
                   }
                 },
                 "additionalProperties": false
@@ -1005,6 +1009,10 @@
             "properties": {
               "enabled": {
                 "type": "boolean"
+              },
+              "activeEmoji": {
+                "type": "string",
+                "pattern": "^[a-zA-Z0-9_+-]+$(?![\\s\\S])"
               }
             },
             "additionalProperties": false

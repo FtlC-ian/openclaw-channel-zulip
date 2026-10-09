@@ -640,4 +640,7 @@ which lacks that safety capability, question widgets are terminalized instead
 of risking an answer replay. Resolved/unknown recovery states have generic
 inert labels because message content and terminal decision history are not stored.
 Interrupted per-turn drafts are deleted on startup; cards retain their message ids.
+Recovery terminal notices are at-most-once: a reserved send is never replayed
+after an interrupted or ambiguous POST, so a notice can be omitted. Source
+widget deletion and record cleanup remain retryable without duplicate notices.
 

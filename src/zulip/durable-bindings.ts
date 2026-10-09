@@ -5,6 +5,7 @@ export type DurableRecord = {
   messageId: string; companionId?: string; sessionKey?: string; revision?: number; hash?: string;
   id?: string; approvalKind?: "exec" | "plugin"; decisions?: string[]; emojis?: [string, string][];
   nonce?: string; senderHash?: string; optionHashes?: string[]; expiresAt: number;
+  terminalState?: "reserved" | "source-deleted";
   conversation?: { kind: "dm"; recipient: string } | { kind: "stream"; stream: string; topic: string };
 };
 type Store = {

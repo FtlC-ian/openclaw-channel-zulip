@@ -345,17 +345,20 @@ async function sendTerminalReplacement(params: {
   client: ZulipClient;
   conversation: ZulipQuestionConversation;
   content: string;
+  maxRetries?: number;
 }): Promise<string | undefined> {
   const response =
     params.conversation.kind === "dm"
       ? await sendZulipPrivateMessage(params.client, {
           to: params.conversation.recipient,
           content: params.content,
+          maxRetries: params.maxRetries,
         })
       : await sendZulipStreamMessage(params.client, {
           stream: params.conversation.stream,
           topic: params.conversation.topic,
           content: params.content,
+          maxRetries: params.maxRetries,
         });
   return response.id === undefined ? undefined : String(response.id);
 }
@@ -374,10 +377,29 @@ export class ZulipQuestionZformStore {
       // recovery is deliberately inert rather than risking duplicate resolution.
       const version = params.hostVersion?.match(/^(\d+)\.(\d+)\.(\d+)/)?.slice(1).map(Number);
       const safeProbe = version && (version[0] > 2026 || version[0] === 2026 && (version[1] > 9 || version[1] === 9 && version[2] >= 6));
-      const state = safeProbe ? await questionGatewayRuntime.resolveOption({ cfg: params.cfg, questionId: record.id, optionIndex: 0, authorize: () => false }) : { status: "already-terminal" as const };
-      if (record.expiresAt <= Date.now() || state.status === "already-terminal") {
-        const replacement = await sendTerminalReplacement({ client: params.client, conversation: record.conversation, content: record.expiresAt <= Date.now() ? "⌛ Question expired" : "Question already resolved or unavailable" });
-        if (replacement) { await deleteZulipMessage(params.client, { messageId: record.messageId }); await durableBindings.remove(key, record); }
+      const state = safeProbe && !record.terminalState ? await questionGatewayRuntime.resolveOption({ cfg: params.cfg, questionId: record.id, optionIndex: 0, authorize: () => false }) : { status: "already-terminal" as const };
+      if (record.terminalState || record.expiresAt <= Date.now() || state.status === "already-terminal") {
+        const claimed = await durableBindings.claim(key, record);
+        if (!claimed) continue;
+        if (!claimed.terminalState) {
+          claimed.terminalState = "reserved";
+          if (!await durableBindings.save(key, claimed)) continue;
+          // Reserve before POST: an interrupted or ambiguous send is never replayed.
+          try {
+            await sendTerminalReplacement({ client: params.client, conversation: record.conversation, content: record.expiresAt <= Date.now() ? "⌛ Question expired" : "Question already resolved or unavailable", maxRetries: 0 });
+          } catch { /* Terminal controls must still be removed after a failed notice. */ }
+        }
+        if (!await durableBindings.current(key, claimed)) continue;
+        if (claimed.terminalState !== "source-deleted") {
+          try { await deleteZulipMessage(params.client, { messageId: record.messageId }); }
+          catch (error) {
+            const failure = error as { status?: number; message?: string };
+            if (failure.status !== 400 || !/Invalid message\(s\)/u.test(failure.message ?? "")) throw error;
+          }
+          claimed.terminalState = "source-deleted";
+          if (!await durableBindings.save(key, claimed)) continue;
+        }
+        await durableBindings.remove(key, claimed);
         continue;
       }
       if (state.status !== "denied") continue;

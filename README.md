@@ -639,6 +639,13 @@ steps are unchanged, and omitting `activeEmoji` keeps ▶.
 Control UI edits do not show until the agent's next tool update. Exact mirroring
 requires an upstream hook-bound read (GitLab #8). Unknown session routes are ignored.
 
+CLI agents using the loopback MCP bridge also emit `after_tool_call` with the
+session key; they do not require a separate transcript hook. Enabling this feature
+does not replay the current card. A route must be bound by enabled inbound or
+outbound traffic before a subsequent tool update can be mirrored. If a channel
+reload is deferred while runs are active, saving the setting is not proof that
+the running channel has applied it. See [the MCP coverage audit](docs/progress-card-mcp-coverage.md).
+
 Restart records use the public plugin state store and contain only identifiers,
 conversation topics, hashes and revision floors, never message content or credentials.
 They share a bounded 40-record budget across accounts (legacy hosts reserve 950

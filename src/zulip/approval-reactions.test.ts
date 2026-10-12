@@ -5,6 +5,7 @@ import type { OpenClawConfig } from "../sdk.js";
 import type { ZulipClient, ZulipEvent } from "./client.js";
 import { ZulipApprovalReactions, zulipApprovalReactions } from "./approval-reactions.js";
 import { readApprovalBinding } from "./approval-sdk.js";
+import { durableBindings, type DurableRecord } from "./durable-bindings.js";
 const mocks = vi.hoisted(() => ({ resolve: vi.fn() }));
 vi.mock("openclaw/plugin-sdk/approval-gateway-runtime", () => ({ resolveApprovalOverGateway: mocks.resolve }));
 
@@ -34,6 +35,26 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); zulipApprovalReactions.clearAccount("default"); zulipApprovalReactions.clearAccount("other"); });
 
 describe("approval reaction control boundary", () => {
+  it("keeps a failed approval recovery claim inert", async () => {
+    const record: DurableRecord = { kind: "approval", accountId: "default", scope: "hash", generation: "old", messageId: "10", id: "req-1", approvalKind: "exec", decisions: ["allow-once", "deny"], emojis: [["check", "allow-once"]], expiresAt: Date.now() + 60000 };
+    const spies = [vi.spyOn(durableBindings, "records").mockResolvedValue([{ key: 'approval:["default","10"]', record }]), vi.spyOn(durableBindings, "claim").mockResolvedValue(undefined)];
+    try {
+      await store.restore({ cfg, accountId: "default", client, request: async () => [{ id: "req-1" }] });
+      expect(await command()).toBe(false);
+      expect(mocks.resolve).not.toHaveBeenCalled();
+      expect(request).not.toHaveBeenCalled();
+    } finally { for (const spy of spies) spy.mockRestore(); }
+  });
+  it.each([true, false])("reconciles restart approval pending=%s without replaying a resolution", async (pending) => {
+    const record: DurableRecord = { kind: "approval", accountId: "default", scope: "hash", generation: "old", messageId: "10", companionId: "11", id: "req-1", approvalKind: "exec", decisions: ["allow-once", "deny"], emojis: [["check", "allow-once"], ["cross_mark", "deny"]], expiresAt: Date.now() + 60000 };
+    const spies = [vi.spyOn(durableBindings, "records").mockResolvedValue([{ key: 'approval:["default","10"]', record }]), vi.spyOn(durableBindings, "claim").mockImplementation(async (_key, value) => ({ ...value, generation: "new" })), vi.spyOn(durableBindings, "current").mockResolvedValue(true), vi.spyOn(durableBindings, "remove").mockResolvedValue()];
+    try {
+      await store.restore({ cfg, accountId: "default", client, request: async () => pending ? [{ id: "req-1" }] : [] });
+      expect(mocks.resolve).not.toHaveBeenCalled();
+      if (pending) { await command(); await command(); expect(mocks.resolve).toHaveBeenCalledTimes(1); }
+      else { expect(request.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true); expect(await command()).toBe(false); }
+    } finally { for (const spy of spies) spy.mockRestore(); }
+  });
   it.each([buildExecApprovalPendingReplyPayload, buildTypedExecApprovalPendingReplyPayload])("accepts SDK exec pending payloads without a state field", async (build) => {
     const pending = build({ approvalId: "req-1", approvalSlug: "req-1", command: "true", host: "gateway", allowedDecisions: ["allow-once", "deny"] });
     expect(readApprovalBinding({ payload: pending })).toMatchObject({ approvalId: "req-1", approvalKind: "exec" });
@@ -307,6 +328,63 @@ describe("approval reaction control boundary", () => {
     await react();
     const edit = new URLSearchParams(request.mock.calls.find(([, init]) => init?.method === "PATCH")![1].body).get("content");
     expect(edit).toBe(`${kind === "channel" ? "❌ Denied by `winner@test`" : "Resolved elsewhere: deny"}\n\nID: req-1`);
+  });
+  it.each([
+    ["approval-scope-closed", "⚪ Cancelled: approval session ended before a decision"],
+    ["permission-change", "⚪ Cancelled: permissions changed before a decision"],
+    ["no-approval-route", "⚪ Closed: no approval route available"],
+    ["storage-error", "⚪ Closed: approval storage unavailable"],
+    ["worker-dispatch", "⚪ Cancelled: approval session is no longer active"],
+  ])("renders core resolver %s without impersonating an approver", async (id, expected) => {
+    await register();
+    await store.observeTerminal("default", { event: "exec.approval.resolved", payload: { id: "req-1", decision: "deny", resolvedBy: id } });
+    const edit = new URLSearchParams(request.mock.calls.find(([, init]) => init?.method === "PATCH")![1].body).get("content");
+    expect(edit).toBe(`${expected}\n\nID: req-1`);
+    await react();
+    expect(mocks.resolve).not.toHaveBeenCalled();
+    expect(request.mock.calls.filter(([, init]) => init?.method === "DELETE")).toHaveLength(2);
+  });
+  it("renders a cached system winner when the plugin prompt arrives later", async () => {
+    await store.observeTerminal("default", { event: "plugin.approval.resolved", payload: { id: "req-1", decision: "deny", resolvedBy: "approval-scope-closed" } });
+    await register("req-1", "10", "default", cfg, "plugin");
+    const edit = new URLSearchParams(request.mock.calls.find(([, init]) => init?.method === "PATCH")![1].body).get("content");
+    expect(edit).toBe("⚪ Cancelled: approval session ended before a decision\n\nID: req-1");
+  });
+  it.each([
+    ["system", "future `reason`\n@**all**", "⚪ Closed by the system (`future ˋreasonˋ @**all**`)"],
+    ["system", undefined, "⚪ Closed by the system"],
+    ["system", "approval-scope-closed", "⚪ Cancelled: approval session ended before a decision"],
+    ["channel", "future-reason", "❌ Denied by `future-reason`"],
+    ["channel", "zulip:ian@test", "❌ Denied by `zulip:ian@test`"],
+  ])("conservatively renders a losing settlement resolver %s/%s", async (kind, id, expected) => {
+    await register();
+    mocks.resolve.mockResolvedValue({ applied: false, approval: { status: "denied", decision: "deny", resolver: { kind, id } } });
+    await react();
+    const edit = new URLSearchParams(request.mock.calls.find(([, init]) => init?.method === "PATCH")![1].body).get("content");
+    expect(edit).toBe(`${expected}\n\nID: req-1`);
+  });
+  it("keeps an allowFrom identity human even when it resembles a core code", async () => {
+    const configuration = { channels: { zulip: { ...cfg.channels!.zulip, allowFrom: ["user:approval-scope-closed"] } } } as OpenClawConfig;
+    await register("req-1", "10", "default", configuration);
+    await store.observeTerminal("default", { event: "exec.approval.resolved", payload: { id: "req-1", decision: "deny", resolvedBy: "approval-scope-closed" } });
+    const edit = new URLSearchParams(request.mock.calls.find(([, init]) => init?.method === "PATCH")![1].body).get("content");
+    expect(edit).toBe("❌ Denied by `approval-scope-closed`\n\nID: req-1");
+  });
+  it.each([
+    ["expired", "⌛ Expired"],
+    ["cancelled", "⚪ Cancelled by the system"],
+  ])("preserves canonical system status %s over its deny decision", async (status, expected) => {
+    await register();
+    mocks.resolve.mockResolvedValue({ applied: false, approval: { status, decision: "deny", resolver: { kind: "system", id: null } } });
+    await react();
+    const edit = new URLSearchParams(request.mock.calls.find(([, init]) => init?.method === "PATCH")![1].body).get("content");
+    expect(edit).toBe(`${expected}\n\nID: req-1`);
+  });
+  it("does not mistake a human display name for a core resolver", async () => {
+    await register();
+    await store.command({ cfg, accountId: "default", senderId: "ian@test", senderName: "approval-scope-closed", text: "/approve req-1 deny" });
+    const edit = new URLSearchParams(request.mock.calls.find(([, init]) => init?.method === "PATCH")![1].body).get("content");
+    expect(edit).toBe("❌ Denied by `approval-scope-closed`\n\nID: req-1");
   });
   it("locks sibling deliveries of the same approval", async () => {
     await register(); await register("req-1", "11"); await Promise.all([react(), react({ message_id: 11 })]);

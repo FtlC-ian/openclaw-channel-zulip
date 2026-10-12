@@ -151,6 +151,15 @@ Other first-line examples: `` ❌ Denied by `Ian F` ``, `⌛ Expired`, `🚫 Can
 `⌛ Expired or already resolved` (Gateway not-found). Allow-always decisions show
 `✅ Approved (allow always)`. Deny/already-resolved outcomes show the canonical
 winner, not the local selection. No additional Gateway result metadata is copied.
+Core resolver IDs `approval-scope-closed`, `permission-change`, `no-approval-route`
+`storage-error` and `worker-dispatch` use short cancellation/closure statuses, not person attribution.
+Scope closure says the approval session ended (it can also occur without a gateway
+restart). Unknown canonical `system` resolvers show `⚪ Closed by the system`
+with an inert reason when supplied. Explicit approvers, known local actors and
+email identities retain human attribution; unclassified IDs retain the existing
+inert code-span rendering. This changes only the edited prompt, not core's
+separate generic forwarding notice.
+
 Failed cleanup cannot reactivate bindings. Seeding is best-effort. Terminal
 cleanup waits for in-flight seeding before removing reactions. Cleanup API failures
 may leave stale visuals, but cannot permit repeated execution.

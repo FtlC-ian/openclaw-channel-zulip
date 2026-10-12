@@ -27,6 +27,24 @@ const loadPackagedChannelSchema = (): JsonSchema => {
 };
 
 describe("Zulip lifecycle reaction config", () => {
+  it("validates plain progress-card emoji names in top-level, account and packaged schemas", () => {
+    const runtime = zulipChannelConfigSchema.schema as JsonSchema;
+    const manifest = loadPackagedChannelSchema();
+    expect(manifest.properties?.progressCard).toEqual(runtime.properties?.progressCard);
+    expect(manifest.$defs?.zulipAccount.properties?.progressCard).toEqual(runtime.properties?.progressCard);
+    const pattern = (manifest.properties?.progressCard?.properties?.activeEmoji as { pattern: string }).pattern;
+    for (const activeEmoji of ["waiting", "dark-waiting", "hourglass_flowing_sand", "custom-spinner", "spinner2"]) {
+      const progressCard = { enabled: true, activeEmoji };
+      expect(zulipChannelConfigSchema.runtime.safeParse({ progressCard, accounts: { work: { progressCard } } }).success).toBe(true);
+      expect(new RegExp(pattern).test(activeEmoji)).toBe(true);
+    }
+    for (const activeEmoji of ["", ":waiting:", "waiting:", "white space", "waiting\n", "✅", "[waiting]", "a/b", "+1"]) {
+      expect(zulipChannelConfigSchema.runtime.safeParse({ progressCard: { activeEmoji } }).success).toBe(false);
+      expect(zulipChannelConfigSchema.runtime.safeParse({ accounts: { work: { progressCard: { activeEmoji } } } }).success).toBe(false);
+      expect(new RegExp(pattern).test(activeEmoji)).toBe(false);
+    }
+    expect(zulipChannelConfigSchema.runtime.safeParse({ progressCard: { enabled: true } }).success).toBe(true);
+  });
   it("supports account-scoped approval emoji in runtime and packaged schemas", () => {
     expect(zulipChannelConfigSchema.runtime.safeParse({ approvalReactions: { approve: "✅", deny: "cross_mark" }, accounts: { work: { approvalReactions: { approve: "eyes", deny: "❌" } } } }).success).toBe(true);
     for (const approve of ["", "🦄"]) expect(zulipChannelConfigSchema.runtime.safeParse({ approvalReactions: { approve } }).success).toBe(false);

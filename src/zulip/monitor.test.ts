@@ -7,6 +7,10 @@ import { buildChannelInboundEventContext } from "openclaw/plugin-sdk/channel-inb
 import type { RuntimeEnv } from "../sdk.js";
 import { zulipThreading } from "../threading.js";
 
+// Monitor contracts own ingress/draft behavior; real durable binding storage is
+// independently exercised by restart tests and the isolated four-host harness.
+vi.mock("openclaw/plugin-sdk/plugin-state-store-runtime", () => ({}));
+
 const approvalGatewayMocks = vi.hoisted(() => ({ resolve: vi.fn() }));
 vi.mock("openclaw/plugin-sdk/approval-gateway-runtime", () => ({ resolveApprovalOverGateway: approvalGatewayMocks.resolve }));
 

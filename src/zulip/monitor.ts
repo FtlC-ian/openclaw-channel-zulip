@@ -2508,6 +2508,10 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     onReceiveCheckpoint: () => void,
   ): Promise<void> => {
     const messageId = String(message.id ?? "");
+    if (message.reactionTriggerKey && (!durableInboundJournal || !reactionLedger?.update)) {
+      runtime.error?.("zulip: reaction continuation requires durable ingress and atomic plugin state updates");
+      return;
+    }
     const metadata: ZulipDurableInboundMetadata | undefined =
       queueEventId !== undefined ? { queueEventId } : undefined;
     let durableId: string | undefined;

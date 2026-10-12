@@ -656,6 +656,17 @@ describe("reaction continuation ingress", () => {
     await runMonitorOnce();
     expect(state.core.channel.inbound.dispatch).not.toHaveBeenCalled();
   });
+  it("fails closed when live config enables triggers after startup without durable state", async () => {
+    setup();
+    state.core.state = undefined;
+    state.account.config.reactionTriggers.enabled = false;
+    getZulipEventsWithRetryMock.mockImplementationOnce(async () => {
+      state.account.config.reactionTriggers.enabled = true;
+      return { events: [reaction, { ...reaction, id: 2, op: "remove" }, { ...reaction, id: 3 }] };
+    });
+    await runMonitorOnce();
+    expect(state.core.channel.inbound.dispatch).not.toHaveBeenCalled();
+  });
   it("fails closed when durable ledger admission fails", async () => {
     setup();
     const open = state.core.state!.openKeyedStore;

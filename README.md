@@ -609,6 +609,9 @@ accepted. Running turns use the same core admission/queue behavior as typed inpu
 Approval prompts (including companion widgets) are not continuation targets;
 the trigger emoji must differ from **both** approval emojis, including inherited
 account configuration. Reaction removals never trigger turns.
+Hosts whose CLI validates only the packaged JSON schema cannot express cross-field
+emoji equality: a collision may pass `config set --dry-run`, but the plugin rejects
+it when resolving the effective account, before startup or live event handling.
 
 An atomic plugin-state ledger records each (message, user, emoji) admission without
 TTL or eviction, so removing/re-adding, reconnecting and ordinary ingress retention

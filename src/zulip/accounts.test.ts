@@ -13,6 +13,12 @@ function cfg(zulip: Record<string, unknown>, secrets?: OpenClawConfig["secrets"]
 }
 
 describe("Zulip apiKey SecretInput resolution", () => {
+  it("rejects inherited trigger/approval emoji collisions before account startup even on JSON-only hosts", async () => {
+    const config = cfg({ approvalReactions: { approve: ":fast_forward:" }, accounts: { work: { reactionTriggers: { enabled: true } } } });
+    expect(() => resolveZulipAccount({ cfg: config, accountId: "work" })).toThrow("must differ from both approval emojis");
+    await expect(resolveZulipRuntimeAccount({ cfg: config, accountId: "work" })).rejects.toThrow("must differ from both approval emojis");
+    expect(resolveZulipAccount({ cfg: cfg({ reactionTriggers: { enabled: true } }) }).config.reactionTriggers?.enabled).toBe(true);
+  });
   it("preserves plain string apiKey config", async () => {
     const config = cfg({ apiKey: "plain-key", email: "bot@example.test", url: "https://zulip.example.test" });
 

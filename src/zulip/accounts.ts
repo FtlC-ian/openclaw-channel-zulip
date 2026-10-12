@@ -2,6 +2,7 @@ import type { OpenClawConfig } from "../sdk.js";
 import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from "../sdk.js";
 import type { ZulipAccountConfig, ZulipChatMode, ZulipConfig } from "../types.js";
 import { normalizeZulipBaseUrl } from "./client.js";
+import { reactionTriggerApprovalCollision } from "./reaction-triggers.js";
 import {
   coerceSecretRef,
   normalizeSecretInputString,
@@ -177,6 +178,9 @@ function resolveMergedConfig(params: { cfg: OpenClawConfig; accountId?: string |
   const { accounts: _ignored, ...baseConfig } = (zulipSection ?? {}) as ZulipConfig;
   const accountConfig = resolveAccountConfig(params.cfg, accountId) ?? {};
   const merged = { ...baseConfig, ...accountConfig };
+  if (reactionTriggerApprovalCollision(merged)) {
+    throw new Error("channels.zulip reaction trigger emoji must differ from both approval emojis (account " + accountId + ")");
+  }
   const accountEnabled = merged.enabled !== false;
   const enabled = baseEnabled && accountEnabled;
   const hasAccountApiKey = Object.prototype.hasOwnProperty.call(accountConfig, "apiKey");

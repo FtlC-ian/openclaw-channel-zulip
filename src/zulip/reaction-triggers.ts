@@ -7,6 +7,13 @@ export function reactionTriggerEmoji(config: ZulipAccountConfig): string {
   return resolveZulipReactionSpec(config.reactionTriggers?.emoji ?? "fast_forward").emojiName;
 }
 
+export function reactionTriggerApprovalCollision(config: Pick<ZulipAccountConfig, "reactionTriggers" | "approvalReactions">): boolean {
+  if (!config.reactionTriggers) return false;
+  const emoji = reactionTriggerEmoji(config);
+  return [config.approvalReactions?.approve ?? "✅", config.approvalReactions?.deny ?? "❌"]
+    .some(raw => resolveZulipReactionSpec(raw).emojiName === emoji);
+}
+
 export type ReactionTriggerLedger = {
   update?: (key: string, update: (current: { keys: string[] } | undefined) => { keys: string[] } | undefined) => Promise<boolean>;
 };

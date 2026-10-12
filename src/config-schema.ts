@@ -2,7 +2,7 @@ import { z } from "zod";
 import { buildJsonChannelConfigSchema } from "openclaw/plugin-sdk/channel-config-schema";
 import { buildOptionalSecretInputSchema } from "openclaw/plugin-sdk/secret-input";
 import { isSupportedZulipReactionValue } from "./zulip/status-reactions.js";
-import { resolveZulipReactionSpec } from "./zulip/status-reactions.js";
+import { reactionTriggerApprovalCollision } from "./zulip/reaction-triggers.js";
 import {
   normalizeZulipStreamIdSelector,
   normalizeZulipStreamName,
@@ -155,9 +155,7 @@ const ReactionTriggersSchema = z.object({
 function validateReactionTriggers(value: { reactionTriggers?: { emoji?: string }; approvalReactions?: { approve?: string; deny?: string } }, ctx: z.RefinementCtx, path: Array<string | number> = []) {
   if (!value.reactionTriggers) return;
   if (![value.reactionTriggers.emoji ?? "fast_forward", value.approvalReactions?.approve ?? "✅", value.approvalReactions?.deny ?? "❌"].every(isSupportedZulipReactionValue)) return;
-  const emoji = resolveZulipReactionSpec(value.reactionTriggers.emoji ?? "fast_forward").emojiName;
-  const approvals = [value.approvalReactions?.approve ?? "✅", value.approvalReactions?.deny ?? "❌"];
-  if (approvals.some(raw => resolveZulipReactionSpec(raw).emojiName === emoji)) {
+  if (reactionTriggerApprovalCollision(value)) {
     ctx.addIssue({ code: "custom", path: [...path, "reactionTriggers", "emoji"], message: "Reaction trigger emoji must differ from both approval emojis" });
   }
 }

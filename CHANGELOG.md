@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2026.10.12
+
 ### Features
 - **Animated progress-card indicator**: Optional account-scoped `progressCard.activeEmoji` renders the in-progress step as a named Zulip emoji (for example `waiting`), including animated custom GIF emoji. The default remains ▶; unchanged cards still skip edits.
 - **Session progress card** (GitLab #9): Opt-in `progressCard.enabled` mirrors validated core tool updates into an editable, conversation-isolated Zulip card, independently of per-turn drafts.
@@ -10,6 +12,10 @@
 ### Bug Fixes
 - **Pin/unpin removed** (#3): Stop advertising and handling `pin` and `unpin`. Zulip has no shared pinning; the old implementation only set the bot account's personal `starred` flag, which nobody else can see. Both actions now fail as unsupported before any network call. The README and `docs/ACTION_CAPABILITIES.md` no longer list them.
 - **System approval outcomes**: Render core closure reasons as short human statuses rather than approver names; preserve human attribution and inert formatting for unclassified resolver IDs.
+
+### Upgrade notes
+- The progress card is opt-in per account: set `channels.zulip.progressCard.enabled: true`, and optionally `progressCard.activeEmoji` to a custom (for example animated GIF) emoji name. Restart-safe bindings are always on and need no configuration.
+- A turn that is already running when the progress card is enabled does not get a card; the next turn does.
 
 ## 2026.10.9
 

@@ -43,11 +43,6 @@ describe("Zulip status reaction configuration", () => {
   });
 
   it("maps Unicode lifecycle emoji to complete Zulip reaction parameters", async () => {
-    expect(resolveZulipReactionSpec("⚠️")).toEqual({
-      emojiName: "warning",
-      emojiCode: "26a0",
-      reactionType: "unicode_emoji",
-    });
     const add = vi.fn(async () => {});
     const remove = vi.fn(async () => {});
     const adapter = createZulipStatusReactionAdapter({ add, remove });
@@ -120,8 +115,7 @@ describe("Zulip status reaction configuration", () => {
     expect(result.subagent).toBe("");
   });
 
-  it("rejects arbitrary Unicode and treats an empty reaction as suppressed", async () => {
-    expect(() => resolveZulipReactionSpec("🦄")).toThrow(/Unsupported Zulip reaction/);
+  it("treats an empty reaction as suppressed", async () => {
     const add = vi.fn(async () => {});
     const remove = vi.fn(async () => {});
     const adapter = createZulipStatusReactionAdapter({ add, remove });

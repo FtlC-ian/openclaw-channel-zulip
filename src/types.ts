@@ -91,6 +91,8 @@ export type ZulipAccountConfig = {
   markHandledRead?: boolean;
   /** Approval message controls. Defaults: ✅ allow-once, ❌ deny. */
   approvalReactions?: { approve?: string; deny?: string };
+  /** Opt-in continuation turns from human reactions; normal inbound policies still apply. */
+  reactionTriggers?: { enabled?: boolean; emoji?: string; message?: string };
   /** Automatic lifecycle reactions on the inbound Zulip message. */
   reactions?: {
     enabled?: boolean;

@@ -33,6 +33,15 @@ for (const version of ["2026.9.3", "2026.9.6", "2026.10.1-beta.1", "2026.10.1-be
       assert.equal((await durableStore.entries())[0].value.messageId, "42");
       assert.equal(await durableStore.deleteIf("card", row => row.generation === "first"), false);
       await durableStore.clear();
+      const { claimReactionTrigger } = await import("./dist/src/zulip/reaction-triggers.js");
+      const ledgerOptions = { namespace: "zulip.host-smoke.reaction-triggers", maxEntries: 10, overflowPolicy: "reject-new", env: { ...process.env, OPENCLAW_STATE_DIR: ${JSON.stringify(scratch)} + "/state" } };
+      const ledger = createDurableStore("zulip", ledgerOptions);
+      const claims = await Promise.all(Array.from({ length: 8 }, () => claimReactionTrigger(ledger, "scope", "same-tap")));
+      assert.equal(claims.filter(Boolean).length, 1, "real host atomic admission under concurrent taps");
+      const reopenedLedger = createDurableStore("zulip", ledgerOptions);
+      assert.equal(await claimReactionTrigger(reopenedLedger, "scope", "same-tap"), false, "reopening does not reset non-expiring admission");
+      assert.equal(await claimReactionTrigger(reopenedLedger, "scope", "other-user"), true);
+      await ledger.clear();
       process.env.OPENCLAW_STATE_DIR = ${JSON.stringify(scratch)} + "/state";
       const { durableBindings, startDurableBindings } = await import("./dist/src/zulip/durable-bindings.js");
       startDurableBindings();

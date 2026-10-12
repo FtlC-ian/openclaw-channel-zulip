@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Features
+- **Reaction-triggered go**: Opt-in per-account `reactionTriggers` injects a continuation turn when an authorized human reacts to this bot's message. Defaults to `fast_forward` and "Go ahead."; normal stream, topic, sender and mention policies still apply. Persistent, non-expiring admission prevents repeat taps and reconnect replays. Approval prompts are excluded and approval emoji collisions are rejected.
+
 ## 2026.10.12
 
 ### Features

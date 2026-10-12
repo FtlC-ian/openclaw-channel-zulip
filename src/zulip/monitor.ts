@@ -2,6 +2,7 @@ import { startZulipApprovalObserver, stripLeadingZulipApprovalBotMention, zulipA
 import { zulipProgressCards } from "./progress-card.js";
 import { startDurableBindings, durableBindings, bindingScope, type DurableRecord } from "./durable-bindings.js";
 import { ZulipConnection } from "./connection.js";
+import { buildReactionContinuation, claimReactionTrigger } from "./reaction-triggers.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type {
@@ -837,7 +838,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     if (!messageId) {
       return;
     }
-    const dedupeKey = `${messageAccount.accountId}:${messageId}`;
+    const dedupeKey = messageAccount.accountId + ":" + (message.reactionTriggerKey ?? messageId);
     if (!options.skipRecentDedupe && recentInboundMessages.check(dedupeKey)) {
       return;
     }
@@ -2191,6 +2192,14 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     }
   })();
   const pendingReceiveCheckpoints = new Set<Promise<void>>();
+  const reactionLedger = typeof core.state?.openKeyedStore === "function"
+    ? core.state.openKeyedStore<{ keys: string[] }>({
+        namespace: "zulip.reaction-triggers.v1", maxEntries: 10, overflowPolicy: "reject-new",
+      })
+    : undefined;
+  if (account.config.reactionTriggers?.enabled && (!durableInboundJournal || !reactionLedger?.update)) {
+    throw new Error("reactionTriggers requires durable ingress and atomic plugin state updates");
+  }
   const queue = await registerZulipQueue(client, {
     eventTypes: ["message", "reaction"],
     streams: registrationStreams,
@@ -2507,11 +2516,16 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     if (durableInboundJournal && messageId) {
       const acceptedDurableId = createZulipDurableInboundMessageId({
         accountId: account.accountId,
-        messageId,
+        messageId: message.reactionTriggerKey ?? messageId,
       });
       durableId = acceptedDurableId;
       acceptInbound = async (): Promise<boolean> => {
         try {
+          if (message.reactionTriggerKey) {
+            if (!reactionLedger?.update) return false;
+            const claimed = await claimReactionTrigger(reactionLedger, bindingScope(client) + ":" + account.accountId, message.reactionTriggerKey);
+            if (!claimed) return false;
+          }
           const accepted = await durableInboundJournal.accept(
             acceptedDurableId,
             {
@@ -2538,6 +2552,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
           if (opts.abortSignal?.aborted || monitorReactionShutdownStarted) {
             throw new ZulipAbortPreservationError(err);
           }
+          if (message.reactionTriggerKey) throw err;
           runtime.log?.(`zulip: failed persisting durable inbound; delivering live: ${String(err)}`);
           return true;
         }
@@ -2730,6 +2745,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
             lastEventId = validEventId;
           }
 
+          let inboundEventMessage = event.type === "message" ? event.message : undefined;
           if (event.type === "reaction") {
             try {
               await zulipApprovalReactions.react({
@@ -2745,10 +2761,22 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
               runtime.error?.(`zulip: approval reaction failed: ${String(error)}`);
             }
           }
-          if (event.type === "message" && event.message) {
+          if (event.type === "reaction") {
+            try {
+              const currentAccount = await resolveZulipRuntimeAccount({ cfg: opts.getConfig?.() ?? cfg, accountId: account.accountId });
+              const continuation = await buildReactionContinuation({
+                event, config: currentAccount.config, client, botUserId: String(botUserId),
+                isApprovalPrompt: messageId => zulipApprovalReactions.isPrompt(account.accountId, messageId, client),
+              });
+              inboundEventMessage = continuation;
+            } catch (error) {
+              runtime.error?.("zulip: reaction continuation failed: " + String(error));
+            }
+          }
+          if (inboundEventMessage) {
             const inboundMessage = event.flags
-              ? { ...event.message, flags: [...event.flags] }
-              : event.message;
+              ? { ...inboundEventMessage, flags: [...event.flags] }
+              : inboundEventMessage;
             let streamResolution: InboundStreamResolution;
             try {
               streamResolution = {

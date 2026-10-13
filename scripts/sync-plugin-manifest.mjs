@@ -27,7 +27,7 @@ if (!manifestSchema?.properties || !manifestAccount?.properties) {
   throw new Error("Packaged Zulip manifest schema is missing its expected config structure");
 }
 
-const properties = ["streaming", "thinkingPlaceholder", "routingDiagnosticsTarget", "approvalReactions", "reactionTriggers", "progressCard"];
+const properties = ["streaming", "thinkingPlaceholder", "routingDiagnosticsTarget", "approvalReactions", "reactionTriggers", "progressCard", "topicHistory", "streamOverrides"];
 for (const key of properties) {
   const top = runtimeSchema.properties?.[key];
   const account = runtimeSchema.properties?.accounts?.additionalProperties?.properties?.[key];
@@ -35,7 +35,8 @@ for (const key of properties) {
     throw new Error(`Runtime top-level and account-scoped ${key} schemas differ or are missing`);
   }
 }
-const synchronized = properties.every((key) =>
+const streamRule = runtimeSchema.properties.streamOverrides.additionalProperties;
+const synchronized = isDeepStrictEqual(manifestSchema.$defs.zulipStreamRule, streamRule) && properties.every((key) =>
   isDeepStrictEqual(manifestSchema.properties[key], runtimeSchema.properties[key]) &&
   isDeepStrictEqual(manifestAccount.properties[key], runtimeSchema.properties[key]),
 );
@@ -45,6 +46,7 @@ if (process.argv.includes("--check")) {
     throw new Error("openclaw.plugin.json feedback schema is stale; run npm run manifest:sync after building");
   }
 } else if (!synchronized) {
+  manifestSchema.$defs.zulipStreamRule = streamRule;
   for (const key of properties) {
     manifestSchema.properties[key] = runtimeSchema.properties[key];
     manifestAccount.properties[key] = runtimeSchema.properties[key];

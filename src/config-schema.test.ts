@@ -27,6 +27,20 @@ const loadPackagedChannelSchema = (): JsonSchema => {
 };
 
 describe("Zulip lifecycle reaction config", () => {
+  it("validates topic-history bounds at account and stream configuration boundaries", () => {
+    const parse = zulipChannelConfigSchema.runtime.safeParse;
+    const topicHistory = { mode: "always", maxMessages: 20, maxChars: 6000, maxAgeHours: 72, timeoutMs: 2000 };
+    expect(parse({ topicHistory, accounts: { work: { topicHistory } }, streamOverrides: { "18": { topicHistory } } }).success).toBe(true);
+    for (const invalid of [{ mode: "enabled" }, { maxMessages: 0 }, { maxMessages: 101 }, { maxChars: 255 }, { maxChars: 20001 }, { maxAgeHours: 0 }, { maxAgeHours: 8761 }, { timeoutMs: 0 }, { timeoutMs: 10001 }, { unknown: true }]) {
+      expect(parse({ topicHistory: invalid }).success).toBe(false);
+      expect(parse({ accounts: { work: { topicHistory: invalid } } }).success).toBe(false);
+      expect(parse({ streamOverrides: { "18": { topicHistory: invalid } } }).success).toBe(false);
+    }
+    const runtime = zulipChannelConfigSchema.schema as JsonSchema;
+    const manifest = loadPackagedChannelSchema();
+    expect(manifest.properties?.topicHistory).toEqual(runtime.properties?.topicHistory);
+    expect(manifest.$defs?.zulipAccount.properties?.topicHistory).toEqual(runtime.properties?.topicHistory);
+  });
   it("validates reaction trigger defaults, limits and inherited approval collisions", () => {
     const parse = zulipChannelConfigSchema.runtime.safeParse;
     expect(parse({ reactionTriggers: { enabled: true } }).success).toBe(true);

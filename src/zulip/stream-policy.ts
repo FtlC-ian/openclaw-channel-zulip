@@ -2,6 +2,7 @@ import type { ZulipAccountConfig, ZulipStreamRule } from "../types.js";
 
 export type ResolvedZulipInboundStreamPolicy = {
   enabled: boolean;
+  topicHistory?: ZulipAccountConfig["topicHistory"];
   requireMention?: boolean;
   allowedTopics?: string[];
   additionalAllowedTopics?: string[];
@@ -136,6 +137,7 @@ export function resolveZulipInboundStreamPolicy(params: {
 
   const policy: ResolvedZulipInboundStreamPolicy = {
     enabled: legacyStreamEnabled(params.config.streams, params.streamName),
+    topicHistory: params.config.topicHistory,
     allowedTopics: params.config.topics,
     additionalAllowedTopics: legacyAllowedTopics,
   };
@@ -148,6 +150,9 @@ export function resolveZulipInboundStreamPolicy(params: {
     }
     if (rule.requireMention !== undefined) {
       policy.requireMention = rule.requireMention;
+    }
+    if (rule.topicHistory !== undefined) {
+      policy.topicHistory = { ...policy.topicHistory, ...rule.topicHistory };
     }
     if (rule.allowedTopics !== undefined) {
       policy.allowedTopics = rule.allowedTopics;

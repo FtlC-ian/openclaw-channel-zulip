@@ -166,7 +166,6 @@
           },
           "zulipStreamRule": {
             "type": "object",
-            "additionalProperties": false,
             "properties": {
               "enabled": {
                 "type": "boolean"
@@ -180,13 +179,48 @@
                   "type": "string"
                 }
               },
+              "topicHistory": {
+                "type": "object",
+                "properties": {
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "off",
+                      "on-demand",
+                      "always"
+                    ]
+                  },
+                  "maxMessages": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100
+                  },
+                  "maxChars": {
+                    "type": "integer",
+                    "minimum": 256,
+                    "maximum": 20000
+                  },
+                  "maxAgeHours": {
+                    "type": "number",
+                    "minimum": 0.01,
+                    "maximum": 8760
+                  },
+                  "timeoutMs": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 10000
+                  }
+                },
+                "additionalProperties": false
+              },
               "excludedTopics": {
                 "type": "array",
                 "items": {
                   "type": "string"
                 }
               }
-            }
+            },
+            "additionalProperties": false
           },
           "zulipAccount": {
             "type": "object",
@@ -262,8 +296,66 @@
               },
               "streamOverrides": {
                 "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
                 "additionalProperties": {
-                  "$ref": "#/$defs/zulipStreamRule"
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "requireMention": {
+                      "type": "boolean"
+                    },
+                    "allowedTopics": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "topicHistory": {
+                      "type": "object",
+                      "properties": {
+                        "mode": {
+                          "type": "string",
+                          "enum": [
+                            "off",
+                            "on-demand",
+                            "always"
+                          ]
+                        },
+                        "maxMessages": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 100
+                        },
+                        "maxChars": {
+                          "type": "integer",
+                          "minimum": 256,
+                          "maximum": 20000
+                        },
+                        "maxAgeHours": {
+                          "type": "number",
+                          "minimum": 0.01,
+                          "maximum": 8760
+                        },
+                        "timeoutMs": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 10000
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "excludedTopics": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "additionalProperties": false
                 }
               },
               "defaultTopic": {
@@ -615,6 +707,40 @@
                   }
                 },
                 "additionalProperties": false
+              },
+              "topicHistory": {
+                "type": "object",
+                "properties": {
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "off",
+                      "on-demand",
+                      "always"
+                    ]
+                  },
+                  "maxMessages": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100
+                  },
+                  "maxChars": {
+                    "type": "integer",
+                    "minimum": 256,
+                    "maximum": 20000
+                  },
+                  "maxAgeHours": {
+                    "type": "number",
+                    "minimum": 0.01,
+                    "maximum": 8760
+                  },
+                  "timeoutMs": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 10000
+                  }
+                },
+                "additionalProperties": false
               }
             }
           }
@@ -690,8 +816,66 @@
           },
           "streamOverrides": {
             "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
             "additionalProperties": {
-              "$ref": "#/$defs/zulipStreamRule"
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "requireMention": {
+                  "type": "boolean"
+                },
+                "allowedTopics": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "topicHistory": {
+                  "type": "object",
+                  "properties": {
+                    "mode": {
+                      "type": "string",
+                      "enum": [
+                        "off",
+                        "on-demand",
+                        "always"
+                      ]
+                    },
+                    "maxMessages": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 100
+                    },
+                    "maxChars": {
+                      "type": "integer",
+                      "minimum": 256,
+                      "maximum": 20000
+                    },
+                    "maxAgeHours": {
+                      "type": "number",
+                      "minimum": 0.01,
+                      "maximum": 8760
+                    },
+                    "timeoutMs": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 10000
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "excludedTopics": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "additionalProperties": false
             }
           },
           "defaultTopic": {
@@ -1049,6 +1233,40 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 500
+              }
+            },
+            "additionalProperties": false
+          },
+          "topicHistory": {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "off",
+                  "on-demand",
+                  "always"
+                ]
+              },
+              "maxMessages": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100
+              },
+              "maxChars": {
+                "type": "integer",
+                "minimum": 256,
+                "maximum": 20000
+              },
+              "maxAgeHours": {
+                "type": "number",
+                "minimum": 0.01,
+                "maximum": 8760
+              },
+              "timeoutMs": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10000
               }
             },
             "additionalProperties": false

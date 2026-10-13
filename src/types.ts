@@ -22,7 +22,16 @@ type BlockStreamingCoalesceConfig = {
 export type ZulipChatMode = "oncall" | "onmessage" | "onchar";
 export type ZulipAgentReactionGuidance = "off" | "minimal" | "extensive";
 
+export type ZulipTopicHistoryConfig = {
+  mode?: "off" | "on-demand" | "always";
+  maxMessages?: number;
+  maxChars?: number;
+  maxAgeHours?: number;
+  timeoutMs?: number;
+};
+
 export type ZulipStreamRule = {
+  topicHistory?: ZulipTopicHistoryConfig;
   /** Enable or disable inbound processing for the selected stream. */
   enabled?: boolean;
   /** Override the account-level mention requirement for this stream. */
@@ -34,6 +43,7 @@ export type ZulipStreamRule = {
 };
 
 export type ZulipAccountConfig = {
+  topicHistory?: ZulipTopicHistoryConfig;
   /** Optional display name for this account (used in CLI/UI lists). */
   name?: string;
   /** Optional provider capability tags used for agent/runtime guidance. */

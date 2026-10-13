@@ -98,11 +98,19 @@ const StatusReactionTimingSchema = z
     errorHoldMs: z.number().int().nonnegative().optional(),
   })
   .strict();
+const TopicHistorySchema = z.object({
+  mode: z.enum(["off", "on-demand", "always"]).optional(),
+  maxMessages: z.number().int().min(1).max(100).optional(),
+  maxChars: z.number().int().min(256).max(20000).optional(),
+  maxAgeHours: z.number().min(0.01).max(8760).optional(),
+  timeoutMs: z.number().int().min(1).max(10000).optional(),
+}).strict();
 const ZulipStreamRuleSchema = z
   .object({
     enabled: z.boolean().optional(),
     requireMention: z.boolean().optional(),
     allowedTopics: z.array(z.string()).optional(),
+    topicHistory: TopicHistorySchema.optional(),
     excludedTopics: z.array(z.string()).optional(),
   })
   .strict();
@@ -196,6 +204,7 @@ const ZulipAccountSchemaBase = z
   .object({
     name: z.string().optional(),
     capabilities: z.array(z.string()).optional(),
+    topicHistory: TopicHistorySchema.optional(),
     markdown: MarkdownConfigSchema.optional(),
     enabled: z.boolean().optional(),
     configWrites: z.boolean().optional(),

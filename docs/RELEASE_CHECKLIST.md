@@ -23,3 +23,26 @@ The development SDK and lockfile stay pinned to the reviewed OpenClaw baseline i
    `npm publish`. Run `npm logout` afterwards on shared machines.
 5. Confirm the registry tarball matches a local `npm pack` of the same commit, then
    create the `v<version>` tag and GitHub release from the changelog section.
+
+## ClawHub publication
+
+ClawHub plugins are separate from ClawHub skills. Before preparing a new release,
+keep `openclaw.compat` aligned with the supported host matrix and
+`openclaw.build` aligned with the pinned development SDK used for the build.
+ClawHub requires `openclaw.compat.pluginApi` and
+`openclaw.build.openclawVersion` inside the published package.
+
+Use the standalone ClawHub CLI, verify the publisher with `clawhub whoami`, and
+dry-run the exact verified release tarball before uploading it. Include the source
+repository, full release commit SHA, and release tag with the CLI source flags.
+For a scoped catalog name, the package name inside the archive must use the same
+scope as the selected owner. Resolve any package rename and consumer migration
+explicitly before releasing; do not substitute a catalog-only name for the npm
+artifact name.
+
+Never patch, rebuild, or repack an already-published npm tarball merely to add
+ClawHub metadata. The npm `2026.10.13` artifact predates these required fields and
+cannot pass current ClawHub validation unchanged. This checklist does not
+authorize a replacement artifact, version bump, npm release, or scoped rename.
+After an authorized future publication, verify the exact artifact identity and
+catalog version; pending security review is not installation approval.

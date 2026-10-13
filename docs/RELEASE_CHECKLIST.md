@@ -61,9 +61,10 @@ library to create the separate artifact (both destinations must be fresh):
 The recipe rejects any input other than the verified release SHA-256 and refuses
 to overwrite its output. It changes only `package.json.name`,
 `openclaw.compat.pluginApi`, `openclaw.build.openclawVersion`,
-`openclaw.channel.configuredState.env`, and the manifest display name. The env
+`openclaw.channel.configuredState.env`, the manifest display name, and removal
+of the unused manifest `channelEnvVars`. The env
 metadata requires both credentials and any one supported server URL alias.
-The legacy manifest `channelEnvVars` remains unchanged for compatibility.
+All supported hosts discover env vars from the package configured-state metadata.
 Every other file, including all runtime JavaScript, maps, and declarations,
 is copied byte-for-byte. Archive ordering, timestamps, and ownership
 are normalized; the resulting archive has its own digest, not the npm digest.

@@ -42,6 +42,7 @@ def main():
     tar_bytes = io.BytesIO()
     manifest = json.loads(files["package/openclaw.plugin.json"])
     manifest["name"] = "Zulip"
+    manifest.pop("channelEnvVars", None)
     files["package/openclaw.plugin.json"] = (json.dumps(manifest, indent=2, ensure_ascii=False) + "\n").encode()
     with tarfile.open(fileobj=tar_bytes, mode="w", format=tarfile.USTAR_FORMAT) as archive:
         for name in sorted(files):

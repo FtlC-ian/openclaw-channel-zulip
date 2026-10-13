@@ -9,6 +9,7 @@ const schemaModulePath = resolve(rootDir, "dist/src/config-schema.js");
 
 const manifestText = await readFile(manifestPath, "utf8");
 const manifest = JSON.parse(manifestText);
+const hasLegacyEnvVars = Object.hasOwn(manifest, "channelEnvVars");
 const { zulipChannelConfigSchema } = await import(schemaModulePath);
 const runtimeSchema = zulipChannelConfigSchema.schema;
 const topLevelStreaming = runtimeSchema?.properties?.streaming;
@@ -42,10 +43,14 @@ const synchronized = isDeepStrictEqual(manifestSchema.$defs.zulipStreamRule, str
 );
 
 if (process.argv.includes("--check")) {
+  if (hasLegacyEnvVars) {
+    throw new Error("Remove legacy channelEnvVars; env setup metadata belongs in package.json openclaw.channel.configuredState.env");
+  }
   if (!synchronized) {
     throw new Error("openclaw.plugin.json feedback schema is stale; run npm run manifest:sync after building");
   }
-} else if (!synchronized) {
+} else if (!synchronized || hasLegacyEnvVars) {
+  delete manifest.channelEnvVars;
   manifestSchema.$defs.zulipStreamRule = streamRule;
   for (const key of properties) {
     manifestSchema.properties[key] = runtimeSchema.properties[key];

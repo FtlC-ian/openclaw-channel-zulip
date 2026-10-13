@@ -1,93 +1,75 @@
 # ClawHub validation gate (2026.10.13 candidate)
 
-Publication remains blocked: validation exit 0 is not a findings-free result.
-ClawHub 0.23.3 with bundled plugin-inspector, targeting npm OpenClaw 2026.10.3,
-reports one open P2 issue on the final packed derivative:
+The branch artifact passes ClawHub 0.23.3 with bundled plugin-inspector,
+targeting npm OpenClaw 2026.10.3: status pass, breakageCount 0, warningCount 0,
+deprecationWarningCount 0, issueCount 0; issues and decisions are empty.
+This is validation evidence, not publication authorization.
 
-- Code: channel-env-vars; id: CRABPOT-45AD4542; owner: core.
-- Decision: core-compat-adapter; class: deprecation-warning.
-- Evidence: zulip; compatibility status: deprecated; runtimeCoverage: null.
-- Remediation: mirror current setup/config metadata while retaining the old
-  field until supported hosts no longer need it.
+## Metadata and compatibility
 
-The candidate adds package openclaw.channel.configuredState.env: both
-ZULIP_API_KEY and ZULIP_EMAIL are required, plus any one of ZULIP_URL,
-ZULIP_SITE, or ZULIP_REALM. The manifest gains name Zulip. Credentials,
-runtime code, doctor behavior, legacy channelEnvVars and the host floor stay
-unchanged. The manifest sync script only owns selected config schemas, not
-identity or package metadata; its check passes without a generator change.
-The frozen-release derivative recipe now mirrors both new metadata contracts.
+The manifest declares display name `Zulip` and no longer declares the unused
+top-level `channelEnvVars`. Package `openclaw.channel.configuredState.env` is
+the single source for setup discovery: allOf ZULIP_API_KEY and ZULIP_EMAIL;
+anyOf ZULIP_URL, ZULIP_SITE and ZULIP_REALM. Credentials, runtime source,
+doctor behavior and the >=2026.9.3 host floor are unchanged.
 
-## Validator contradiction
+Debbie verified host source for 2026.9.3, 2026.9.6, 2026.10.1-beta.2,
+2026.10.2 and 2026.10.3: resolveChannelEnvVars reads only
+plugin.packageChannel.configuredState.env. Other channelEnvVars occurrences
+are generated bundled-channel metadata, not external manifest reads. Thus no
+supported host requires the legacy manifest field. This satisfies the removal
+condition at https://docs.openclaw.ai/clawhub/plugin-validation-fixes#channel-env-vars.
 
-Installed plugin-inspector src/fixture-summary.js lines 531–547 emits the
-channel-env-vars warning whenever channelEnvVars has any keys. It never checks
-the replacement package configured-state metadata. Adding that metadata cannot
-clear this warning while retaining the field, contrary to the remediation at
-https://docs.openclaw.ai/clawhub/plugin-validation-fixes#channel-env-vars.
-Do not delete compatibility metadata, suppress findings, or raise the host
-floor merely to satisfy this scanner. An upstream disposition is required.
+The manifest sync script removes the legacy field in sync mode and rejects it
+in check mode. The frozen npm derivative recipe also removes it; that recipe
+still changes only package and manifest metadata, preserving runtime bytes.
+The current branch pack is a source-built artifact, not the frozen derivative.
 
-The originally reported manifest-unknown-fields finding is not reproduced by
-this exact CLI/target. Both baseline and candidate reports have manifestFields
-empty. The target's PluginManifestRecord is an intersection with an Omit-based
-static type; inspector openclaw-target.js parses object-type fields, and
-fixture-summary.js lines 987–990 skips coverage when the field list is empty.
-Its absence is a coverage gap, not proof of resolution. Only
-manifest-name-missing is demonstrably resolved among the three requested codes.
-The baseline additionally reported package-plugin-api-compat-missing, cleared
-by the incorporated PR 118 compatibility metadata.
+## Actual validator coverage
 
-## Provenance and verification
-
-Original npm SHA-256:
-aec3da32e020864640cb30bf1a8fa7dcb4922ac4e8a91657b27b3db38e59864b.
-Final scoped derivative SHA-256:
-3994a09c55743f836851189f22b685a40ffb8f62049037bd84ca25daa0e7877a.
-Two recipe runs match. All 210 file paths and modes match the input; only
-package.json and openclaw.plugin.json payloads differ. All runtime JS, maps
-and declarations remain byte-identical. The manifest semantic delta is name
-only; package delta is scope, compat/build metadata and configured-state env.
-The source's previously approved minGatewayVersion/pluginSdkVersion fields are
-not added to the frozen derivative; its original bounded recipe remains intact.
-
-Actual CLI validation used a fresh extraction of this exact archive:
+The packed branch was freshly extracted and checked using:
 
     clawhub package validate <extracted-package> --openclaw-version 2026.10.3 --json
 
-Result: pass, breakageCount 0, warningCount 1, issueCount 1, open issue above.
-Machine-readable receipts and archive audit live under
-/Volumes/WorkingSpace/openclaw/tmp/zulip-manifest-validation/:
-clean-final.json, baseline.json, artifact-audit.json, packed-hosts-final.log,
-hosts-negative.log, full-tests.log, accounts.log.
+No finding codes remain. The name, package compatibility metadata, and legacy
+channel-env-vars checks ran and produced no issues. Logged checks are
+seam-inventory (5 hooks, 1 registration, 0 manifest contracts),
+api-registrars-present, sdk-exports-present (28 observed imports), and
+package-metadata. No runtime contract probes ran.
 
-## Test-value gate
+**manifest-unknown-fields coverage is still skipped**: target manifestFields
+is empty, so inspector fixture-summary.js skips field coverage. Removing the
+legacy field addresses the originally reported unknown key, but this local
+validator cannot independently prove the complete manifest allowlist. No
+validator suppression, host-floor change or scanner workaround was used.
 
-- Env-only configured status: primary owner is the real host
-  hasChannelPackageState boundary in the existing approval-host smoke.
-  All three URL aliases complete setup; blank/missing credentials or URL do
-  not. Removing only configuredState makes all four host cases fail at the
-  expected ZULIP_URL setup assertion; restoring it passes. No mocks or new
-  production/test-only seams. Private host function discovery is the existing
-  external harness convention, not a new plugin export.
-- Runtime credentials: unchanged accounts.test.ts independently proves
-  configured/plain/SecretRef credentials, default-only env fallback, named
-  account isolation and explicit invalid SecretRef rejection (6 passing).
-  Retained as distinct from host pre-runtime configured status.
-- Packaging/display metadata: actual CLI baseline/final reports prove missing
-  display name red/pass; complete archive comparison proves bounded changes,
-  runtime byte preservation and source manifest/channel metadata agreement.
-  Two recipe runs match; exclusive output rejects overwrite. No duplicate
-  inventory-copying unit test added.
-- Old-host doctor/approval/heartbeat behavior: existing real-host smoke passes
-  on 2026.9.3, 2026.9.6, 2026.10.1-beta.1 and beta.2, including against the exact
-  packed frozen runtime. Source inspection shows 9.3 already consumes package
-  configuredState.env for env discovery; it does not establish that all old
-  host paths can discard legacy metadata. Retain it as explicitly requested.
-- Broader gates: build (TypeScript, manifest check, SDK exports), full suite
-  (32 Vitest files / 900 tests plus 14 Node tests), diff hygiene pass.
-  Reused installed dependencies; no clean-install reproducibility claim.
+## Verification and test-value gate
+
+- TypeScript, manifest --check and SDK export gate pass (35 source/built
+  specifiers against OpenClaw 2026.9.6).
+- Vitest: 32 files / 900 tests pass. Node migration/SDK checks: 14 pass.
+- Existing real-host smoke: 4 pass on 2026.9.3, 2026.9.6,
+  2026.10.1-beta.1 and beta.2, both source-built and exact packed runtime.
+- Env-name discovery is owned by each real host getChannelEnvVars boundary:
+  discovers the extracted package through plugins.load.paths and returns all
+  five expected names with no legacy manifest field. Removing only package
+  configuredState returns an empty list on 9.3 and 9.6 (red); restoring it
+  passes (green). The negative run on beta hosts encountered a host worker
+  lifecycle error, not a usable assertion; positive packed runs pass all four.
+- Env-only configured status is independently owned by real host
+  hasChannelPackageState: all three URL aliases complete setup with both
+  credentials; blank required fields and empty env do not. Existing coverage
+  retained; discovery and configured-state semantics prove distinct risks.
+- Runtime accounts tests remain distinct coverage for actual credential
+  resolution/SecretRef/default-account isolation; no runtime seams changed.
+- Sync removal/check rejection protects packaging against reintroducing the
+  unused manifest field. No new production exports or test-only seams.
+- Diff hygiene passes. Reused installed dependencies; no clean-install claim.
+
+Receipts: /Volumes/WorkingSpace/openclaw/workspaces/dex/zulip-119-receipts/
+validator.json, hosts.log, packed-hosts.log, negative.log, vitest.log, node.log
+and the packed branch tarball. PR 118 commits are patch-equivalent in PR 119
+(`git cherry HEAD origin/chore/clawhub-plugin-metadata` reports both as `-`);
+its package metadata is retained, with configured-state metadata added.
 
 No release, publication, version bump, installation or Gateway change occurred.
-PR 118 commits were incorporated on a separate branch off latest main without
-editing its worktree; PR 117 and the separate skill remain untouched.

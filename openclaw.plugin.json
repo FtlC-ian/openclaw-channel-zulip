@@ -7,15 +7,6 @@
   "doctorContract": {
     "stateMigrations": []
   },
-  "channelEnvVars": {
-    "zulip": [
-      "ZULIP_API_KEY",
-      "ZULIP_EMAIL",
-      "ZULIP_URL",
-      "ZULIP_SITE",
-      "ZULIP_REALM"
-    ]
-  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

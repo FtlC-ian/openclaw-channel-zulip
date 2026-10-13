@@ -2,9 +2,15 @@
 
 ## Unreleased
 
+## 2026.10.13
+
 ### Features
 - **Topic history context**: Opt-in account/stream live history in inbound agent context; off by default, bounded and untrusted, with topic isolation, widget filtering and best-effort timeout fallback. DMs are excluded.
 - **Reaction-triggered go**: Opt-in per-account `reactionTriggers` injects a continuation turn when an authorized human reacts to this bot's message. Defaults to `fast_forward` and "Go ahead."; normal stream, topic, sender and mention policies still apply. Persistent, non-expiring admission prevents repeat taps and reconnect replays. Approval prompts are excluded and approval emoji collisions are rejected.
+
+### Upgrade notes
+- Both features are off by default. Enable with `channels.zulip.reactionTriggers.enabled: true` and `channels.zulip.topicHistory.mode` (`on-demand` or `always`), per account or per stream.
+- Reactions do not count as mentions: in streams that require a mention, a reaction trigger is ignored there just like an unmentioned typed message.
 
 ## 2026.10.12
 

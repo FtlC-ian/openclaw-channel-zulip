@@ -27,6 +27,19 @@ const loadPackagedChannelSchema = (): JsonSchema => {
 };
 
 describe("Zulip lifecycle reaction config", () => {
+  it("validates reaction trigger defaults, limits and inherited approval collisions", () => {
+    const parse = zulipChannelConfigSchema.runtime.safeParse;
+    expect(parse({ reactionTriggers: { enabled: true } }).success).toBe(true);
+    expect(parse({ reactionTriggers: { enabled: false, emoji: ":fast_forward:", message: "Go ahead." } }).success).toBe(true);
+    for (const emoji of ["✅", "check", ":check:", "❌", "cross_mark"]) {
+      expect(parse({ reactionTriggers: { emoji } }).success).toBe(false);
+    }
+    expect(parse({ approvalReactions: { approve: "fast_forward" }, accounts: { work: { reactionTriggers: { enabled: true } } } }).success).toBe(false);
+    expect(parse({ reactionTriggers: { enabled: true }, accounts: { work: { approvalReactions: { deny: "fast_forward" } } } }).success).toBe(false);
+    for (const reactionTriggers of [{ emoji: "bad emoji" }, { message: " " }, { message: "a".repeat(501) }]) {
+      expect(parse({ reactionTriggers }).success).toBe(false);
+    }
+  });
   it("validates plain progress-card emoji names in top-level, account and packaged schemas", () => {
     const runtime = zulipChannelConfigSchema.schema as JsonSchema;
     const manifest = loadPackagedChannelSchema();

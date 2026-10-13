@@ -580,6 +580,52 @@ The plugin id is `zulip` (defined in `openclaw.plugin.json`). Use this id in `pl
 
 MIT © FtlC-ian
 
+## Reaction-triggered go (opt-in)
+
+Set this at `channels.zulip` or under an account:
+
+```json
+"reactionTriggers": {
+  "enabled": true,
+  "emoji": "fast_forward",
+  "message": "Go ahead."
+}
+```
+
+Default is off. Emoji defaults to `fast_forward` (⏩); colon-wrapped names are accepted.
+The injected message defaults to "Go ahead." and is limited to 500 characters.
+Only active human users reacting to this bot's messages can trigger turns. Stream
+topics retain their existing session; two-person DMs retain the reacting user's
+direct session. Group DMs are deliberately excluded because they have no existing
+group-DM session contract. The bot must be subscribed to the stream to receive its
+reaction events.
+
+Every trigger goes through normal inbound sender, DM/group, stream/topic, mention
+and onchar policies. A reaction does **not** count as a mention: with the default
+message, mention-required streams will not trigger. Use a stream override with
+`requireMention: false` only where you already want unmentioned typed messages
+accepted. Running turns use the same core admission/queue behavior as typed input.
+
+Approval prompts (including companion widgets) are not continuation targets;
+the trigger emoji must differ from **both** approval emojis, including inherited
+account configuration. Reaction removals never trigger turns.
+Hosts whose CLI validates only the packaged JSON schema cannot express cross-field
+emoji equality: a collision may pass `config set --dry-run`, but the plugin rejects
+it when resolving the effective account, before startup or live event handling.
+
+An atomic plugin-state ledger records each (message, user, emoji) admission without
+TTL or eviction, so removing/re-adding, reconnecting and ordinary ingress retention
+expiry cannot trigger it again. It stores only hashes, not content or credentials.
+The ledger uses one row per realm/bot/account (up to ten scopes) and fails closed
+if state is unavailable, full, or cannot be written. At the host's per-value size
+limit, new triggers stop rather than evicting old identities. Do not clear this
+state unless deliberately resetting repeat protection.
+
+Admission is recorded before enqueueing: a crash or write failure between those
+operations can lose a tap, but never makes the same tap eligible again. Already
+queued work retains normal durable ingress retry behavior. This is an at-most-once
+**trigger admission**, not an exactly-once guarantee for agent/tool execution.
+
 ## Approval reactions
 
 Exec and plugin approval messages retain their zform buttons and also offer

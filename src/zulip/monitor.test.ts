@@ -59,6 +59,13 @@ const state = vi.hoisted(() => {
         return true;
       }),
       lookup: vi.fn(async (key: string) => values.get(key)?.value),
+      update: vi.fn(async (key: string, update: (current: T | undefined) => T | undefined) => {
+        const next = update(values.get(key)?.value);
+        if (next === undefined) return false;
+        enforceLimit(key);
+        values.set(key, { key, value: next, createdAt: Date.now() });
+        return true;
+      }),
       consume: vi.fn(async (key: string) => {
         const value = values.get(key)?.value;
         values.delete(key);
@@ -453,6 +460,7 @@ function makeChannelMessage(id: number) {
   };
 }
 
+
 function makePrivateMessage(id: number, senderEmail = "user8@zlp.pubnerd.app") {
   return {
     id,
@@ -566,6 +574,113 @@ function enableDurableInboundJournal(
 }
 
 describe("monitorZulipProvider", () => {
+describe("reaction continuation ingress", () => {
+  const reaction = { id: 1, type: "reaction", op: "add", message_id: 81001,
+    user_id: 123, emoji_name: "fast_forward", reaction_type: "unicode_emoji" };
+  function setup(target = { ...makeChannelMessage(81001), sender_id: 999 }) {
+    reaction.message_id += 1;
+    target.id = reaction.message_id;
+    enableDurableInboundJournal();
+    state.account.config.reactionTriggers = { enabled: true };
+    state.client.request.mockImplementation(async (path: string) => {
+      if (path === "/users/123") return { result: "success", user: { user_id: 123, email: "user8@zlp.pubnerd.app", full_name: "Ian F", is_bot: false } };
+      if (path === "/messages/" + reaction.message_id) return { result: "success", message: target };
+      throw new Error("Unexpected request " + path);
+    });
+  }
+  it("dispatches one same-topic turn across replay, removal/re-add and monitor restart", async () => {
+    setup();
+    state.pollResponses = [{ events: [reaction, { ...reaction, id: 2, op: "remove" }, { ...reaction, id: 3 }] }];
+    await runMonitorOnce();
+    expect(state.core.channel.inbound.dispatch).toHaveBeenCalledTimes(1);
+    const ctx = state.core.channel.inbound.dispatch.mock.calls[0][0].ctxPayload;
+    expect(ctx.SessionKey).toContain("zulip");
+    expect(ctx.BodyForAgent).toBe("Go ahead.");
+    const { clearZulipAccountMonitorCaches } = await import("./monitor.js");
+    clearZulipAccountMonitorCaches("default", true);
+    state.durableQueues = new Map();
+    state.pollResponses = [{ events: [{ ...reaction, id: 4 }] }];
+    await runMonitorOnce();
+    expect(state.core.channel.inbound.dispatch).toHaveBeenCalledTimes(1);
+  });
+  it.each(["allowlist", "disabled", "mention", "stream", "topic"])("does not bypass %s policy", async guard => {
+    setup();
+    if (guard === "allowlist") { state.account.config.groupPolicy = "allowlist"; state.account.config.groupAllowFrom = ["other@example.test"]; }
+    if (guard === "disabled") state.account.config.groupPolicy = "disabled";
+    if (guard === "mention") {
+      state.account.requireMention = true;
+      state.core.channel.groups.resolveRequireMention.mockImplementation(({ requireMentionOverride }) => requireMentionOverride);
+    }
+    if (guard === "stream") { state.account.streams = ["other"]; state.account.config.streams = ["other"]; }
+    if (guard === "topic") state.account.config.topics = ["other"];
+    state.pollResponses = [{ events: [reaction] }];
+    await runMonitorOnce();
+    expect(state.core.channel.inbound.dispatch).not.toHaveBeenCalled();
+    const ledger = state.durableStores.get("zulip.reaction-triggers.v1");
+    expect(await ledger?.entries()).toEqual([]);
+  });
+  it("ignores reactions on another sender's message", async () => {
+    setup({ ...makeChannelMessage(81001), sender_id: 777 });
+    state.pollResponses = [{ events: [reaction] }];
+    await runMonitorOnce();
+    expect(state.core.channel.inbound.dispatch).not.toHaveBeenCalled();
+  });
+  it("routes a two-person DM to the reacting user's existing direct session", async () => {
+    setup({ ...makePrivateMessage(81001), sender_id: 999 } as any);
+    state.pollResponses = [{ events: [reaction] }];
+    await runMonitorOnce();
+    expect(state.core.channel.inbound.dispatch).toHaveBeenCalledTimes(1);
+    const ctx = state.core.channel.inbound.dispatch.mock.calls[0][0].ctxPayload;
+    expect(ctx.ChatType).toBe("direct");
+    expect(ctx.From).toContain("user8@zlp.pubnerd.app");
+  });
+  it.each(["disabled", "allowlist", "outsider", "group"])("rejects %s DM reactions", async guard => {
+    const target = { ...makePrivateMessage(81001), sender_id: 999 };
+    if (guard === "outsider") target.display_recipient[0].id = 777;
+    if (guard === "group") target.display_recipient.push({ id: 777, email: "third@test", full_name: "Third" });
+    setup(target as any);
+    if (guard === "disabled") state.account.config.dmPolicy = "disabled";
+    if (guard === "allowlist") { state.account.config.dmPolicy = "allowlist"; state.account.config.allowFrom = ["other@test"]; }
+    state.pollResponses = [{ events: [reaction] }];
+    await runMonitorOnce();
+    expect(state.core.channel.inbound.dispatch).not.toHaveBeenCalled();
+  });
+  it.each(["bot", "inactive", "self", "off", "approval"])("ignores %s reactions", async guard => {
+    const target = { ...makeChannelMessage(81001), sender_id: 999 };
+    if (guard === "approval") target.content = "Approval required: /approve example allow-once";
+    setup(target);
+    if (guard === "off") state.account.config.reactionTriggers.enabled = false;
+    if (guard === "bot" || guard === "inactive") state.client.request.mockImplementation(async path =>
+      path === "/users/123" ? { result: "success", user: { user_id: 123, email: "user8@zlp.pubnerd.app", is_bot: guard === "bot", is_active: guard !== "inactive" } } : { result: "success", message: target });
+    state.pollResponses = [{ events: [{ ...reaction, user_id: guard === "self" ? 999 : 123 }] }];
+    await runMonitorOnce();
+    expect(state.core.channel.inbound.dispatch).not.toHaveBeenCalled();
+  });
+  it("fails closed when live config enables triggers after startup without durable state", async () => {
+    setup();
+    state.core.state = undefined;
+    state.account.config.reactionTriggers.enabled = false;
+    getZulipEventsWithRetryMock.mockImplementationOnce(async () => {
+      state.account.config.reactionTriggers.enabled = true;
+      return { events: [reaction, { ...reaction, id: 2, op: "remove" }, { ...reaction, id: 3 }] };
+    });
+    await runMonitorOnce();
+    expect(state.core.channel.inbound.dispatch).not.toHaveBeenCalled();
+  });
+  it("fails closed when durable ledger admission fails", async () => {
+    setup();
+    const open = state.core.state!.openKeyedStore;
+    open.mockImplementation((options: { namespace: string }) => {
+      const store = state.durableStores.get(options.namespace) ?? state.createMemoryKeyedStore();
+      state.durableStores.set(options.namespace, store);
+      if (options.namespace === "zulip.reaction-triggers.v1") store.update.mockRejectedValue(new Error("disk full"));
+      return store;
+    });
+    state.pollResponses = [{ events: [reaction] }];
+    await runMonitorOnce();
+    expect(state.core.channel.inbound.dispatch).not.toHaveBeenCalled();
+  });
+});
   afterEach(() => vi.useRealTimers());
 
   beforeEach(async () => {

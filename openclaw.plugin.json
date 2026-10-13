@@ -597,6 +597,24 @@
                   }
                 },
                 "additionalProperties": false
+              },
+              "reactionTriggers": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "emoji": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "message": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500
+                  }
+                },
+                "additionalProperties": false
               }
             }
           }
@@ -1013,6 +1031,24 @@
               "activeEmoji": {
                 "type": "string",
                 "pattern": "^[a-zA-Z0-9_-]+$(?![\\s\\S])"
+              }
+            },
+            "additionalProperties": false
+          },
+          "reactionTriggers": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "emoji": {
+                "type": "string",
+                "minLength": 1
+              },
+              "message": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
               }
             },
             "additionalProperties": false

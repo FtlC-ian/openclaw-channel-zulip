@@ -2,6 +2,7 @@ import { z } from "zod";
 import { buildJsonChannelConfigSchema } from "openclaw/plugin-sdk/channel-config-schema";
 import { buildOptionalSecretInputSchema } from "openclaw/plugin-sdk/secret-input";
 import { isSupportedZulipReactionValue } from "./zulip/status-reactions.js";
+import { reactionTriggerApprovalCollision } from "./zulip/reaction-triggers.js";
 import {
   normalizeZulipStreamIdSelector,
   normalizeZulipStreamName,
@@ -145,6 +146,19 @@ const ThinkingPlaceholderSchema = z
   .strict();
 
 const OptionalSecretInputSchema = buildOptionalSecretInputSchema();
+const ReactionTriggersSchema = z.object({
+  enabled: z.boolean().optional(),
+  emoji: ZulipReactionEmojiSchema.min(1).optional(),
+  message: z.string().trim().min(1).max(500).optional(),
+}).strict();
+
+function validateReactionTriggers(value: { reactionTriggers?: { emoji?: string }; approvalReactions?: { approve?: string; deny?: string } }, ctx: z.RefinementCtx, path: Array<string | number> = []) {
+  if (!value.reactionTriggers) return;
+  if (![value.reactionTriggers.emoji ?? "fast_forward", value.approvalReactions?.approve ?? "✅", value.approvalReactions?.deny ?? "❌"].every(isSupportedZulipReactionValue)) return;
+  if (reactionTriggerApprovalCollision(value)) {
+    ctx.addIssue({ code: "custom", path: [...path, "reactionTriggers", "emoji"], message: "Reaction trigger emoji must differ from both approval emojis" });
+  }
+}
 
 const MarkdownConfigSchema = z
   .object({
@@ -205,6 +219,7 @@ const ZulipAccountSchemaBase = z
     groupPolicy: GroupPolicySchema.optional(),
     mediaMaxMb: z.number().int().positive().optional(),
     markHandledRead: z.boolean().optional(),
+    reactionTriggers: ReactionTriggersSchema.optional(),
     approvalReactions: z.object({ approve: ZulipReactionEmojiSchema.min(1).optional(), deny: ZulipReactionEmojiSchema.min(1).optional() }).strict().optional(),
     reactions: z
       .object({
@@ -233,6 +248,7 @@ const ZulipAccountSchemaBase = z
   .strict();
 
 const ZulipAccountSchema = ZulipAccountSchemaBase.superRefine((value, ctx) => {
+  validateReactionTriggers(value, ctx);
   requireOpenAllowFrom({
     policy: value.dmPolicy,
     allowFrom: value.allowFrom,
@@ -246,6 +262,10 @@ const ZulipConfigSchema = ZulipAccountSchemaBase.extend({
   accounts: z.record(z.string(), ZulipAccountSchema.optional()).optional(),
   defaultAccount: z.string().optional(),
 }).superRefine((value, ctx) => {
+  validateReactionTriggers(value, ctx);
+  for (const [accountId, account] of Object.entries(value.accounts ?? {})) {
+    if (account) validateReactionTriggers({ ...value, ...account }, ctx, ["accounts", accountId]);
+  }
   requireOpenAllowFrom({
     policy: value.dmPolicy,
     allowFrom: value.allowFrom,

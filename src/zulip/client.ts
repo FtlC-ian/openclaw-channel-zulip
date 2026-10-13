@@ -65,6 +65,7 @@ export type ZulipSubscription = {
 };
 
 export type ZulipMessage = {
+  reactionTriggerKey?: string;
   id: string;
   flags?: string[];
   sender_id?: string | null;

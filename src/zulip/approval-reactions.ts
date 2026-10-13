@@ -129,6 +129,12 @@ export class ZulipApprovalReactions {
     };
   }
   private key(accountId: string, id: string): string { return JSON.stringify([accountId, id]); }
+  async isPrompt(accountId: string, messageId: string, client: ZulipClient): Promise<boolean> {
+    if (await this.targets.lookup(this.key(accountId, messageId))) return true;
+    if ([...this.bindings.values()].some(binding => binding.accountId === accountId && binding.widgetMessageId === messageId)) return true;
+    return (await durableBindings.records(accountId, client)).some(({ record }) =>
+      record.kind === "approval" && (record.messageId === messageId || record.companionId === messageId));
+  }
   private prune(): void {
     const now = Date.now();
     for (const [key, terminal] of this.terminals) if (terminal.expiresAtMs <= now) this.terminals.delete(key);

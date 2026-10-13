@@ -53,9 +53,10 @@ validator suppression, host-floor change or scanner workaround was used.
 - Env-name discovery is owned by each real host getChannelEnvVars boundary:
   discovers the extracted package through plugins.load.paths and returns all
   five expected names with no legacy manifest field. Removing only package
-  configuredState returns an empty list on 9.3 and 9.6 (red); restoring it
-  passes (green). The negative run on beta hosts encountered a host worker
-  lifecycle error, not a usable assertion; positive packed runs pass all four.
+  configuredState from an isolated artifact copy returns an empty list on
+  all four hosts (red); the intact packed artifact passes (green). An initial
+  symlinked negative fixture mixed SDK roots and was discarded; negative-copy.log
+  is the usable isolated regression receipt.
 - Env-only configured status is independently owned by real host
   hasChannelPackageState: all three URL aliases complete setup with both
   credentials; blank required fields and empty env do not. Existing coverage
@@ -63,11 +64,16 @@ validator suppression, host-floor change or scanner workaround was used.
 - Runtime accounts tests remain distinct coverage for actual credential
   resolution/SecretRef/default-account isolation; no runtime seams changed.
 - Sync removal/check rejection protects packaging against reintroducing the
-  unused manifest field. No new production exports or test-only seams.
+  unused manifest field: injecting it makes --check fail; sync removes it and
+  reproduces the original manifest byte-for-byte. No new production exports
+  or test-only seams.
+- Frozen derivative recipe: two independent archives match; actual validator
+  also reports zero warnings/breakages/issues. SHA-256:
+  56a579fcd2868148f0d11a4ada50681cbcb12b0dd80ea3a35802ff83ce9dd411.
 - Diff hygiene passes. Reused installed dependencies; no clean-install claim.
 
 Receipts: /Volumes/WorkingSpace/openclaw/workspaces/dex/zulip-119-receipts/
-validator.json, hosts.log, packed-hosts.log, negative.log, vitest.log, node.log
+validator.json, hosts.log, packed-hosts.log, negative-copy.log, vitest.log, node.log
 and the packed branch tarball. PR 118 commits are patch-equivalent in PR 119
 (`git cherry HEAD origin/chore/clawhub-plugin-metadata` reports both as `-`);
 its package metadata is retained, with configured-state metadata added.

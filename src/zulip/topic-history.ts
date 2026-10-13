@@ -85,7 +85,7 @@ export async function fetchTopicHistory(params: HistoryParams): Promise<string |
   try {
     const work = async () => {
       const [messages, bindings] = await Promise.all([
-        fetchZulipMessages(params.client, { stream: params.streamId, topic: params.topic, limit: Math.min(201, params.config.maxMessages * 2 + 1) }),
+        fetchZulipMessages(params.client, { stream: Number(params.streamId), topic: params.topic, limit: Math.min(201, params.config.maxMessages * 2 + 1) }),
         durableBindings.records(params.accountId, params.client),
       ]);
       const excluded = new Set(bindings.flatMap(({ record }) => [record.messageId, ...(record.companionId ? [record.companionId] : [])]));

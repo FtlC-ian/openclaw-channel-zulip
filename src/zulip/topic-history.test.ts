@@ -26,7 +26,7 @@ describe("topic history owner boundary", () => {
     const block = await fetchTopicHistory(params);
     expect(rows(block!)).toEqual([expect.objectContaining({ id: "1", content: "Earlier discussion" })]);
     const url = new URL(String(fetchImpl.mock.calls[0][0]));
-    expect(JSON.parse(url.searchParams.get("narrow")!)).toEqual([{ operator: "stream", operand: "18" }, { operator: "topic", operand: "history-test" }]);
+    expect(JSON.parse(url.searchParams.get("narrow")!)).toEqual([{ operator: "stream", operand: 18 }, { operator: "topic", operand: "history-test" }]);
     expect(url.searchParams.get("anchor")).toBe("newest");
     expect(url.searchParams.get("num_before")).toBe("41");
     expect(url.searchParams.get("num_after")).toBe("0");

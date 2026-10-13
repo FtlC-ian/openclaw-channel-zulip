@@ -1016,7 +1016,7 @@ export function createZulipReadBatcher(client: ZulipClient): {
 export async function fetchZulipMessages(
   client: ZulipClient,
   params: {
-    stream: string;
+    stream: string | number;
     topic?: string;
     limit?: number;
   },

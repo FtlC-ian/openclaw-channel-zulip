@@ -62,6 +62,14 @@
     "vitest": "^3.2.4"
   },
   "openclaw": {
+    "compat": {
+      "pluginApi": ">=2026.9.3",
+      "minGatewayVersion": "2026.9.3"
+    },
+    "build": {
+      "openclawVersion": "2026.9.6",
+      "pluginSdkVersion": "2026.9.6"
+    },
     "extensions": [
       "./dist/index.js"
     ],

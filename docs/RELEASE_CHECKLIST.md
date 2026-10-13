@@ -40,9 +40,38 @@ scope as the selected owner. Resolve any package rename and consumer migration
 explicitly before releasing; do not substitute a catalog-only name for the npm
 artifact name.
 
-Never patch, rebuild, or repack an already-published npm tarball merely to add
-ClawHub metadata. The npm `2026.10.13` artifact predates these required fields and
-cannot pass current ClawHub validation unchanged. This checklist does not
-authorize a replacement artifact, version bump, npm release, or scoped rename.
-After an authorized future publication, verify the exact artifact identity and
-catalog version; pending security review is not installation approval.
+Never overwrite or silently replace an already-published npm artifact. The npm
+`2026.10.13` artifact predates these required fields and cannot pass current
+ClawHub validation unchanged.
+
+### Authorized ClawHub-only artifact for 2026.10.13
+
+The npm name remains `openclaw-channel-zulip`. The owner separately authorized
+the catalog artifact `@ftlc-ian/openclaw-channel-zulip@2026.10.13`, derived from
+the original npm tarball at release commit
+`26a717007c5e2c9e20bca488fecbc69c6fe77fd7`. This is not an npm name migration
+or an npm republish. Its root manifest id remains `zulip`.
+
+Download that npm version without running scripts, then use Python 3's standard
+library to create the separate artifact (both destinations must be fresh):
+
+    npm pack openclaw-channel-zulip@2026.10.13 --ignore-scripts --pack-destination /path/to/input
+    python3 scripts/package-clawhub-2026.10.13.py /path/to/input/openclaw-channel-zulip-2026.10.13.tgz /path/to/output/ftlc-ian-openclaw-channel-zulip-2026.10.13.tgz
+
+The recipe rejects any input other than the verified release SHA-256 and refuses
+to overwrite its output. It changes only `package.json.name`,
+`openclaw.compat.pluginApi`, and `openclaw.build.openclawVersion`. Every other
+file, including all runtime JavaScript, maps, declarations, and the plugin
+manifest, is copied byte-for-byte. Archive ordering, timestamps, and ownership
+are normalized; the resulting archive has its own digest, not the npm digest.
+Compare complete extracted file inventories and contents, semantic package JSON
+differences, and two independent recipe outputs before publication.
+
+Use the actual ClawHub CLI on this exact derived tarball, with `--owner ftlc-ian`,
+`--source-repo FtlC-ian/openclaw-channel-zulip`, the full release SHA via
+`--source-commit`, and `--source-ref v2026.10.13`. Run `--dry-run --json` first.
+Only a verified account controlling `ftlc-ian` (or its authorized publisher
+manager) may upload. Keep the original npm archive and the separate catalog
+archive receipts distinct. Do not change npm versions/tags or installed state.
+After publication, verify the catalog version and exact downloaded artifact
+identity; pending security review is not installation approval.

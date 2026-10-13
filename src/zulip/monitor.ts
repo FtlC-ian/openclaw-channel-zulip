@@ -1,5 +1,6 @@
 import { startZulipApprovalObserver, stripLeadingZulipApprovalBotMention, zulipApprovalReactions } from "./approval-reactions.js";
 import { zulipProgressCards } from "./progress-card.js";
+import { fetchTopicHistory, resolveTopicHistoryConfig, shouldFetchTopicHistory } from "./topic-history.js";
 import { startDurableBindings, durableBindings, bindingScope, type DurableRecord } from "./durable-bindings.js";
 import { ZulipConnection } from "./connection.js";
 import { buildReactionContinuation, claimReactionTrigger } from "./reaction-triggers.js";
@@ -1213,7 +1214,24 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     // Bind only keys constructed by the v2 account-scoped routing helpers.
     zulipProgressCards.bind(sessionKey, { accountId: account.accountId, client, conversation: questionConversation, enabled: () => resolveZulipAccount({ cfg: opts.getConfig?.() ?? cfg, accountId: account.accountId }).config.progressCard?.enabled === true, activeEmoji: () => resolveZulipAccount({ cfg: opts.getConfig?.() ?? cfg, accountId: account.accountId }).config.progressCard?.activeEmoji });
     const timestamp = message.timestamp ? message.timestamp * 1000 : undefined;
-    const textWithId = `${bodyText}\n[zulip message id: ${messageId}]`;
+    const historyConfig = resolveTopicHistoryConfig(inboundStreamPolicy?.topicHistory);
+    let hasPriorSession = true;
+    if (!isDM && historyConfig.mode === "on-demand") {
+      try {
+        hasPriorSession = Boolean(core.channel.session.readSessionUpdatedAt({
+          storePath: core.agent.session.resolveStorePath(cfg.session?.store, { agentId: route.agentId }),
+          sessionKey,
+        }));
+      } catch {
+        // Unknown session state must not turn every on-demand message into a fetch.
+      }
+    }
+    const topicHistory = !isDM && shouldFetchTopicHistory(historyConfig.mode, bodyText, hasPriorSession)
+      ? await fetchTopicHistory({ client, accountId: messageAccount.accountId, streamId, topic, messageId,
+          botUserId: String(botUserId), botEmail, config: historyConfig,
+          placeholderTexts: [thinkingPlaceholderText, thinkingPlaceholderConfig?.errorText ?? ""], log: message => runtime.log?.(message) })
+      : undefined;
+    const textWithId = `${bodyText}\n[zulip message id: ${messageId}]${topicHistory ? `\n\n${topicHistory}` : ""}`;
     const body = formatInboundEnvelope({
       channel: "Zulip",
       from: fromLabel,
@@ -1248,7 +1266,8 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         replyToId: messageId,
         messageThreadId: isDM ? undefined : topic,
       },
-      message: { body, rawBody: bodyText, commandBody: bodyText },
+      message: { body, rawBody: bodyText, commandBody: bodyText,
+        ...(topicHistory ? { bodyForAgent: bodyText + "\n\n" + topicHistory } : {}) },
       access: {
         commands: { authorized: commandAuthorized },
         ...(kind !== "dm" ? {

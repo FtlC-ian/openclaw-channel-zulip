@@ -65,6 +65,7 @@ export type ZulipSubscription = {
 };
 
 export type ZulipMessage = {
+  submessages?: Array<{ msg_type?: string }>;
   reactionTriggerKey?: string;
   id: string;
   flags?: string[];
@@ -1015,7 +1016,7 @@ export function createZulipReadBatcher(client: ZulipClient): {
 export async function fetchZulipMessages(
   client: ZulipClient,
   params: {
-    stream: string;
+    stream: string | number;
     topic?: string;
     limit?: number;
   },

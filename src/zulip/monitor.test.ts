@@ -333,6 +333,7 @@ const getZulipEventsWithRetryMock = vi.fn(async () => {
   return next;
 });
 const deleteZulipQueueMock = vi.fn(async () => {});
+const fetchZulipMessagesMock = vi.fn(async () => [] as import("./client.js").ZulipMessage[]);
 const fetchZulipSubscriptionsMock = vi.fn(async () => state.streamSubscriptions);
 const fetchZulipStreamMock = vi.fn(async (_client: unknown, streamId: string) => {
   const result = state.streamLookups.get(String(streamId));
@@ -355,6 +356,7 @@ vi.mock("./client.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("./client.js")>(),
   createZulipClient: vi.fn(() => state.client),
   fetchZulipMe: vi.fn(async () => state.botUser),
+  fetchZulipMessages: fetchZulipMessagesMock,
   fetchZulipStream: fetchZulipStreamMock,
   fetchZulipSubscriptions: fetchZulipSubscriptionsMock,
   normalizeZulipBaseUrl: vi.fn((url?: string) => url ?? ""),
@@ -740,6 +742,7 @@ describe("reaction continuation ingress", () => {
     registerZulipQueueMock.mockClear();
     getZulipEventsWithRetryMock.mockClear();
     deleteZulipQueueMock.mockClear();
+    fetchZulipMessagesMock.mockReset().mockResolvedValue([]);
     fetchZulipSubscriptionsMock.mockClear();
     fetchZulipStreamMock.mockClear();
     state.addZulipReaction.mockReset().mockResolvedValue(undefined);
@@ -865,6 +868,39 @@ describe("reaction continuation ingress", () => {
     }));
     expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(1);
     expect(state.core.system.enqueueSystemEvent).not.toHaveBeenCalled();
+  });
+
+  it.each(["always", "on-demand"] as const)("injects live history into BodyForAgent in %s mode without changing command input", async mode => {
+    state.account.config.topicHistory = { mode };
+    const inbound = makeChannelMessage(mode === "always" ? 9120001 : 9120002);
+    inbound.content = "What did we discuss earlier here?";
+    fetchZulipMessagesMock.mockResolvedValue([{ ...inbound, id: "9120000", stream_id: "4", content: "<p>Earlier decision: blue deployment.</p>", timestamp: Math.floor(Date.now() / 1000) - 10 }]);
+    state.pollResponses = [{ result: "success", events: [{ id: 1, type: "message", message: inbound }] }];
+    await runMonitorOnce();
+    const context = state.core.channel.inbound.buildContext.mock.results[0].value;
+    expect(context.BodyForAgent).toContain("Untrusted quoted Zulip topic history");
+    expect(context.BodyForAgent).toContain("Earlier decision: blue deployment.");
+    expect(context.RawBody).toBe(inbound.content);
+    expect(context.CommandBody).toBe(inbound.content);
+    expect(state.core.channel.inbound.dispatch).toHaveBeenCalledWith(expect.objectContaining({ ctxPayload: context }));
+  });
+
+  it.each(["off", "dm", "timeout", "error", "prior", "fresh"])("continues dispatch with topic-history condition %s", async condition => {
+    state.account.config.topicHistory = { mode: condition === "off" ? "off" : condition === "prior" || condition === "fresh" ? "on-demand" : "always", timeoutMs: 5 };
+    Object.assign(state.core.channel.session, { readSessionUpdatedAt: vi.fn(() => condition === "fresh" ? undefined : 123) });
+    if (condition === "timeout") fetchZulipMessagesMock.mockImplementation(() => new Promise(() => {}));
+    if (condition === "error") fetchZulipMessagesMock.mockRejectedValue(new Error("forbidden"));
+    const id = 9120010 + ["off", "dm", "timeout", "error", "prior", "fresh"].indexOf(condition);
+    const inbound = condition === "dm" ? makePrivateMessage(id) : makeChannelMessage(id);
+    state.autoAbort = false;
+    const controller = new AbortController();
+    const stop = setTimeout(() => controller.abort(), 40);
+    state.pollResponses = [{ result: "success", events: [{ id: 1, type: "message", message: inbound }] }];
+    await runMonitorOnce(controller);
+    clearTimeout(stop);
+    expect(state.core.channel.inbound.dispatch).toHaveBeenCalledOnce();
+    expect(state.core.channel.inbound.buildContext.mock.results[0].value.BodyForAgent).not.toContain("Untrusted quoted");
+    expect(fetchZulipMessagesMock).toHaveBeenCalledTimes(["off", "dm", "prior"].includes(condition) ? 0 : 1);
   });
 
   it("emits bounded channel-turn lifecycle and result diagnostics", async () => {

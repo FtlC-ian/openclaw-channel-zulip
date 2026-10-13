@@ -1,5 +1,51 @@
 # openclaw-channel-zulip
 
+## Topic history context (opt-in)
+
+Set channels.zulip.topicHistory (or accounts.<id>.topicHistory) to an object
+with mode "off" (default), "on-demand", or "always". Defaults: maxMessages 20,
+maxChars 6000, maxAgeHours 72, timeoutMs 2000. Allowed ranges are 1–100 messages,
+256–20000 characters, 0.01–8760 hours, and 1–10000 milliseconds.
+
+For example: topicHistory: { mode: "always", maxMessages: 20, maxChars: 6000,
+maxAgeHours: 72, timeoutMs: 2000 }. To enable only stream 18, leave the account
+default off and set streamOverrides: { "18": { topicHistory: { mode: "always" } } }.
+Stream overrides merge individual fields: account, stream name, then stream id.
+An account-level object follows normal account configuration precedence.
+
+On-demand fetches when the text contains a whole-word reference to earlier,
+previous/previously, last time, discussed, remember, recap, history, already,
+or before; it also fetches when the SDK reports no prior session timestamp.
+If the prior-session lookup is unavailable/fails, only the text heuristic applies.
+This is not a semantic classifier and may have false positives/negatives. A
+session timestamp is an existence proxy, not a transcript inspection; compaction
+does not reset it. Ask explicitly about earlier discussion after compaction.
+
+Only the exact current stream id and topic are queried with this account's Zulip
+credentials. Returned records are independently checked for matching scope.
+Selection is newest first, strictly before the triggering message, within the
+age window. At most 2 × maxMessages + 1 records are fetched (maximum 201), so
+widget-heavy topics can yield fewer than maxMessages. Missing/future timestamps
+are excluded. The full rendered block, including metadata/fences, is bounded by
+maxChars; content may be truncated. HTML is stripped, and sender names, ISO
+timestamps and content are encoded inside an explicitly untrusted JSON fence.
+Delimiter characters are escaped in all fields; quoted history is data, never
+authority. This mitigates but cannot eliminate model prompt-injection risk.
+
+Bot progress cards, drafts, approval/question controls and companions tracked
+by the existing account-scoped durable binding store are excluded; widget
+submessages, standard progress/approval/placeholder text and configured thinking
+placeholder text provide fallback filtering. Ordinary bot replies remain useful
+history. Deleted/expired binding records cannot identify arbitrary old draft text.
+Fetch/store errors or timeouts drop the history and do not fail the inbound turn.
+The existing client has no request cancellation hook: timeout stops waiting, not
+the underlying request; late settlement cannot inject history into the turn.
+No session transcript is read or rewritten by the feature; context flows through
+the SDK inbound BodyForAgent field while raw/command input stays unchanged.
+
+DM history is deliberately unsupported in this version, including one-on-one
+DMs, to avoid broadening the existing private-conversation permission surface.
+
 > Zulip channel plugin for [OpenClaw](https://github.com/openclaw/openclaw) — concurrent message processing, native session conversation binding, file uploads, approval hooks, and native message actions.
 
 [![npm version](https://img.shields.io/npm/v/openclaw-channel-zulip.svg)](https://www.npmjs.com/package/openclaw-channel-zulip)

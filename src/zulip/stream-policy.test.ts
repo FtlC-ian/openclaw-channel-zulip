@@ -7,6 +7,16 @@ import {
 } from "./stream-policy.js";
 
 describe("Zulip inbound stream policy", () => {
+  it("merges topic history account, name then id overrides without expanding selection", () => {
+    const policy = resolveZulipInboundStreamPolicy({ streamId: "18", streamName: "general", config: {
+      streams: ["different"], topicHistory: { mode: "always", maxMessages: 20 }, streamOverrides: {
+        general: { topicHistory: { maxMessages: 3, maxChars: 1000 } },
+        "18": { topicHistory: { mode: "off", maxChars: 500 } },
+      },
+    } });
+    expect(policy.enabled).toBe(false);
+    expect(policy.topicHistory).toEqual({ mode: "off", maxMessages: 3, maxChars: 500 });
+  });
   it("preserves legacy stream and topic filters", () => {
     const enabled = resolveZulipInboundStreamPolicy({
       config: { streams: [" General "], topics: ["support"], streamTopics: { GENERAL: ["triage"] } },

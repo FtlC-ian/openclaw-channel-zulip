@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 2026.10.14
+
+### Compatibility
+- **ClawHub package metadata** (#119): Declare `openclaw.compat.pluginApi`, `openclaw.compat.minGatewayVersion` and `openclaw.build`, add the manifest display name, and declare channel env vars through `openclaw.channel.configuredState.env` (both credentials plus any one server URL alias). The unused legacy manifest `channelEnvVars` field is removed; every supported host (2026.9.3 and newer) discovers env vars from the package metadata. `clawhub package validate --openclaw-version 2026.10.3` now reports no warnings.
+
+### Documentation
+- **Install vs update** (#117): Document first install versus tracked updates, and `openclaw plugins reload zulip --wait` when an install or update reports that the replacement was not applied because work was still draining. No gateway restart or reinstall is needed.
+
 ## 2026.10.13
 
 ### Features

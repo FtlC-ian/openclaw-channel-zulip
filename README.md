@@ -1,58 +1,5 @@
 # openclaw-channel-zulip
 
-## Topic history context (opt-in)
-
-Set channels.zulip.topicHistory (or accounts.<id>.topicHistory) to an object
-with mode "off" (default), "on-demand", or "always". Defaults: maxMessages 20,
-maxChars 6000, maxAgeHours 72, timeoutMs 2000. Allowed ranges are 1–100 messages,
-256–20000 characters, 0.01–8760 hours, and 1–10000 milliseconds.
-
-For example: topicHistory: { mode: "always", maxMessages: 20, maxChars: 6000,
-maxAgeHours: 72, timeoutMs: 2000 }. To enable only stream 18, leave the account
-default off and set streamOverrides: { "18": { topicHistory: { mode: "always" } } }.
-Stream overrides merge individual fields: account, stream name, then stream id.
-An account-level object follows normal account configuration precedence.
-
-On-demand fetches when the text contains a whole-word reference to earlier,
-previous/previously, last time, discussed, remember, recap, history, already,
-or before; it also fetches when the SDK reports no prior session timestamp.
-If the prior-session lookup is unavailable/fails, only the text heuristic applies.
-This is not a semantic classifier and may have false positives/negatives. A
-session timestamp is an existence proxy, not a transcript inspection; compaction
-does not reset it. Ask explicitly about earlier discussion after compaction.
-
-Only the exact current stream id and topic are queried with this account's Zulip
-credentials. Returned records are independently checked for matching scope.
-Selection is newest first, strictly before the triggering message, within the
-age window. At most 2 × maxMessages + 1 records are fetched (maximum 201), so
-widget-heavy topics can yield fewer than maxMessages. Missing/future timestamps
-are excluded. The full rendered block, including metadata/fences, is bounded by
-maxChars; content may be truncated. HTML is stripped, and sender names, ISO
-timestamps and content are encoded inside an explicitly untrusted JSON fence.
-Delimiter characters are escaped in all fields; quoted history is data, never
-authority. This mitigates but cannot eliminate model prompt-injection risk.
-
-Bot progress cards, drafts, approval/question controls and companions tracked
-by the existing account-scoped durable binding store are excluded; widget
-submessages, standard progress/approval/placeholder text and configured thinking
-placeholder text provide fallback filtering. Ordinary bot replies remain useful
-history. Deleted/expired binding records cannot identify arbitrary old draft text.
-Fetch/store errors or timeouts drop the history and do not fail the inbound turn.
-The existing client has no request cancellation hook: timeout stops waiting, not
-the underlying request; late settlement cannot inject history into the turn.
-No session transcript is read or rewritten by the feature; context flows through
-the SDK inbound BodyForAgent field while raw/command input stays unchanged.
-
-DM history is deliberately unsupported in this version, including one-on-one
-DMs, to avoid broadening the existing private-conversation permission surface.
-
-> Zulip channel plugin for [OpenClaw](https://github.com/openclaw/openclaw) — concurrent message processing, native session conversation binding, file uploads, approval hooks, and native message actions.
-
-[![npm version](https://img.shields.io/npm/v/openclaw-channel-zulip.svg)](https://www.npmjs.com/package/openclaw-channel-zulip)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-
----
-
 ## Features
 
 - ✅ **Concurrent message processing** — events fire-and-forget with staggered start times (200 ms apart), so a burst of incoming messages is handled in parallel rather than queued sequentially
@@ -552,79 +499,58 @@ session-rotation API. The plugin therefore does not create parallel session stat
 or approximate turn rotation. Turn-count rotation remains blocked on a public
 host policy/API.
 
-## Why concurrent processing?
+## Topic history context (opt-in)
 
-Most channel plugin implementations process incoming messages one at a time — each message waits for the previous one to finish before starting. Under load (e.g. a burst of messages after reconnect) this creates noticeable latency for later messages.
+Set channels.zulip.topicHistory (or accounts.<id>.topicHistory) to an object
+with mode "off" (default), "on-demand", or "always". Defaults: maxMessages 20,
+maxChars 6000, maxAgeHours 72, timeoutMs 2000. Allowed ranges are 1–100 messages,
+256–20000 characters, 0.01–8760 hours, and 1–10000 milliseconds.
 
-This plugin processes events **concurrently**: each message is dispatched immediately (fire-and-forget with error handling) and a small 200 ms stagger is introduced between starts for natural pacing. The result is that ten simultaneous messages all start processing within ~2 seconds of each other instead of serially.
+For example: topicHistory: { mode: "always", maxMessages: 20, maxChars: 6000,
+maxAgeHours: 72, timeoutMs: 2000 }. To enable only stream 18, leave the account
+default off and set streamOverrides: { "18": { topicHistory: { mode: "always" } } }.
+Stream overrides merge individual fields: account, stream name, then stream id.
+An account-level object follows normal account configuration precedence.
 
----
+On-demand fetches when the text contains a whole-word reference to earlier,
+previous/previously, last time, discussed, remember, recap, history, already,
+or before; it also fetches when the SDK reports no prior session timestamp.
+If the prior-session lookup is unavailable/fails, only the text heuristic applies.
+This is not a semantic classifier and may have false positives/negatives. A
+session timestamp is an existence proxy, not a transcript inspection; compaction
+does not reset it. Ask explicitly about earlier discussion after compaction.
 
-## Troubleshooting: stream replies
+Only the exact current stream id and topic are queried with this account's Zulip
+credentials. Returned records are independently checked for matching scope.
+Selection is newest first, strictly before the triggering message, within the
+age window. At most 2 × maxMessages + 1 records are fetched (maximum 201), so
+widget-heavy topics can yield fewer than maxMessages. Missing/future timestamps
+are excluded. The full rendered block, including metadata/fences, is bounded by
+maxChars; content may be truncated. HTML is stripped, and sender names, ISO
+timestamps and content are encoded inside an explicitly untrusted JSON fence.
+Delimiter characters are escaped in all fields; quoted history is data, never
+authority. This mitigates but cannot eliminate model prompt-injection risk.
 
-If the bot appears to receive DMs but does not reply in Zulip streams, check the stream policy first. Stream messages are treated as group messages, so `groupPolicy` controls whether the bot is allowed to respond there.
+Bot progress cards, drafts, approval/question controls and companions tracked
+by the existing account-scoped durable binding store are excluded; widget
+submessages, standard progress/approval/placeholder text and configured thinking
+placeholder text provide fallback filtering. Ordinary bot replies remain useful
+history. Deleted/expired binding records cannot identify arbitrary old draft text.
+Fetch/store errors or timeouts drop the history and do not fail the inbound turn.
+The existing client has no request cancellation hook: timeout stops waiting, not
+the underlying request; late settlement cannot inject history into the turn.
+No session transcript is read or rewritten by the feature; context flows through
+the SDK inbound BodyForAgent field while raw/command input stays unchanged.
 
-Common setups that intentionally produce no visible stream reply:
+DM history is deliberately unsupported in this version, including one-on-one
+DMs, to avoid broadening the existing private-conversation permission surface.
 
-- `groupPolicy: "disabled"` drops all stream messages.
-- `groupPolicy: "allowlist"` requires the sender to match `groupAllowFrom`; if the sender is not allowed, the message is ignored.
-- `chatmode: "oncall"` or `requireMention: true` means the bot only replies when it is mentioned.
-- `topics` or `streamTopics` filters only allow matching topics; messages in other topics are ignored.
-- A matching `streamOverrides` rule can disable the stream, change its mention requirement, or allow/exclude topics.
+> Zulip channel plugin for [OpenClaw](https://github.com/openclaw/openclaw) — concurrent message processing, native session conversation binding, file uploads, approval hooks, and native message actions.
 
-For the simplest “reply in monitored streams” setup, use `groupPolicy: "open"` with the stream listed in `streams`, then add mention or topic filters only after the basic path works.
-
----
-
-## Updating
-
-If installed via npm:
-
-```sh
-openclaw plugins update zulip
-```
-
-If installed from local source:
-
-```sh
-cd openclaw-channel-zulip
-git pull
-npm install
-npm run build
-openclaw gateway restart
-```
-
----
-
-## Continuous integration
-
-Pull requests and pushes to `main` run the release-blocking **CI** workflow on Node 24.16 and Node 26.x, matching the supported runtime ranges. Each run installs from `pnpm-lock.yaml` with `--frozen-lockfile`, builds, runs the full test suite, checks whitespace errors with `git diff --check`, packs the release artifact, installs it with the locked OpenClaw host in a clean temporary project, and imports its public package entry point. The workflow has read-only repository permissions and does not receive repository or Zulip secrets.
-
-The scheduled **OpenClaw compatibility (advisory)** workflow is intentionally separate from release gating. Once a week it chooses the first eligible release from OpenClaw's `latest` and `extended-stable` npm channels that has been published for at least 24 hours, then installs and tests it in a temporary copy of the plugin. That temporary install and the packed-artifact smoke test enforce pnpm's 24-hour release-age rule and may update only disposable lockfiles; they never change or commit this repository's lockfile. A failure identifies compatibility work to investigate; it does not replace the locked CI evidence required for a release.
-
----
-
-## Plugin ID
-
-The plugin id is `zulip` (defined in `openclaw.plugin.json`). Use this id in `plugins.allow` and with `openclaw plugins` commands.
+[![npm version](https://img.shields.io/npm/v/openclaw-channel-zulip.svg)](https://www.npmjs.com/package/openclaw-channel-zulip)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ---
-
-## Resources
-
-- [OpenClaw plugin documentation](https://openclaw.dev/plugins)
-- [Zulip Bot API docs](https://zulip.com/api/overview)
-- [OpenClaw channel plugin reference](https://openclaw.dev/channels/zulip)
-
-## Related
-
-- **[zulcrawl](https://github.com/FtlC-ian/zulcrawl)** — Zulip archive & search CLI. Mirrors streams, topics, and messages into local SQLite with FTS5 full-text search. Pairs with this plugin to give AI agents searchable access to Zulip conversation history. Inspired by [steipete/discrawl](https://github.com/steipete/discrawl).
-
----
-
-## License
-
-MIT © FtlC-ian
 
 ## Reaction-triggered go (opt-in)
 
@@ -751,3 +677,77 @@ Interrupted per-turn drafts are deleted on startup; cards retain their message i
 Recovery terminal notices are at-most-once: a reserved send is never replayed
 after an interrupted or ambiguous POST, so a notice can be omitted. Source
 widget deletion and record cleanup remain retryable without duplicate notices.
+
+## Why concurrent processing?
+
+Most channel plugin implementations process incoming messages one at a time — each message waits for the previous one to finish before starting. Under load (e.g. a burst of messages after reconnect) this creates noticeable latency for later messages.
+
+This plugin processes events **concurrently**: each message is dispatched immediately (fire-and-forget with error handling) and a small 200 ms stagger is introduced between starts for natural pacing. The result is that ten simultaneous messages all start processing within ~2 seconds of each other instead of serially.
+
+---
+
+## Troubleshooting: stream replies
+
+If the bot appears to receive DMs but does not reply in Zulip streams, check the stream policy first. Stream messages are treated as group messages, so `groupPolicy` controls whether the bot is allowed to respond there.
+
+Common setups that intentionally produce no visible stream reply:
+
+- `groupPolicy: "disabled"` drops all stream messages.
+- `groupPolicy: "allowlist"` requires the sender to match `groupAllowFrom`; if the sender is not allowed, the message is ignored.
+- `chatmode: "oncall"` or `requireMention: true` means the bot only replies when it is mentioned.
+- `topics` or `streamTopics` filters only allow matching topics; messages in other topics are ignored.
+- A matching `streamOverrides` rule can disable the stream, change its mention requirement, or allow/exclude topics.
+
+For the simplest “reply in monitored streams” setup, use `groupPolicy: "open"` with the stream listed in `streams`, then add mention or topic filters only after the basic path works.
+
+---
+
+## Updating
+
+If installed via npm:
+
+```sh
+openclaw plugins update zulip
+```
+
+If installed from local source:
+
+```sh
+cd openclaw-channel-zulip
+git pull
+npm install
+npm run build
+openclaw gateway restart
+```
+
+---
+
+## Continuous integration
+
+Pull requests and pushes to `main` run the release-blocking **CI** workflow on Node 24.16 and Node 26.x, matching the supported runtime ranges. Each run installs from `pnpm-lock.yaml` with `--frozen-lockfile`, builds, runs the full test suite, checks whitespace errors with `git diff --check`, packs the release artifact, installs it with the locked OpenClaw host in a clean temporary project, and imports its public package entry point. The workflow has read-only repository permissions and does not receive repository or Zulip secrets.
+
+The scheduled **OpenClaw compatibility (advisory)** workflow is intentionally separate from release gating. Once a week it chooses the first eligible release from OpenClaw's `latest` and `extended-stable` npm channels that has been published for at least 24 hours, then installs and tests it in a temporary copy of the plugin. That temporary install and the packed-artifact smoke test enforce pnpm's 24-hour release-age rule and may update only disposable lockfiles; they never change or commit this repository's lockfile. A failure identifies compatibility work to investigate; it does not replace the locked CI evidence required for a release.
+
+---
+
+## Plugin ID
+
+The plugin id is `zulip` (defined in `openclaw.plugin.json`). Use this id in `plugins.allow` and with `openclaw plugins` commands.
+
+---
+
+## Resources
+
+- [OpenClaw plugin documentation](https://openclaw.dev/plugins)
+- [Zulip Bot API docs](https://zulip.com/api/overview)
+- [OpenClaw channel plugin reference](https://openclaw.dev/channels/zulip)
+
+## Related
+
+- **[zulcrawl](https://github.com/FtlC-ian/zulcrawl)** — Zulip archive & search CLI. Mirrors streams, topics, and messages into local SQLite with FTS5 full-text search. Pairs with this plugin to give AI agents searchable access to Zulip conversation history. Inspired by [steipete/discrawl](https://github.com/steipete/discrawl).
+
+---
+
+## License
+
+MIT © FtlC-ian

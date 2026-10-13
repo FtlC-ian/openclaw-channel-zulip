@@ -8,17 +8,19 @@ import test from "node:test";
 const root = process.env.OPENCLAW_HOST_FIXTURES;
 if (!root) throw new Error("Set OPENCLAW_HOST_FIXTURES to the directory containing npm-extracted <version>/package hosts");
 const require = createRequire(import.meta.url);
+const artifact = process.env.OPENCLAW_PLUGIN_ARTIFACT ?? ".";
 for (const version of ["2026.9.3", "2026.9.6", "2026.10.1-beta.1", "2026.10.1-beta.2"]) {
   test(`built Zulip doctor/allowlist, real core approval routing/rendering, heartbeat typing and Zulip delivery on ${version}`, (t) => {
     const host = resolve(root, version, "package");
     execFileSync(process.execPath, ["scripts/check-sdk-exports.mjs", resolve(host, "package.json")], { stdio: "pipe" });
     const scratch = mkdtempSync(resolve(root, `reaction-smoke-${version}-`));
     t.after(() => rmSync(scratch, { recursive: true, force: true }));
-    cpSync("dist", resolve(scratch, "dist"), { recursive: true });
+    cpSync(resolve(artifact, "dist"), resolve(scratch, "dist"), { recursive: true });
+    cpSync(resolve(artifact, "openclaw.plugin.json"), resolve(scratch, "openclaw.plugin.json"));
+    cpSync(resolve(artifact, "package.json"), resolve(scratch, "package.json"));
     mkdirSync(resolve(scratch, "node_modules"));
     symlinkSync(host, resolve(scratch, "node_modules/openclaw"));
     symlinkSync(resolve(require.resolve("zod/package.json"), ".."), resolve(scratch, "node_modules/zod"));
-    writeFileSync(resolve(scratch, "package.json"), JSON.stringify({ type: "module" }));
     writeFileSync(resolve(scratch, "smoke.mjs"), `
       import assert from "node:assert/strict";
       await import("./dist/index.js");
@@ -110,6 +112,21 @@ for (const version of ["2026.9.3", "2026.9.6", "2026.10.1-beta.1", "2026.10.1-be
         return fn;
       }
       const registry = (await loadHostFunction("createEmptyPluginRegistry"))();
+      const hasChannelPackageState = await loadHostFunction("hasChannelPackageState");
+      const packageChannel = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")).openclaw.channel;
+      assert.equal(Object.hasOwn(JSON.parse(readFileSync(new URL("./openclaw.plugin.json", import.meta.url), "utf8")), "channelEnvVars"), false);
+      const getChannelEnvVars = await loadHostFunction("getChannelEnvVars");
+      assert.deepEqual(getChannelEnvVars("zulip", { config: { plugins: { load: { paths: [${JSON.stringify(scratch)}] } } }, env: process.env }),
+        ["ZULIP_API_KEY", "ZULIP_EMAIL", "ZULIP_URL", "ZULIP_SITE", "ZULIP_REALM"], "real host discovers env names from installed package metadata");
+      const envState = env => hasChannelPackageState({ entry: { channel: packageChannel }, metadataKey: "configuredState", cfg: {}, env });
+      for (const urlKey of ["ZULIP_URL", "ZULIP_SITE", "ZULIP_REALM"]) {
+        const env = { ZULIP_API_KEY: "test-key", ZULIP_EMAIL: "bot@test", [urlKey]: "https://zulip.test" };
+        assert.equal(envState(env), true, urlKey + " completes env-only setup");
+        for (const required of ["ZULIP_API_KEY", "ZULIP_EMAIL", urlKey]) {
+          assert.equal(envState({ ...env, [required]: "  " }), false, required + " cannot be blank");
+        }
+      }
+      assert.equal(envState({}), false, "empty env is not configured");
       registry.channels.push({ pluginId: "zulip", plugin: zulipPlugin });
       (await loadHostFunction("setActivePluginRegistry"))(registry);
       const collectDoctorPreviewNotes = await loadHostFunction("collectDoctorPreviewNotes");

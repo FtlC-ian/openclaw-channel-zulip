@@ -62,12 +62,26 @@
     "vitest": "^3.2.4"
   },
   "openclaw": {
+    "compat": {
+      "pluginApi": ">=2026.9.3",
+      "minGatewayVersion": "2026.9.3"
+    },
+    "build": {
+      "openclawVersion": "2026.9.6",
+      "pluginSdkVersion": "2026.9.6"
+    },
     "extensions": [
       "./dist/index.js"
     ],
     "setupEntry": "./dist/setup-entry.js",
     "channel": {
       "id": "zulip",
+      "configuredState": {
+        "env": {
+          "allOf": ["ZULIP_API_KEY", "ZULIP_EMAIL"],
+          "anyOf": ["ZULIP_URL", "ZULIP_SITE", "ZULIP_REALM"]
+        }
+      },
       "label": "Zulip",
       "selectionLabel": "Zulip (plugin)",
       "docsLabel": "zulip",

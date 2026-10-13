@@ -76,6 +76,12 @@
     "setupEntry": "./dist/setup-entry.js",
     "channel": {
       "id": "zulip",
+      "configuredState": {
+        "env": {
+          "allOf": ["ZULIP_API_KEY", "ZULIP_EMAIL"],
+          "anyOf": ["ZULIP_URL", "ZULIP_SITE", "ZULIP_REALM"]
+        }
+      },
       "label": "Zulip",
       "selectionLabel": "Zulip (plugin)",
       "docsLabel": "zulip",

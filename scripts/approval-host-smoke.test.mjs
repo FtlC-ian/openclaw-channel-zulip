@@ -110,6 +110,17 @@ for (const version of ["2026.9.3", "2026.9.6", "2026.10.1-beta.1", "2026.10.1-be
         return fn;
       }
       const registry = (await loadHostFunction("createEmptyPluginRegistry"))();
+      const hasChannelPackageState = await loadHostFunction("hasChannelPackageState");
+      const packageChannel = ${JSON.stringify(JSON.parse(readFileSync("package.json", "utf8")).openclaw.channel)};
+      const envState = env => hasChannelPackageState({ entry: { channel: packageChannel }, metadataKey: "configuredState", cfg: {}, env });
+      for (const urlKey of ["ZULIP_URL", "ZULIP_SITE", "ZULIP_REALM"]) {
+        const env = { ZULIP_API_KEY: "test-key", ZULIP_EMAIL: "bot@test", [urlKey]: "https://zulip.test" };
+        assert.equal(envState(env), true, urlKey + " completes env-only setup");
+        for (const required of ["ZULIP_API_KEY", "ZULIP_EMAIL", urlKey]) {
+          assert.equal(envState({ ...env, [required]: "  " }), false, required + " cannot be blank");
+        }
+      }
+      assert.equal(envState({}), false, "empty env is not configured");
       registry.channels.push({ pluginId: "zulip", plugin: zulipPlugin });
       (await loadHostFunction("setActivePluginRegistry"))(registry);
       const collectDoctorPreviewNotes = await loadHostFunction("collectDoctorPreviewNotes");

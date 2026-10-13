@@ -33,10 +33,16 @@ def main():
     if package["devDependencies"]["openclaw"] != "2026.9.6":
         raise SystemExit("Unexpected source build SDK")
     package["name"] = CATALOG_NAME
+    package["openclaw"]["channel"]["configuredState"] = {
+        "env": {"allOf": ["ZULIP_API_KEY", "ZULIP_EMAIL"], "anyOf": ["ZULIP_URL", "ZULIP_SITE", "ZULIP_REALM"]}
+    }
     package["openclaw"]["compat"] = {"pluginApi": ">=2026.9.3"}
     package["openclaw"]["build"] = {"openclawVersion": "2026.9.6"}
     files["package/package.json"] = (json.dumps(package, indent=2, ensure_ascii=False) + "\n").encode()
     tar_bytes = io.BytesIO()
+    manifest = json.loads(files["package/openclaw.plugin.json"])
+    manifest["name"] = "Zulip"
+    files["package/openclaw.plugin.json"] = (json.dumps(manifest, indent=2, ensure_ascii=False) + "\n").encode()
     with tarfile.open(fileobj=tar_bytes, mode="w", format=tarfile.USTAR_FORMAT) as archive:
         for name in sorted(files):
             member = tarfile.TarInfo(name)
@@ -56,7 +62,7 @@ def main():
         "sha256": hashlib.sha256(artifact).hexdigest(),
         "npmShasum": hashlib.sha1(artifact).hexdigest(),
         "bytes": len(artifact), "files": len(files),
-        "changedFiles": ["package/package.json"],
+        "changedFiles": ["package/package.json", "package/openclaw.plugin.json"],
     }, indent=2))
 
 

@@ -65,11 +65,24 @@ Do not install this release on an older host or unsupported Node version. Valida
 host and runtime upgrades separately in an isolated environment before changing
 production.
 
-### Via plugin manager (recommended)
+### First install from npm (recommended)
+
+For a new installation, use this project's npm package:
 
 ```sh
 openclaw plugins install openclaw-channel-zulip
 ```
+
+For an existing tracked npm installation, use [`openclaw plugins update zulip`](#updating)
+instead of repeating the install. The npm package name is `openclaw-channel-zulip`;
+the runtime plugin id is `zulip`. `plugins install` has no `--wait` option.
+
+The project's [ClawHub listing](https://clawhub.ai/ftlc-ian/skills/openclaw-zulip-channel)
+is an install/setup **skill** that points to this npm package, not a separately
+installable ClawHub plugin artifact. A similarly named plugin from another
+publisher is not this project. Keep npm as the installation source unless an
+exact project-owned plugin artifact and its reviewed, installable version have
+been verified.
 
 ### Manual (for development or customization)
 
@@ -237,11 +250,16 @@ Add the plugin id to `plugins.allow` in `~/.openclaw/openclaw.json`:
 }
 ```
 
-Then restart the Gateway:
+For a running OpenClaw 2026.10.3 Gateway, apply the configured plugin from an
+operator terminal (not from an agent turn using Zulip):
 
 ```sh
-openclaw gateway restart
+openclaw plugins reload zulip --wait
 ```
+
+If the Gateway is not running, the saved configuration applies on its next start.
+The reload guidance below targets OpenClaw 2026.10.3; on older supported hosts,
+consult that host's CLI help and plugin lifecycle documentation.
 
 ### Stream scope and DM-only mode
 
@@ -704,20 +722,53 @@ For the simplest “reply in monitored streams” setup, use `groupPolicy: "open
 
 ## Updating
 
-If installed via npm:
+### Tracked npm installation
+
+Update the existing install record by runtime plugin id:
 
 ```sh
 openclaw plugins update zulip
 ```
 
-If installed from local source:
+On OpenClaw 2026.10.3, a running Gateway applies saved plugin changes through
+runtime replacement. A saved installation/update is not proof that replacement
+was applied. Check the operation's final applied receipt or reported failure.
+
+### Saved changes, but replacement not applied / 60-second drain timeout
+
+If the operation saved the package/configuration but runtime replacement did not
+apply because retained work exceeded the default 60-second drain budget, let the
+current Zulip work finish and use a quiet operator terminal:
+
+```sh
+openclaw plugins reload zulip --wait
+```
+
+Do not run this from a Zulip agent turn that itself holds the plugin: it can wait
+for its own turn and make no progress. Avoid submitting new Zulip work during
+maintenance. `--wait` removes the admitted-work drain deadline, not the deadlines
+for service shutdown, cleanup, or recovery. New runs wait behind the replacement
+gate; Ctrl+C or a disconnected request cancels the wait. Wait for the final
+applied receipt before calling the update active.
+
+Do **not** repeat installation, delete plugin files, or restart the Gateway to
+recover this drain timeout. Reload uses the already saved changes. Other
+activation/cleanup failures need inspection of the reported error rather than
+blind retries. See the [OpenClaw reload documentation](https://docs.openclaw.ai/cli/plugins/uninstall-and-update#reload)
+and `openclaw plugins reload --help` for the host's current behavior.
+
+### Linked local source
+
+For a development installation linked with `plugins install -l .`, rebuild before
+reloading; reload does not compile source. On OpenClaw 2026.10.3, run from the same
+quiet operator terminal:
 
 ```sh
 cd openclaw-channel-zulip
 git pull
 npm install
 npm run build
-openclaw gateway restart
+openclaw plugins reload zulip --wait
 ```
 
 ---

@@ -15,7 +15,7 @@ The same `media` object works per account. Roots are additive with host roots; n
 - ✅ **Concurrent message processing** — events fire-and-forget with staggered start times (200 ms apart), so a burst of incoming messages is handled in parallel rather than queued sequentially
 - ✅ **Native session conversation binding** — stream topics resolve through the SDK session-conversation hook instead of hand-rolled session key grammar
 - ✅ **File uploads** — inbound Zulip file attachments are downloaded and forwarded to the AI pipeline; outbound media is uploaded via Zulip's file upload API
-- ✅ **Native message actions** — send, read, search, react, edit, delete/unsend, polls, member lookup, and stream list/create/edit/delete with an [audited capability matrix](docs/ACTION_CAPABILITIES.md)
+- ✅ **Native message actions** — send, read, search, react, and polls with an [audited capability matrix](docs/ACTION_CAPABILITIES.md); per-account `actionTiers` opt in to message edit/delete (`moderation`) and stream create/edit/delete (`streamAdmin`)
 - ✅ **Topic directives** — reply topics can be scoped per-message, enabling organized thread-based conversations
 - ✅ **Multi-account support** — run multiple Zulip bot accounts in one OpenClaw instance via the `accounts` map
 - ✅ **DM & channel policies** — open / pairing / allowlist / disabled per account
@@ -247,8 +247,20 @@ Add the plugin id to `plugins.allow` in `~/.openclaw/openclaw.json`:
       },
 
       // Legacy compatibility field. Accepted but intentionally has no runtime effect.
-      // Provider-specific operations need a separately reviewed Zulip-owned agent tool.
+      // Message-tool actions are governed by actionTiers; provider-specific operations
+      // need a separately reviewed Zulip-owned agent tool.
       "enableAdminActions": false,
+
+      // Per-account message-tool action tiers (defaults: messages "on",
+      // moderation "off", streamAdmin "off"). Gated-off actions are hidden from
+      // tool discovery and rejected before any Zulip request.
+      // moderation grants message edit and delete/unsend; streamAdmin grants
+      // stream create/edit/delete.
+      "actionTiers": {
+        "messages": "on",
+        "moderation": "off",
+        "streamAdmin": "off"
+      },
 
       // Multi-account: uncomment to run multiple bots
       // "accounts": {
@@ -365,8 +377,22 @@ stream renames. A replayed message never uses its historical name when current
 stream metadata is unavailable.
 
 These rules govern inbound activation only. Outbound send, read, search, and
-administrative actions remain available according to their existing access
-controls.
+react actions follow the messages tier below.
+
+### Message action tiers
+
+The shared `message` tool is gated per account by `channels.zulip.actionTiers`:
+
+| Tier | Grants | Default |
+| --- | --- | --- |
+| `messages` | `send`, `read`, `search`, `react`, `channel-list` | `"on"` |
+| `moderation` | message `edit`, `delete`, `unsend` | `"off"` |
+| `streamAdmin` | `channel-create`, `channel-edit`, `channel-delete` | `"off"` |
+
+Gated-off actions are not advertised to agents and are rejected by the plugin
+before any Zulip network request. Edit/delete/unsend require the `moderation`
+tier even for the bot's own messages because the adapter does not resolve
+message ownership over the network. See [docs/ACTION_CAPABILITIES.md](docs/ACTION_CAPABILITIES.md).
 
 ### Lifecycle reactions
 

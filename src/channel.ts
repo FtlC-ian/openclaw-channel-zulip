@@ -261,7 +261,7 @@ export const zulipPlugin = {
       "mediaMaxMb", "markHandledRead", "approvalReactions", "reactions", "thinkingPlaceholder",
       "streaming", "textChunkLimit", "chunkMode", "blockStreaming",
       "blockStreamingCoalesce", "responsePrefix", "agentReactionGuidance",
-      "defaultTopic", "routingDiagnosticsTarget", "enableAdminActions",
+      "defaultTopic", "routingDiagnosticsTarget", "enableAdminActions", "actionTiers",
       "streamOverrides",
     ].flatMap((key) => [`channels.zulip.${key}`, `channels.zulip.accounts.*.${key}`]),
   },

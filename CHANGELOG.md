@@ -2,9 +2,17 @@
 
 ## Unreleased
 
-### Security / upgrade notes
+# Security / upgrade notes
 - Local-file uploads now fail closed unless the canonical file is inside host-provided media roots or explicit account `media.localRoots`. Symlink escapes and traversal outside those roots are rejected; local reads use a bounded file descriptor and `mediaMaxMb` (account setting, then agent default, then 5 MB). Remote HTTP(S) and Zulip-hosted URLs are unchanged.
 - Local uploads remain enabled within allowed roots. Disable with `channels.zulip.media.localUploads: false`; opt into additional absolute directories with `channels.zulip.media.localRoots: ["/path/to/uploads"]` (also supported under accounts). A host read callback alone no longer authorizes arbitrary paths.
+
+### Features
+- **Per-account action tiers**: Add `channels.zulip.actionTiers` (`messages`, `moderation`, `streamAdmin`) gating the shared message tool per account. Defaults are safe: `messages` is `"on"` (send, read, search, react, channel-list); `moderation` (message edit, delete/unsend) and `streamAdmin` (stream create/edit/delete) default to `"off"`. Gated-off actions are excluded from tool discovery and rejected before any Zulip network request. Edit/delete/unsend need the moderation tier even for the bot's own messages because ownership is not resolved over the network. Tiers merge per key with account config overriding the top-level section. See `docs/ACTION_CAPABILITIES.md`.
+
+### Upgrade notes
+- Upgrades tighten behavior by default: message `edit`/`delete`/`unsend` and stream `channel-create`/`channel-edit`/`channel-delete` now require explicit opt-in via `channels.zulip.actionTiers.moderation: "on"` and `actionTiers.streamAdmin: "on"` (top level or per account). Set them to restore the previous action surface.
+- `member-info` is no longer available through the message tool for any tier; the shared cross-channel action vocabulary is core-owned and unrestricted user lookups do not belong in the message tool.
+- The legacy `enableAdminActions` flag remains accepted but stays intentionally inert; message-tool capabilities are governed solely by `actionTiers`.
 
 ## 2026.10.14
 

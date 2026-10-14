@@ -78,3 +78,40 @@ describe("Zulip apiKey SecretInput resolution", () => {
     await expect(resolveZulipRuntimeAccount({ cfg: config })).rejects.toThrow(/provider|SecretRef|configured/i);
   });
 });
+
+describe("Zulip action tier resolution", () => {
+  it("applies safe defaults: messages on, moderation and streamAdmin off", () => {
+    const account = resolveZulipAccount({
+      cfg: cfg({ apiKey: "k", email: "bot@example.test", url: "https://zulip.example.test" }),
+    });
+    expect(account.actionTiers).toEqual({ messages: "on", moderation: "off", streamAdmin: "off" });
+  });
+
+  it("merges account tiers over top-level tiers", () => {
+    const account = resolveZulipAccount({
+      cfg: cfg({
+        apiKey: "k",
+        email: "bot@example.test",
+        url: "https://zulip.example.test",
+        actionTiers: { moderation: "on", streamAdmin: "on" },
+        accounts: {
+          work: { actionTiers: { streamAdmin: "off" } },
+        },
+      }),
+      accountId: "work",
+    });
+    expect(account.actionTiers).toEqual({ messages: "on", moderation: "on", streamAdmin: "off" });
+  });
+
+  it("applies top-level tiers to the default account", () => {
+    const account = resolveZulipAccount({
+      cfg: cfg({
+        apiKey: "k",
+        email: "bot@example.test",
+        url: "https://zulip.example.test",
+        actionTiers: { moderation: "on" },
+      }),
+    });
+    expect(account.actionTiers).toEqual({ messages: "on", moderation: "on", streamAdmin: "off" });
+  });
+});

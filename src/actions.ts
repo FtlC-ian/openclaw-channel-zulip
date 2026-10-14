@@ -17,7 +17,6 @@ import {
   deleteZulipMessage,
   deleteZulipStream,
   editZulipMessage,
-  fetchZulipMemberInfo,
   fetchZulipMessages,
   fetchZulipStreams,
   fetchZulipSubscriptions,
@@ -35,28 +34,127 @@ import { prependZulipRoutingNotice, resolveZulipSendDestination } from "./zulip/
 
 const providerId = "zulip";
 const MAX_STRING_LENGTH = 10000;
-export const ZULIP_ADVERTISED_ACTIONS = [
-  "send",
-  "read",
-  "channel-list",
-  "channel-create",
-  "channel-edit",
-  "channel-delete",
-  "react",
-  "edit",
-  "delete",
-  "unsend",
-  "search",
-  "member-info",
-  "poll",
-] as const satisfies readonly ChannelMessageActionName[];
 
-const ZULIP_CORE_OWNED_ACTIONS = new Set<ChannelMessageActionName>(["poll"]);
-const ZULIP_HANDLED_ACTIONS = new Set<ChannelMessageActionName>(
-  ZULIP_ADVERTISED_ACTIONS.filter((action) => !ZULIP_CORE_OWNED_ACTIONS.has(action)),
+/** Per-account message-tool action tier keys. */
+export type ZulipActionTierKey = "messages" | "moderation" | "streamAdmin";
+/**
+ * Per-account action capability tiers for the shared message tool.
+ * Tier key -> actions granted while the tier is "on". Gated-off tiers are
+ * excluded from discovery and rejected by the handler before any network call.
+ */
+export const ZULIP_ACTION_TIERS: Record<
+  ZulipActionTierKey,
+  readonly ChannelMessageActionName[]
+> = {
+  messages: ["send", "read", "search", "react", "channel-list"],
+  moderation: ["edit", "delete", "unsend"],
+  streamAdmin: ["channel-create", "channel-edit", "channel-delete"],
+};
+
+/**
+ * Actions no tier grants. The core-owned cross-channel action vocabulary is
+ * deliberately closed, and Zulip member lookup by raw user id is an
+ * unrestrained cross-user data request, so it stays unsupported.
+ */
+export const ZULIP_ALWAYS_OFF_ACTIONS: readonly ChannelMessageActionName[] = [
+  "member-info",
+];
+
+/**
+ * Plugin-executable handler allowlist. Gated-off actions are still handled:
+ * the per-account tier check rejects them with a precise error before any
+ * network access instead of the generic unsupported-action message.
+ */
+export const ZULIP_HANDLED_ACTIONS: readonly ChannelMessageActionName[] = [
+  ...ZULIP_ACTION_TIERS.messages,
+  ...ZULIP_ACTION_TIERS.moderation,
+  ...ZULIP_ACTION_TIERS.streamAdmin,
+];
+
+/**
+ * Full tier-inclusive action name list (tier actions plus always-off members),
+ * matching the legacy exported contract shape.
+ */
+export const ZULIP_ADVERTISED_ACTIONS: readonly ChannelMessageActionName[] = [
+  ...ZULIP_HANDLED_ACTIONS,
+  ...ZULIP_ALWAYS_OFF_ACTIONS,
+];
+
+const ZULIP_HANDLED_ACTION_SET: ReadonlySet<ChannelMessageActionName> = new Set(
+  ZULIP_HANDLED_ACTIONS,
 );
-const ZULIP_DESTRUCTIVE_ACTIONS = [
-  "channel-delete",
+
+const ZULIP_GATED_OFF_ACTIONS: ReadonlySet<ChannelMessageActionName> = new Set([
+  ...ZULIP_ACTION_TIERS.moderation,
+  ...ZULIP_ACTION_TIERS.streamAdmin,
+]);
+
+const ZULIP_ACTION_TIER_KEYS: readonly ZulipActionTierKey[] = [
+  "messages",
+  "moderation",
+  "streamAdmin",
+];
+
+/** Actions to advertise for a resolved tier map; gated-off tiers are excluded. */
+export function advertiseZulipActions(
+  tiers: Record<ZulipActionTierKey, boolean>,
+): ChannelMessageActionName[] {
+  const actions: ChannelMessageActionName[] = [...ZULIP_ACTION_TIERS.messages];
+  if (tiers.moderation) {
+    actions.push(...ZULIP_ACTION_TIERS.moderation);
+  }
+  if (tiers.streamAdmin) {
+    actions.push(...ZULIP_ACTION_TIERS.streamAdmin);
+  }
+  return actions.sort();
+}
+
+function resolveZulipAccountTiers(params: {
+  cfg: OpenClawConfig;
+  accountId?: string | null;
+}): Record<ZulipActionTierKey, boolean> {
+  try {
+    const account = resolveZulipAccount(params);
+    return {
+      messages: account.actionTiers.messages === "on",
+      moderation: account.actionTiers.moderation === "on",
+      streamAdmin: account.actionTiers.streamAdmin === "on",
+    };
+  } catch {
+    // Fail closed: unreadable account config gates every elevated action off.
+    return { messages: false, moderation: false, streamAdmin: false };
+  }
+}
+
+/**
+ * Reject gated-off actions before any network access. edit/delete/unsend are
+ * gated conservatively as moderation: the adapter does not resolve message
+ * ownership over the network, so any edit or delete may target another user's
+ * message. Stream create/edit/delete belong to streamAdmin. Always-off
+ * actions (member-info) are never handled, so they fail in the unsupported
+ * pre-check above.
+ */
+function requireZulipActionTier(params: {
+  action: ChannelMessageActionName;
+  cfg: OpenClawConfig;
+  accountId?: string | null;
+}): void {
+  if (!ZULIP_GATED_OFF_ACTIONS.has(params.action)) {
+    return;
+  }
+  const tiers = resolveZulipAccountTiers(params);
+  const tier: ZulipActionTierKey | undefined = ZULIP_ACTION_TIER_KEYS.find(
+    (key) => key !== "messages" && ZULIP_ACTION_TIERS[key].includes(params.action),
+  );
+  if (tier && tiers[tier]) {
+    return;
+  }
+  throw new Error(
+    `Zulip action ${params.action} is gated off; set channels.zulip.actionTiers.${tier ?? "moderation"}: "on" for this account to enable it.`,
+  );
+}
+
+const ZULIP_MESSAGE_DESTRUCTIVE_ACTIONS = [
   "delete",
   "unsend",
 ] as const satisfies readonly ChannelMessageActionName[];
@@ -66,7 +164,7 @@ const ZULIP_ACTION_SCHEMA: ChannelMessageToolSchemaContribution[] = [
     properties: {
       confirm: { type: "boolean", description: "Set to true to confirm destructive actions." },
     },
-    actions: ZULIP_DESTRUCTIVE_ACTIONS,
+    actions: ZULIP_MESSAGE_DESTRUCTIVE_ACTIONS,
     visibility: "current-channel" as const,
   },
   {
@@ -80,57 +178,6 @@ const ZULIP_ACTION_SCHEMA: ChannelMessageToolSchemaContribution[] = [
       all: { type: "boolean" },
     },
     actions: ["channel-list"] as const satisfies readonly ChannelMessageActionName[],
-    visibility: "current-channel" as const,
-  },
-  {
-    properties: {
-      description: { type: "string" },
-      principals: {
-        type: "array",
-        items: { anyOf: [{ type: "string" }, { type: "number" }] },
-      },
-      principal: {
-        anyOf: [
-          { type: "string" },
-          { type: "number" },
-          {
-            type: "array",
-            items: { anyOf: [{ type: "string" }, { type: "number" }] },
-          },
-        ],
-      },
-      announce: { type: "boolean" },
-      inviteOnly: { type: "boolean" },
-      invite_only: { type: "boolean" },
-      isPrivate: { type: "boolean" },
-      is_private: { type: "boolean" },
-      isWebPublic: { type: "boolean" },
-      is_web_public: { type: "boolean" },
-      isDefaultStream: { type: "boolean" },
-      is_default_stream: { type: "boolean" },
-      defaultStream: { type: "boolean" },
-      historyPublicToSubscribers: { type: "boolean" },
-      history_public_to_subscribers: { type: "boolean" },
-    },
-    actions: ["channel-create"] as const satisfies readonly ChannelMessageActionName[],
-    visibility: "current-channel" as const,
-  },
-  {
-    properties: {
-      description: { type: "string" },
-      newName: { type: "string" },
-      isPrivate: { type: "boolean" },
-      inviteOnly: { type: "boolean" },
-      invite_only: { type: "boolean" },
-      is_private: { type: "boolean" },
-      isWebPublic: { type: "boolean" },
-      is_web_public: { type: "boolean" },
-      isDefaultStream: { type: "boolean" },
-      is_default_stream: { type: "boolean" },
-      historyPublicToSubscribers: { type: "boolean" },
-      history_public_to_subscribers: { type: "boolean" },
-    },
-    actions: ["channel-edit"] as const satisfies readonly ChannelMessageActionName[],
     visibility: "current-channel" as const,
   },
   {
@@ -345,49 +392,22 @@ function readMessageId(params: Record<string, unknown>): string {
   throw new Error("messageId is required for Zulip message actions.");
 }
 
-function readMessageContent(params: Record<string, unknown>): string {
-  const content =
-    readStringParam(params, "message", { allowEmpty: true }) ??
-    readStringParam(params, "text", { allowEmpty: true }) ??
-    readStringParam(params, "content", { allowEmpty: true }) ??
-    readStringParam(params, "newText", { allowEmpty: true });
-  if (content === undefined) {
-    throw new Error("message content is required for Zulip edit actions.");
+function readStreamId(params: Record<string, unknown>): string {
+  const streamId =
+    readStringParam(params, "streamId") ??
+    readStringParam(params, "channelId") ??
+    readStringParam(params, "id");
+  if (streamId) {
+    return streamId;
   }
-  assertStringLength(content, "message", MAX_STRING_LENGTH);
-  return content;
-}
-
-function resolveReactionParams(
-  rawEmojiName: string,
-  params: { emojiCode?: string; reactionType?: string },
-): ZulipReactionParams {
-  const trimmed = rawEmojiName.trim().replace(/^:+|:+$/g, "");
-  const unicodeReaction = unicodeReactionMap[trimmed];
-  const namedReaction = namedReactionAliases[trimmed.toLowerCase()];
-  const resolved = unicodeReaction ?? namedReaction ?? { emojiName: trimmed };
-  return {
-    emojiName: resolved.emojiName,
-    emojiCode: params.emojiCode ?? resolved.emojiCode,
-    reactionType: params.reactionType ?? resolved.reactionType,
-  };
-}
-
-function readSendMessageContent(params: Record<string, unknown>): string {
-  const content =
-    readStringParam(params, "message", { allowEmpty: true }) ??
-    readStringParam(params, "text", { allowEmpty: true }) ??
-    readStringParam(params, "content", { allowEmpty: true }) ??
-    readStringParam(params, "newText", { allowEmpty: true });
-  if (content === undefined) {
-    throw new Error("message content is required for Zulip sends.");
+  const numericId =
+    readNumberParam(params, "streamId", { integer: true }) ??
+    readNumberParam(params, "channelId", { integer: true }) ??
+    readNumberParam(params, "id", { integer: true });
+  if (typeof numericId === "number") {
+    return String(numericId);
   }
-  const trimmed = content.trim();
-  if (!trimmed) {
-    throw new Error("Zulip message is empty.");
-  }
-  assertStringLength(trimmed, "message", MAX_STRING_LENGTH);
-  return trimmed;
+  throw new Error("streamId is required for Zulip channel actions.");
 }
 
 function parseBooleanValue(value: unknown): boolean | undefined {
@@ -450,39 +470,55 @@ function parseStringArrayParam(
   return undefined;
 }
 
-function readStreamId(params: Record<string, unknown>): string {
-  const streamId =
-    readStringParam(params, "streamId") ??
-    readStringParam(params, "channelId") ??
-    readStringParam(params, "id");
-  if (streamId) {
-    return streamId;
+function resolveReactionParams(
+  rawEmojiName: string,
+  params: { emojiCode?: string; reactionType?: string },
+): ZulipReactionParams {
+  const trimmed = rawEmojiName.trim().replace(/^:+|:+$/g, "");
+  const unicodeReaction = unicodeReactionMap[trimmed];
+  const namedReaction = namedReactionAliases[trimmed.toLowerCase()];
+  const resolved = unicodeReaction ?? namedReaction ?? { emojiName: trimmed };
+  return {
+    emojiName: resolved.emojiName,
+    emojiCode: params.emojiCode ?? resolved.emojiCode,
+    reactionType: params.reactionType ?? resolved.reactionType,
+  };
+}
+
+function readSendMessageContent(params: Record<string, unknown>): string {
+  const content =
+    readStringParam(params, "message", { allowEmpty: true }) ??
+    readStringParam(params, "text", { allowEmpty: true }) ??
+    readStringParam(params, "content", { allowEmpty: true }) ??
+    readStringParam(params, "newText", { allowEmpty: true });
+  if (content === undefined) {
+    throw new Error("message content is required for Zulip sends.");
   }
-  const numericId =
-    readNumberParam(params, "streamId", { integer: true }) ??
-    readNumberParam(params, "channelId", { integer: true }) ??
-    readNumberParam(params, "id", { integer: true });
-  if (typeof numericId === "number") {
-    return String(numericId);
+  const trimmed = content.trim();
+  if (!trimmed) {
+    throw new Error("Zulip message is empty.");
   }
-  throw new Error("streamId is required for Zulip channel actions.");
+  assertStringLength(trimmed, "message", MAX_STRING_LENGTH);
+  return trimmed;
 }
 
 export const zulipMessageActions: ChannelMessageActionAdapter = {
   describeMessageTool: ({ cfg, accountId }) => {
-    const accounts = [resolveZulipAccount({ cfg, accountId })].filter((account) =>
-      isZulipAccountConfigured(account),
-    );
-    if (accounts.length === 0) {
+    const account = resolveZulipAccount({ cfg, accountId });
+    if (!isZulipAccountConfigured(account)) {
       return { actions: [] };
     }
     return {
-      actions: ZULIP_ADVERTISED_ACTIONS,
+      actions: advertiseZulipActions({
+        messages: account.actionTiers.messages === "on",
+        moderation: account.actionTiers.moderation === "on",
+        streamAdmin: account.actionTiers.streamAdmin === "on",
+      }),
       capabilities: ["presentation"],
       schema: ZULIP_ACTION_SCHEMA,
     };
   },
-  supportsAction: ({ action }) => ZULIP_HANDLED_ACTIONS.has(action),
+  supportsAction: ({ action }) => ZULIP_HANDLED_ACTION_SET.has(action),
   extractToolSend: ({ args }) => {
     const action = typeof args.action === "string" ? args.action.trim() : "";
     if (action !== "send") {
@@ -497,9 +533,10 @@ export const zulipMessageActions: ChannelMessageActionAdapter = {
   },
   prepareSendPayload: ({ payload }) => payload,
   handleAction: async ({ action, params, cfg, accountId, toolContext, dryRun }) => {
-    if (!ZULIP_HANDLED_ACTIONS.has(action)) {
+    if (!ZULIP_HANDLED_ACTION_SET.has(action)) {
       throw new Error(`Action ${action} is not supported for provider ${providerId}.`);
     }
+    requireZulipActionTier({ action, cfg, accountId });
     const { client, account } = await resolveZulipClient(cfg, accountId ?? undefined);
 
     if (action === "send") {
@@ -568,145 +605,6 @@ export const zulipMessageActions: ChannelMessageActionAdapter = {
         subscriptions,
         ...(publicStreams ? { publicStreams } : {}),
       });
-    }
-
-    if (action === "channel-create") {
-      const raw =
-        readStringParam(params, "stream") ??
-        readStringParam(params, "name") ??
-        readStringParam(params, "channelId") ??
-        readStringParam(params, "to", { required: true });
-      const target = splitStreamTarget(raw);
-      const description = readStringParam(params, "description", { allowEmpty: true });
-      if (description !== undefined) {
-        assertStringLength(description, "description", MAX_STRING_LENGTH);
-      }
-      const principals =
-        parseStringArrayParam(params, "principals") ?? parseStringArrayParam(params, "principal");
-      const announce = readBooleanParam(params, "announce");
-      const inviteOnly = readBooleanParam(
-        params,
-        "inviteOnly",
-        "invite_only",
-        "isPrivate",
-        "is_private",
-      );
-      const isWebPublic = readBooleanParam(params, "isWebPublic", "is_web_public");
-      const isDefaultStream = readBooleanParam(
-        params,
-        "isDefaultStream",
-        "is_default_stream",
-        "defaultStream",
-      );
-      const historyPublicToSubscribers = readBooleanParam(
-        params,
-        "historyPublicToSubscribers",
-        "history_public_to_subscribers",
-      );
-      if (dryRun) {
-        return jsonResult({
-          ok: true,
-          dryRun: true,
-          action,
-          stream: target.stream,
-          ...(description !== undefined ? { description } : {}),
-          ...(principals ? { principals } : {}),
-        });
-      }
-      await createZulipStream(client, {
-        name: target.stream,
-        description: description ?? undefined,
-        principals: principals && principals.length > 0 ? principals : undefined,
-        announce,
-        inviteOnly,
-        isWebPublic,
-        isDefaultStream,
-        historyPublicToSubscribers,
-      });
-      return jsonResult({ ok: true, stream: target.stream });
-    }
-
-    if (action === "channel-edit") {
-      const streamIdOrName = readStreamId(params);
-      const description = readStringParam(params, "description", { allowEmpty: true });
-      const newName = readStringParam(params, "newName") ?? readStringParam(params, "name");
-      if (description !== undefined) {
-        assertStringLength(description, "description", MAX_STRING_LENGTH);
-      }
-      if (newName !== undefined) {
-        assertStringLength(newName, "name", MAX_STRING_LENGTH);
-      }
-      const isPrivate = readBooleanParam(
-        params,
-        "isPrivate",
-        "inviteOnly",
-        "invite_only",
-        "is_private",
-      );
-      const isWebPublic = readBooleanParam(params, "isWebPublic", "is_web_public");
-      const historyPublicToSubscribers = readBooleanParam(
-        params,
-        "historyPublicToSubscribers",
-        "history_public_to_subscribers",
-      );
-      const isDefaultStream = readBooleanParam(params, "isDefaultStream", "is_default_stream");
-
-      if (
-        description === undefined &&
-        newName === undefined &&
-        isPrivate === undefined &&
-        isWebPublic === undefined &&
-        historyPublicToSubscribers === undefined &&
-        isDefaultStream === undefined
-      ) {
-        throw new Error("At least one field is required to update a Zulip channel.");
-      }
-
-      if (dryRun) {
-        return jsonResult({
-          ok: true,
-          dryRun: true,
-          action,
-          streamId: streamIdOrName,
-          ...(newName !== undefined ? { name: newName } : {}),
-        });
-      }
-
-      // Resolve stream name to ID if necessary
-      const streamId = await resolveZulipStreamId(client, streamIdOrName);
-
-      await updateZulipStream(client, {
-        streamId,
-        description: description ?? undefined,
-        newName: newName ?? undefined,
-        isPrivate,
-        isWebPublic,
-        historyPublicToSubscribers,
-        isDefaultStream,
-      });
-      return jsonResult({ ok: true, streamId, ...(newName ? { name: newName } : {}) });
-    }
-
-    if (action === "channel-delete") {
-      requireDestructiveConfirmation(params);
-      const streamIdOrName = readStreamId(params);
-      if (dryRun) {
-        return jsonResult({ ok: true, dryRun: true, action, streamId: streamIdOrName });
-      }
-      // Resolve stream name to ID if necessary
-      const streamId = await resolveZulipStreamId(client, streamIdOrName);
-      await deleteZulipStream(client, streamId);
-      return jsonResult({ ok: true, streamId });
-    }
-
-    if (action === "member-info") {
-      const userId =
-        readStringParam(params, "userId") ??
-        readStringParam(params, "memberId") ??
-        readStringParam(params, "id") ??
-        readStringParam(params, "user");
-      const user = await fetchZulipMemberInfo(client, userId ?? undefined);
-      return jsonResult({ ok: true, user });
     }
 
     if (action === "read") {
@@ -798,7 +696,7 @@ export const zulipMessageActions: ChannelMessageActionAdapter = {
 
     if (action === "edit") {
       const messageId = readMessageId(params);
-      const content = readMessageContent(params);
+      const content = readSendMessageContent(params);
       if (dryRun) {
         return jsonResult({ ok: true, dryRun: true, action, messageId });
       }
@@ -814,6 +712,113 @@ export const zulipMessageActions: ChannelMessageActionAdapter = {
       }
       await deleteZulipMessage(client, { messageId });
       return jsonResult({ ok: true, deleted: messageId });
+    }
+
+    if (action === "channel-create") {
+      const raw =
+        readStringParam(params, "stream") ??
+        readStringParam(params, "name") ??
+        readStringParam(params, "to", { required: true });
+      const target = splitStreamTarget(raw);
+      const description = readStringParam(params, "description", { allowEmpty: true });
+      if (description !== undefined) {
+        assertStringLength(description, "description", MAX_STRING_LENGTH);
+      }
+      const principals = parseStringArrayParam(params, "principals") ?? parseStringArrayParam(params, "principal");
+      const inviteOnly = readBooleanParam(params, "inviteOnly", "invite_only", "isPrivate", "is_private");
+      const isWebPublic = readBooleanParam(params, "isWebPublic", "is_web_public");
+      const announce = readBooleanParam(params, "announce");
+      const isDefaultStream = readBooleanParam(params, "isDefaultStream", "is_default_stream", "defaultStream");
+      const historyPublicToSubscribers = readBooleanParam(
+        params,
+        "historyPublicToSubscribers",
+        "history_public_to_subscribers",
+      );
+      if (dryRun) {
+        return jsonResult({
+          ok: true,
+          dryRun: true,
+          action,
+          stream: target.stream,
+          ...(description !== undefined ? { description } : {}),
+          ...(principals ? { principals } : {}),
+        });
+      }
+      await createZulipStream(client, {
+        name: target.stream,
+        description: description ?? undefined,
+        principals: principals && principals.length > 0 ? principals : undefined,
+        announce,
+        inviteOnly,
+        isWebPublic,
+        isDefaultStream,
+        historyPublicToSubscribers,
+      });
+      return jsonResult({ ok: true, stream: target.stream });
+    }
+
+    if (action === "channel-edit") {
+      const streamIdOrName = readStreamId(params);
+      const description = readStringParam(params, "description", { allowEmpty: true });
+      const newName = readStringParam(params, "newName") ?? readStringParam(params, "name");
+      if (description !== undefined) {
+        assertStringLength(description, "description", MAX_STRING_LENGTH);
+      }
+      if (newName !== undefined) {
+        assertStringLength(newName, "name", MAX_STRING_LENGTH);
+      }
+      const isPrivate = readBooleanParam(params, "isPrivate", "inviteOnly", "invite_only", "is_private");
+      const isWebPublic = readBooleanParam(params, "isWebPublic", "is_web_public");
+      const historyPublicToSubscribers = readBooleanParam(
+        params,
+        "historyPublicToSubscribers",
+        "history_public_to_subscribers",
+      );
+      const isDefaultStream = readBooleanParam(params, "isDefaultStream", "is_default_stream");
+
+      if (
+        description === undefined &&
+        newName === undefined &&
+        isPrivate === undefined &&
+        isWebPublic === undefined &&
+        historyPublicToSubscribers === undefined &&
+        isDefaultStream === undefined
+      ) {
+        throw new Error("At least one field is required to update a Zulip channel.");
+      }
+
+      if (dryRun) {
+        return jsonResult({
+          ok: true,
+          dryRun: true,
+          action,
+          streamId: streamIdOrName,
+          ...(newName !== undefined ? { name: newName } : {}),
+        });
+      }
+
+      const streamId = await resolveZulipStreamId(client, streamIdOrName);
+      await updateZulipStream(client, {
+        streamId,
+        description: description ?? undefined,
+        newName: newName ?? undefined,
+        isPrivate,
+        isWebPublic,
+        historyPublicToSubscribers,
+        isDefaultStream,
+      });
+      return jsonResult({ ok: true, streamId, ...(newName ? { name: newName } : {}) });
+    }
+
+    if (action === "channel-delete") {
+      requireDestructiveConfirmation(params);
+      const streamIdOrName = readStreamId(params);
+      if (dryRun) {
+        return jsonResult({ ok: true, dryRun: true, action, streamId: streamIdOrName });
+      }
+      const streamId = await resolveZulipStreamId(client, streamIdOrName);
+      await deleteZulipStream(client, streamId);
+      return jsonResult({ ok: true, streamId });
     }
 
     if (action === "search") {

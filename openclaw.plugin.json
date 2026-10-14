@@ -749,6 +749,33 @@
                   }
                 },
                 "additionalProperties": false
+              },
+              "actionTiers": {
+                "type": "object",
+                "properties": {
+                  "messages": {
+                    "type": "string",
+                    "enum": [
+                      "on",
+                      "off"
+                    ]
+                  },
+                  "moderation": {
+                    "type": "string",
+                    "enum": [
+                      "on",
+                      "off"
+                    ]
+                  },
+                  "streamAdmin": {
+                    "type": "string",
+                    "enum": [
+                      "on",
+                      "off"
+                    ]
+                  }
+                },
+                "additionalProperties": false
               }
             }
           }
@@ -1291,6 +1318,33 @@
                   "type": "string",
                   "minLength": 1
                 }
+              }
+            },
+            "additionalProperties": false
+          },
+          "actionTiers": {
+            "type": "object",
+            "properties": {
+              "messages": {
+                "type": "string",
+                "enum": [
+                  "on",
+                  "off"
+                ]
+              },
+              "moderation": {
+                "type": "string",
+                "enum": [
+                  "on",
+                  "off"
+                ]
+              },
+              "streamAdmin": {
+                "type": "string",
+                "enum": [
+                  "on",
+                  "off"
+                ]
               }
             },
             "additionalProperties": false

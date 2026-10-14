@@ -109,6 +109,26 @@ describe("Zulip lifecycle reaction config", () => {
     }
   });
 
+  it("accepts action tier values at top level and per account, and rejects unknown tiers or values", () => {
+    const actionTiers = { messages: "on", moderation: "off", streamAdmin: "on" };
+    expect(zulipChannelConfigSchema.runtime.safeParse({ actionTiers }).success).toBe(true);
+    expect(zulipChannelConfigSchema.runtime.safeParse({ accounts: { work: { actionTiers } } }).success).toBe(true);
+    expect(zulipChannelConfigSchema.runtime.safeParse({ actionTiers: {} }).success).toBe(true);
+    for (const invalid of [
+      { actionTiers: { messages: true } },
+      { actionTiers: { moderation: "enabled" } },
+      { actionTiers: { streamAdmin: 1 } },
+      { actionTiers: { unknownTier: "on" } },
+    ]) {
+      expect(zulipChannelConfigSchema.runtime.safeParse(invalid).success).toBe(false);
+      expect(zulipChannelConfigSchema.runtime.safeParse({ accounts: { work: invalid } }).success).toBe(false);
+    }
+    const runtime = (zulipChannelConfigSchema.schema as JsonSchema).properties?.actionTiers;
+    const manifest = loadPackagedChannelSchema();
+    expect(manifest.properties?.actionTiers).toEqual(runtime);
+    expect(manifest.$defs?.zulipAccount.properties?.actionTiers).toEqual(runtime);
+  });
+
   it("packages every runtime config key at top level and per account, with matching stream rule fields", () => {
     const manifest = loadPackagedChannelSchema();
     const runtime = zulipChannelConfigSchema.schema as JsonSchema;

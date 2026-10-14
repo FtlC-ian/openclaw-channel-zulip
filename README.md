@@ -15,7 +15,7 @@ The same `media` object works per account. Roots are additive with host roots; n
 - ✅ **Concurrent message processing** — events fire-and-forget with staggered start times (200 ms apart), so a burst of incoming messages is handled in parallel rather than queued sequentially
 - ✅ **Native session conversation binding** — stream topics resolve through the SDK session-conversation hook instead of hand-rolled session key grammar
 - ✅ **File uploads** — inbound Zulip file attachments are downloaded and forwarded to the AI pipeline; outbound media is uploaded via Zulip's file upload API
-- ✅ **Native message actions** — send, read, search, react, and polls with an [audited capability matrix](docs/ACTION_CAPABILITIES.md); per-account `actionTiers` opt in to message edit/delete (`moderation`) and stream create/edit/delete (`streamAdmin`)
+- ✅ **Native message actions** — send, read, search, react, edit, delete/unsend, polls, member lookup, and stream list/create/edit/delete with an [audited capability matrix](docs/ACTION_CAPABILITIES.md); per-account `actionTiers` opt in to moderation actions (message edit/delete/unsend, member lookup) and stream create/edit/delete (`streamAdmin`)
 - ✅ **Topic directives** — reply topics can be scoped per-message, enabling organized thread-based conversations
 - ✅ **Multi-account support** — run multiple Zulip bot accounts in one OpenClaw instance via the `accounts` map
 - ✅ **DM & channel policies** — open / pairing / allowlist / disabled per account

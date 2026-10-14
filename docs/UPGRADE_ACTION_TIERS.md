@@ -10,8 +10,8 @@ The shared `message` tool is now gated per account by
 
 | Tier | Actions | New default |
 | --- | --- | --- |
-| `messages` | `send`, `read`, `search`, `react`, `channel-list` | `"on"` |
-| `moderation` | `edit`, `delete`, `unsend` | `"off"` |
+| `messages` | `send`, `read`, `search`, `react`, `channel-list`, `poll` (core-owned) | `"on"` |
+| `moderation` | `edit`, `delete`, `unsend`, `member-info` | `"off"` |
 | `streamAdmin` | `channel-create`, `channel-edit`, `channel-delete` | `"off"` |
 
 Before this change every configured account could edit, delete, create,
@@ -20,12 +20,15 @@ Zulip bot credential's own permissions. The safe defaults now expose only the
 `messages` tier.
 
 Gated-off actions are excluded from tool discovery (agents do not see them)
-and rejected by the plugin handler before any Zulip network request.
+and rejected by the plugin handler before any Zulip network request. All
+three tiers are honored: setting `actionTiers.messages: "off"` makes the
+shared message tool fully inert for that account — nothing from any tier is
+advertised or executed, because the messages tier is the precondition for
+discovery and every tier action is checked against the resolved tier map.
 
 ## Who must act
 
-- **No action** if your agents only send, read, search, react, and list
-  channels — those keep working under the default `messages` tier.
+- **No action** if your agents only send, read, search, react, list channels, or post polls — those keep working under the default `messages` tier.
 - **Opt in explicitly** if your agents moderate their own or others' messages
   or administer streams:
 
@@ -54,16 +57,21 @@ can touch, not only messages the bot sent. The single conservative tier
 avoids a per-action ownership lookup over the network. Enable `moderation`
 only for accounts whose Zulip bot credential you would trust to moderate.
 
-## Removed from the message tool
+## Tier membership notes
 
-- `member-info` (raw user lookup by id) is no longer available through the
-  shared message tool for any tier. The shared cross-channel action
-  vocabulary is deliberately core-owned, and an unrestricted cross-user data
-  lookup does not belong in the message tool.
-- The legacy `enableAdminActions` flag remains accepted in configurations but
-  stays intentionally inert. It does not enable actions and does not interact
-  with `actionTiers`. Remove it at your leisure; it is documented in
-  `docs/ACTION_CAPABILITIES.md` for the eventual removal migration.
+- `member-info` (raw user lookup by id) now lives in the `moderation` tier
+  rather than being permanently absent: it is an unrestricted cross-user data
+  lookup, so it defaults off and requires the same explicit opt-in as message
+  edit/delete.
+- `poll` remains core-owned (delivered by OpenClaw itself through
+  `outbound.sendPoll`) and is advertised while the `messages` tier is on.
+
+## Legacy flag
+
+The legacy `enableAdminActions` flag remains accepted in configurations but
+stays intentionally inert. It does not enable actions and does not interact
+with `actionTiers`. Remove it at your leisure; it is documented in
+`docs/ACTION_CAPABILITIES.md` for the eventual removal migration.
 
 ## Verification
 

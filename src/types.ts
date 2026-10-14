@@ -42,9 +42,9 @@ export type ZulipResolvedActionTiers = Required<
 >;
 
 export type ZulipActionTierConfig = {
-  /** Message actions: send, read, search, react, channel-list. Default: "on". */
+  /** Message actions: send, read, search, react, channel-list, polls. Default: "on". */
   messages?: ZulipActionTierValue;
-  /** Elevated moderation on potentially others' content: edit and delete/unsend. Default: "off". */
+  /** Elevated moderation on potentially others' content: edit, delete/unsend, member lookup. Default: "off". */
   moderation?: ZulipActionTierValue;
   /** Stream administration: channel-create, channel-edit, channel-delete. Default: "off". */
   streamAdmin?: ZulipActionTierValue;

@@ -24,14 +24,21 @@ rejected by the config schema.
 
 | Tier | Grants | Default |
 | --- | --- | --- |
-| `messages` | `send`, `read`, `search`, `react`, `channel-list` | `"on"` |
-| `moderation` | `edit`, `delete`, `unsend` | `"off"` |
+| `messages` | `send`, `read`, `search`, `react`, `channel-list`, `poll` (core-owned) | `"on"` |
+| `moderation` | `edit`, `delete`, `unsend`, `member-info` | `"off"` |
 | `streamAdmin` | `channel-create`, `channel-edit`, `channel-delete` | `"off"` |
+
+All three tiers are honored together: turning `messages` off makes the whole
+message tool inert for that account (nothing is advertised and every action
+is rejected before any Zulip request), including actions from any other tier.
+`poll` is OpenClaw core-owned (`outbound.sendPoll`); the plugin advertises it
+with the `messages` tier but never handles it itself.
 
 The message edit/delete/unsend trio is gated conservatively as moderation:
 the adapter does not resolve message ownership over the network, so any edit
 or delete may target another user's message. Enabling the tier grants both
-self-mutation and elevated moderation under the configured bot credential.
+self-mutation and elevated moderation — including `member-info`, the raw
+Zulip member lookup by user id — under the configured bot credential.
 Tiers merge per key, with account configuration overriding the top-level
 section, so an account can widen or tighten one tier without restating the
 others.
@@ -51,7 +58,8 @@ others.
 | `delete` | plugin | `moderation` | `to` | Zulip credential permission | `confirm: true` | yes | action tests |
 | `unsend` | plugin alias for `delete` | `moderation` | `to` | Zulip credential permission | `confirm: true` | yes | action tests |
 | `search` | plugin | `messages` | none | configured account credential | no | host read-only | action tests |
-| `poll` | OpenClaw core via `outbound.sendPoll` | n/a | `to` | configured account credential | no | host-owned | channel/outbound tests |
+| `member-info` | plugin | `moderation` | none | Zulip credential permission | no | host read-only | action tests |
+| `poll` | OpenClaw core via `outbound.sendPoll` | `messages` | `to` | configured account credential | no | host-owned | channel/outbound tests |
 
 The adapter does not add a separate owner/trusted-requester gate to mutable
 actions. Zulip applies the permissions of the selected bot credential. The
@@ -66,9 +74,17 @@ per-user, so this plugin deliberately does not advertise or handle either
 action. It also does not expose a misleading shared-action alias
 for personal starring.
 
-`member-info` (raw user lookup by id) is not granted by any tier: the shared
-cross-channel action vocabulary is deliberately core-owned, and an
-unrestricted cross-user data lookup does not belong in the message tool.
+`member-info` (raw user lookup by id) is granted only by the `moderation`
+tier: it is an unrestricted cross-user data lookup, so it stays off until the
+same account explicitly opts in to moderation-capability actions.
+
+## Core-owned actions
+
+`poll` is deliberately core-owned: the plugin advertises it under the
+`messages` tier, and OpenClaw core performs the delivery itself through
+`outbound.sendPoll`. The plugin never handles `poll` in `handleAction`, so a
+direct plugin dispatch rejects as unsupported before credential or network
+access.
 
 ## Removed provider-specific actions
 

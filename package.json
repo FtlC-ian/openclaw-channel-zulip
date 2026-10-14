@@ -29,6 +29,7 @@
   "files": [
     "dist/",
     "docs/ACTION_CAPABILITIES.md",
+    "docs/UPGRADE_ACTION_TIERS.md",
     "docs/APPROVAL_REACTIONS.md",
     "docs/LIFECYCLE.md",
     "docs/LOCAL_UPLOAD_SECURITY.md",

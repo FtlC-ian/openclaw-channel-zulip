@@ -154,6 +154,14 @@ const ThinkingPlaceholderSchema = z
   .strict();
 
 const OptionalSecretInputSchema = buildOptionalSecretInputSchema();
+const ZulipActionTierValueSchema = z.enum(["on", "off"]);
+const ZulipActionTiersSchema = z
+  .object({
+    messages: ZulipActionTierValueSchema.optional(),
+    moderation: ZulipActionTierValueSchema.optional(),
+    streamAdmin: ZulipActionTierValueSchema.optional(),
+  })
+  .strict();
 const ReactionTriggersSchema = z.object({
   enabled: z.boolean().optional(),
   emoji: ZulipReactionEmojiSchema.min(1).optional(),
@@ -256,6 +264,7 @@ const ZulipAccountSchemaBase = z
     blockStreaming: z.boolean().optional(),
     blockStreamingCoalesce: BlockStreamingCoalesceSchema.optional(),
     responsePrefix: z.string().optional(),
+    actionTiers: ZulipActionTiersSchema.optional(),
     enableAdminActions: z.boolean().optional(),
   })
   .strict();

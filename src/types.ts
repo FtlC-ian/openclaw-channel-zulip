@@ -30,6 +30,26 @@ export type ZulipTopicHistoryConfig = {
   timeoutMs?: number;
 };
 
+/** Per-account action capability tier: "on" (default) or "off". */
+export type ZulipActionTierValue = "on" | "off";
+
+/** Per-account message-tool action tier keys. */
+export type ZulipActionTierKey = "messages" | "moderation" | "streamAdmin";
+
+/** Fully resolved message-tool tier map for one account. */
+export type ZulipResolvedActionTiers = Required<
+  Record<ZulipActionTierKey, ZulipActionTierValue>
+>;
+
+export type ZulipActionTierConfig = {
+  /** Message actions: send, read, search, react, channel-list, polls. Default: "on". */
+  messages?: ZulipActionTierValue;
+  /** Elevated moderation on potentially others' content: edit, delete/unsend, member lookup. Default: "off". */
+  moderation?: ZulipActionTierValue;
+  /** Stream administration: channel-create, channel-edit, channel-delete. Default: "off". */
+  streamAdmin?: ZulipActionTierValue;
+};
+
 export type ZulipStreamRule = {
   topicHistory?: ZulipTopicHistoryConfig;
   /** Enable or disable inbound processing for the selected stream. */
@@ -50,8 +70,10 @@ export type ZulipAccountConfig = {
   capabilities?: string[];
   /** Allow channel-initiated config writes (default: true). */
   configWrites?: boolean;
-  /** Require explicit opt-in for admin-only actions (default: false). */
+  /** Legacy strict-safety opt-out for message tier actions; accepted but intentionally inert (default: false). */
   enableAdminActions?: boolean;
+  /** Per-account message-tool action tiers (defaults: messages "on", moderation "off", streamAdmin "off"). */
+  actionTiers?: ZulipActionTierConfig;
   /** If false, do not start this Zulip account. Default: true. */
   enabled?: boolean;
   /** Base URL for the Zulip server (e.g., https://chat.example.com). */

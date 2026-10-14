@@ -734,6 +734,33 @@
                 },
                 "additionalProperties": false
               },
+              "actionTiers": {
+                "type": "object",
+                "properties": {
+                  "messages": {
+                    "type": "string",
+                    "enum": [
+                      "on",
+                      "off"
+                    ]
+                  },
+                  "moderation": {
+                    "type": "string",
+                    "enum": [
+                      "on",
+                      "off"
+                    ]
+                  },
+                  "streamAdmin": {
+                    "type": "string",
+                    "enum": [
+                      "on",
+                      "off"
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              },
               "media": {
                 "type": "object",
                 "properties": {
@@ -1279,6 +1306,33 @@
             },
             "additionalProperties": false
           },
+          "actionTiers": {
+            "type": "object",
+            "properties": {
+              "messages": {
+                "type": "string",
+                "enum": [
+                  "on",
+                  "off"
+                ]
+              },
+              "moderation": {
+                "type": "string",
+                "enum": [
+                  "on",
+                  "off"
+                ]
+              },
+              "streamAdmin": {
+                "type": "string",
+                "enum": [
+                  "on",
+                  "off"
+                ]
+              }
+            },
+            "additionalProperties": false
+          },
           "media": {
             "type": "object",
             "properties": {
@@ -1350,9 +1404,14 @@
           "label": "Mark Successfully Handled Messages Read",
           "description": "Opt in to marking an inbound message read only after successful dispatch settlement and durable receive completion."
         },
+        "actionTiers": {
+          "label": "Message Action Tiers",
+          "description": "Per-account message-tool action tiers. Defaults: messages \"on\" (send/read/search/react/channel-list plus core-owned polls), moderation \"off\" (message edit and delete/unsend plus member lookup), streamAdmin \"off\" (stream create/edit/delete). messages: \"off\" makes the message tool inert for the account.",
+          "placeholder": "{\"messages\":\"on\",\"moderation\":\"off\",\"streamAdmin\":\"off\"}"
+        },
         "enableAdminActions": {
           "label": "Legacy Admin Actions Flag",
-          "description": "Accepted for configuration compatibility but intentionally inert; provider-specific operations need a separately reviewed Zulip-owned agent tool."
+          "description": "Accepted for configuration compatibility but intentionally inert; message-tool actions are governed by actionTiers. Provider-specific operations need a separately reviewed Zulip-owned agent tool."
         },
         "reactions.enabled": {
           "label": "Lifecycle Reaction Indicators"
@@ -1410,9 +1469,14 @@
     "requireMention": {
       "label": "Require @mention in Streams"
     },
+    "actionTiers": {
+      "label": "Message Action Tiers",
+      "description": "Per-account message-tool action tiers. Defaults: messages \"on\", moderation \"off\", streamAdmin \"off\". moderation covers message edit and delete/unsend; streamAdmin covers stream create/edit/delete.",
+      "placeholder": "{\"messages\":\"on\",\"moderation\":\"off\",\"streamAdmin\":\"off\"}"
+    },
     "enableAdminActions": {
       "label": "Legacy Admin Actions Flag",
-      "description": "Accepted for configuration compatibility but intentionally inert; provider-specific operations need a separately reviewed Zulip-owned agent tool."
+      "description": "Accepted for configuration compatibility but intentionally inert; message-tool actions are governed by actionTiers. Provider-specific operations need a separately reviewed Zulip-owned agent tool."
     },
     "reactions.enabled": {
       "label": "Lifecycle Reaction Indicators"

@@ -1,6 +1,6 @@
 import type { OpenClawConfig } from "../sdk.js";
 import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from "../sdk.js";
-import type { ZulipAccountConfig, ZulipChatMode, ZulipConfig } from "../types.js";
+import type { ZulipActionTierConfig, ZulipAccountConfig, ZulipChatMode, ZulipConfig, ZulipResolvedActionTiers } from "../types.js";
 import { normalizeZulipBaseUrl } from "./client.js";
 import { reactionTriggerApprovalCollision } from "./reaction-triggers.js";
 import {
@@ -42,6 +42,7 @@ export type ResolvedZulipAccount = {
   tokenSource: ZulipTokenSource;
   tokenRef?: SecretRef;
   config: ZulipAccountConfig;
+  actionTiers: ZulipResolvedActionTiers;
   enableAdminActions?: boolean;
   chatmode?: ZulipChatMode;
   oncharPrefixes?: string[];
@@ -111,6 +112,23 @@ function resolveZulipRequireMention(config: ZulipAccountConfig): boolean | undef
     return true;
   }
   return config.requireMention;
+}
+
+/**
+ * Resolve message-tool tiers for one merged account config. Per-tier values
+ * merge account over top-level so an account can tighten or widen a single
+ * tier without restating the others.
+ */
+function resolveZulipActionTiers(
+  config: ZulipAccountConfig,
+  baseConfig?: Pick<ZulipAccountConfig, "actionTiers">,
+): ZulipResolvedActionTiers {
+  const tiers = { ...baseConfig?.actionTiers, ...config.actionTiers };
+  return {
+    messages: tiers.messages ?? "on",
+    moderation: tiers.moderation ?? "off",
+    streamAdmin: tiers.streamAdmin ?? "off",
+  };
 }
 
 function formatSecretRefLabel(ref: SecretRef): string {
@@ -200,6 +218,7 @@ function buildResolvedAccount(params: {
   env?: NodeJS.ProcessEnv;
 }): ResolvedZulipAccount {
   const { accountId, baseConfig, accountConfig, merged, enabled } = resolveMergedConfig(params);
+  const actionTiers = resolveZulipActionTiers(accountConfig, baseConfig);
   const env = params.env ?? process.env;
   const allowEnv = accountId === DEFAULT_ACCOUNT_ID;
   const envEmail = allowEnv ? env.ZULIP_EMAIL?.trim() : undefined;
@@ -240,6 +259,7 @@ function buildResolvedAccount(params: {
     tokenSource: params.apiKeyResolution.apiKeySource,
     tokenRef: params.apiKeyResolution.apiKeyRef,
     config: merged,
+    actionTiers,
     enableAdminActions: merged.enableAdminActions,
     chatmode: merged.chatmode,
     oncharPrefixes: merged.oncharPrefixes,

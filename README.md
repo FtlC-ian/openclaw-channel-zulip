@@ -1,5 +1,15 @@
 # openclaw-channel-zulip
 
+## Local-file upload security
+
+Local uploads require host media roots or an explicit absolute allowlist:
+
+```json
+{ "channels": { "zulip": { "media": { "localRoots": ["/absolute/export-directory"] } } } }
+```
+
+The same `media` object works per account. Roots are additive with host roots; none means fail closed. Canonical paths prevent traversal and symlink escapes. `media.localUploads` defaults to true within those roots; set false to disable local uploads entirely. Local uploads reuse `mediaMaxMb` (account, agent default, then 5 MB). Zulip-hosted and remote HTTP(S) URL behavior is unchanged. See [local upload policy and upgrade guidance](docs/LOCAL_UPLOAD_SECURITY.md).
+
 ## Features
 
 - ✅ **Concurrent message processing** — events fire-and-forget with staggered start times (200 ms apart), so a burst of incoming messages is handled in parallel rather than queued sequentially

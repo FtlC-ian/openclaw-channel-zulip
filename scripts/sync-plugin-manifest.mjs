@@ -28,7 +28,7 @@ if (!manifestSchema?.properties || !manifestAccount?.properties) {
   throw new Error("Packaged Zulip manifest schema is missing its expected config structure");
 }
 
-const properties = ["streaming", "thinkingPlaceholder", "routingDiagnosticsTarget", "approvalReactions", "reactionTriggers", "progressCard", "topicHistory", "streamOverrides"];
+const properties = ["media", "streaming", "thinkingPlaceholder", "routingDiagnosticsTarget", "approvalReactions", "reactionTriggers", "progressCard", "topicHistory", "streamOverrides"];
 for (const key of properties) {
   const top = runtimeSchema.properties?.[key];
   const account = runtimeSchema.properties?.accounts?.additionalProperties?.properties?.[key];

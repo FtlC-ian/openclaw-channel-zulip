@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { normalizeLegacyZulipTarget, parseZulipTarget } from "./destination.js";
 import {
   presentationToZulipWidgetContent,
@@ -227,6 +230,46 @@ vi.mock("./client.js", () => ({
 }));
 
 describe("sendMessageZulip media and presentation", () => {
+  it.each(["outside", "traversal", "symlink", "no-roots", "disabled", "size"])("rejects local upload %s before uploading", async (scenario) => {
+    const { uploadZulipFile } = await import("./client.js");
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "zulip-security-"));
+    const root = path.join(dir, "allowed");
+    await fs.mkdir(root);
+    await fs.writeFile(path.join(dir, "secret"), "secret");
+    await fs.writeFile(path.join(root, "small"), "small");
+    await fs.writeFile(path.join(root, "large"), Buffer.alloc(1024 * 1024 + 1));
+    await fs.symlink(path.join(dir, "secret"), path.join(root, "link"));
+    const mediaUrl = scenario === "traversal" ? root + "/../secret" : scenario === "symlink" ? path.join(root, "link") : scenario === "size" ? path.join(root, "large") : scenario === "disabled" ? path.join(root, "small") : path.join(dir, "secret");
+    vi.mocked(uploadZulipFile).mockClear();
+    Object.assign(sendState.account.config, { media: { localUploads: scenario !== "disabled", localRoots: scenario === "no-roots" ? [] : [root] }, mediaMaxMb: 1 });
+    try {
+      await expect(sendMessageZulip("user:alice@example.test", "file", {
+        cfg: {}, mediaUrl,
+      })).rejects.toThrow();
+      expect(uploadZulipFile).not.toHaveBeenCalled();
+    } finally {
+      sendState.account.config = {};
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+  it.each(["host", "account"])("uploads an in-root file with %s roots", async (source) => {
+    const { uploadZulipFile } = await import("./client.js");
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "zulip-security-"));
+    const file = path.join(dir, "report.txt");
+    await fs.writeFile(file, "report");
+    const readFile = vi.fn((filePath: string) => fs.readFile(filePath));
+    vi.mocked(uploadZulipFile).mockClear();
+    Object.assign(sendState.account.config, source === "account" ? { media: { localRoots: [dir] } } : {});
+    try {
+      await sendMessageZulip("user:alice@example.test", "file", { cfg: {}, mediaUrl: file,
+        mediaLocalRoots: source === "host" ? [dir] : [], mediaReadFile: readFile });
+      expect(readFile).not.toHaveBeenCalled();
+      expect(uploadZulipFile).toHaveBeenCalledOnce();
+    } finally {
+      sendState.account.config = {};
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
   it("keeps the zform and binds reactions to the exact account and returned message ID", async () => {
     const { zulipApprovalReactions } = await import("./approval-reactions.js");
     const register = vi.spyOn(zulipApprovalReactions, "register").mockResolvedValue(undefined);

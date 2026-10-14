@@ -1,8 +1,8 @@
 import { readApprovalBinding } from "./approval-sdk.js";
 import { resolveZulipApprovers } from "../approval-auth.js";
 import { resolveZulipApprovalReactionControls, zulipApprovalReactions } from "./approval-reactions.js";
-import fs from "node:fs";
 import fsPromises from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -285,7 +285,55 @@ export async function sendMessageZulip(
   if (mediaUrl) {
     const localPath = resolveZulipLocalPath(mediaUrl);
     const isZulipHosted = isHttpUrl(mediaUrl) && mediaUrl.startsWith(baseUrl);
-    if (hasHostMediaAccess(opts) && !isZulipHosted) {
+    if (localPath) {
+      if (account.config.media?.localUploads === false) {
+        throw new Error("Zulip local-file uploads are disabled by media.localUploads");
+      }
+      const roots = [...(opts.mediaAccess?.localRoots ?? []), ...(opts.mediaLocalRoots ?? []),
+        ...(account.config.media?.localRoots ?? [])];
+      if (roots.length === 0) {
+        throw new Error("Zulip local-file upload requires host media roots or media.localRoots");
+      }
+      const resolved = await fsPromises.realpath(localPath);
+      const realRoots = await Promise.all(roots.map(async (root) => {
+        if (!path.isAbsolute(root)) throw new Error("Zulip media.localRoots must be absolute paths");
+        return fsPromises.realpath(root);
+      }));
+      if (!realRoots.some((root) => {
+        const relative = path.relative(root, resolved);
+        return relative !== "" && !path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(".." + path.sep);
+      })) {
+        throw new Error("Zulip local-file upload is outside allowed media roots");
+      }
+      const maxBytes = (account.config.mediaMaxMb ?? opts.cfg.agents?.defaults?.mediaMaxMb ?? 5) * 1024 * 1024;
+      const stat = await fsPromises.stat(resolved);
+      if (!stat.isFile() || stat.size > maxBytes) throw new Error("Zulip local-file upload exceeds mediaMaxMb or is not a regular file");
+      const handle = await fsPromises.open(resolved, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+      let buffer: Buffer;
+      try {
+        const opened = await handle.stat();
+        if (!opened.isFile() || opened.dev !== stat.dev || opened.ino !== stat.ino || opened.size > maxBytes) {
+          throw new Error("Zulip local-file upload changed during validation or exceeds mediaMaxMb");
+        }
+        const bytes = Buffer.alloc(maxBytes + 1);
+        let length = 0;
+        while (length < bytes.length) {
+          const result = await handle.read(bytes, length, bytes.length - length, null);
+          if (result.bytesRead === 0) break;
+          length += result.bytesRead;
+        }
+        if (length > maxBytes) throw new Error("Zulip local-file upload exceeds mediaMaxMb");
+        buffer = bytes.subarray(0, length);
+      } finally {
+        await handle.close();
+      }
+      const temp = await writeTempFile(buffer, path.basename(resolved));
+      try {
+        mediaUrl = (await uploadZulipFile(client, temp.filePath)).url;
+      } finally {
+        await fsPromises.rm(temp.dir, { recursive: true, force: true });
+      }
+    } else if (hasHostMediaAccess(opts) && !isZulipHosted) {
       const maxBytes = (opts.cfg.agents?.defaults?.mediaMaxMb ?? 5) * 1024 * 1024;
       const loaded = await loadOutboundMediaFromUrl(mediaUrl, {
         maxBytes,
@@ -310,9 +358,6 @@ export async function sendMessageZulip(
       mediaUrl = upload.url;
       await fsPromises.unlink(tempFilePath).catch(() => undefined);
       await fsPromises.rmdir(tempDir).catch(() => undefined);
-    } else if (localPath && fs.existsSync(localPath)) {
-      const upload = await uploadZulipFile(client, localPath);
-      mediaUrl = upload.url;
     } else if (isHttpUrl(mediaUrl) && !isZulipHosted) {
       const maxBytes = (opts.cfg.agents?.defaults?.mediaMaxMb ?? 5) * 1024 * 1024;
       const fetched = await core.channel.media.readRemoteMediaBuffer({

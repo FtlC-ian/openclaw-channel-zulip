@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Features
+- Account-scoped approval setup doctor warnings: CLI primary/fallback models need reliable core exec forwarding, and forwarded Zulip prompts need explicit approver emails. Avoid duplicating the reaction-approver warning. Emit one startup log hint per account start and expose the same hints in probe/status JSON; no chat messages or automatic config edits.
+
 ## 2026.10.15
 
 ### Features

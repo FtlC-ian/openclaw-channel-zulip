@@ -1,5 +1,6 @@
 import type { ChannelPlugin } from "./sdk.js";
 import { resolveZulipApprovers } from "./approval-auth.js";
+import { collectZulipApprovalSetupWarnings } from "./approval-setup.js";
 import { normalizeZulipAllowList, zulipPolicyScopes } from "./policy-config.js";
 import { zulipStreamOverridesExpandLegacySelection } from "./zulip/stream-policy.js";
 
@@ -33,7 +34,10 @@ export const zulipDoctor: NonNullable<ChannelPlugin["doctor"]> = {
       const approverCfg = path === "channels.zulip"
         ? { ...cfg, channels: { ...cfg.channels, zulip: { ...account, accounts: undefined, defaultAccount: undefined } } }
         : cfg;
-      if (account.approvalReactions && resolveZulipApprovers(approverCfg, accountId).length === 0) {
+      const setupWarnings = collectZulipApprovalSetupWarnings(approverCfg, accountId ?? "default", path);
+      warnings.push(...setupWarnings.map((warning) => warning.message));
+      if (account.approvalReactions && resolveZulipApprovers(approverCfg, accountId).length === 0
+        && !setupWarnings.some((warning) => warning.kind === "approvers")) {
         warnings.push(`${path}.approvalReactions has no explicit allowFrom approver emails; reactions cannot approve requests. Fix: add trusted emails to ${path}.allowFrom ("*" and pairing-store approvals do not qualify), or remove approvalReactions.`);
       }
     }

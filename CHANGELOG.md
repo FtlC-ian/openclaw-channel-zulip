@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Messages-tier denial also covers actual core outbound text/media/payload/poll dispatch before credential resolution. Setting messages off blocks shared/scheduled outbound delivery; ordinary inbound replies and lifecycle/progress messages retain their internal delivery path. This distinction is explicit because the supported SDK has no trusted outbound tool-origin field.
+
 ### Security / upgrade notes
 - Local-file uploads now fail closed unless the canonical file is inside host-provided media roots or explicit account `media.localRoots`. Symlink escapes and traversal outside those roots are rejected; local reads use a bounded file descriptor and `mediaMaxMb` (account setting, then agent default, then 5 MB). Remote HTTP(S) and Zulip-hosted URLs are unchanged.
 - Local uploads remain enabled within allowed roots. Disable with `channels.zulip.media.localUploads: false`; opt into additional absolute directories with `channels.zulip.media.localRoots: ["/path/to/uploads"]` (also supported under accounts). A host read callback alone no longer authorizes arbitrary paths.

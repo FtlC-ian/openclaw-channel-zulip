@@ -13,7 +13,7 @@ import {
   type ChannelPlugin,
   type ReplyPayload,
 } from "./sdk.js";
-import { zulipMessageActions } from "./actions.js";
+import { requireZulipActionTier, zulipMessageActions } from "./actions.js";
 import { zulipChannelConfigSchema } from "./config-schema.js";
 import { resolveZulipGroupRequireMention } from "./group-mentions.js";
 import { looksLikeZulipTargetId, normalizeZulipMessagingTarget } from "./normalize.js";
@@ -112,6 +112,7 @@ export const zulipOutboundAdapter: ChannelOutboundAdapter = {
     return { ok: true, to: target };
   },
   sendText: async ({ cfg, to, text, accountId, threadId }) => {
+    requireZulipActionTier({ action: "send", cfg, accountId });
     const result = await sendMessageZulip(to, text, {
       cfg,
       accountId: accountId ?? undefined,
@@ -130,6 +131,7 @@ export const zulipOutboundAdapter: ChannelOutboundAdapter = {
     mediaLocalRoots,
     mediaReadFile,
   }) => {
+    requireZulipActionTier({ action: "send", cfg, accountId });
     const result = await sendMessageZulip(to, text, {
       cfg,
       accountId: accountId ?? undefined,
@@ -142,6 +144,7 @@ export const zulipOutboundAdapter: ChannelOutboundAdapter = {
     return { channel: "zulip", ...result, receipt: zulipSendReceipt([result], "media") };
   },
   sendPayload: async (ctx) => {
+    requireZulipActionTier({ action: "send", cfg: ctx.cfg, accountId: ctx.accountId });
     const logger = getZulipRuntime().logging.getChildLogger({ module: "zulip" });
     const text = ctx.payload.text ?? "";
     const mediaUrls = ctx.payload.mediaUrls?.length
@@ -196,6 +199,7 @@ export const zulipOutboundAdapter: ChannelOutboundAdapter = {
     return { channel: "zulip", ...result, receipt: zulipSendReceipt([result], "text") };
   },
   sendPoll: async ({ cfg, to, poll, accountId, threadId }) => {
+    requireZulipActionTier({ action: "poll", cfg, accountId });
     const result = await sendPollZulip(to, poll, {
       cfg,
       accountId: accountId ?? undefined,

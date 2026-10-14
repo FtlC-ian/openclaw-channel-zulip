@@ -28,6 +28,8 @@ discovery and every tier action is checked against the resolved tier map.
 
 ## Who must act
 
+`messages: "off"` blocks shared/core outbound text, media, payload and polls before credential resolution, including scheduled/core-routed sends. Normal inbound Zulip replies and lifecycle/progress messages retain their internal reply-delivery path. The supported SDK does not expose a trustworthy tool-origin discriminator to outbound adapters; this conservative scope prevents bypasses without blocking ordinary inbound replies.
+
 - **No action** if your agents only send, read, search, react, list channels, or post polls — those keep working under the default `messages` tier.
 - **Opt in explicitly** if your agents moderate their own or others' messages
   or administer streams:

@@ -1,5 +1,7 @@
 # Zulip message action capabilities
 
+Core-owned send/poll also enforce the messages tier at every outbound entrypoint (text, media, payload, poll) before runtime credentials/network. Messages off blocks shared/core-routed outbound, including scheduled sends. Ordinary inbound Zulip replies and lifecycle/progress delivery use the internal reply path and remain enabled; outbound contexts have no trusted tool-origin discriminator.
+
 This matrix is the checked-in contract for the shared OpenClaw `message` tool.
 `src/actions.ts` owns the advertised list, action-scoped schema contributions,
 and plugin-handler allowlist so those surfaces cannot silently diverge.

@@ -141,7 +141,7 @@ function resolveZulipAccountTiers(params: {
  * before any network access: every tier action must come from an "on" tier
  * for the resolved account, or the request fails closed with the tier hint.
  */
-function requireZulipActionTier(params: {
+export function requireZulipActionTier(params: {
   action: ChannelMessageActionName;
   cfg: OpenClawConfig;
   accountId?: string | null;

@@ -7,6 +7,12 @@ available in these sessions, so this record applies the same rubric from
 observable contract, a credible regression, the strongest owner boundary,
 overlap dispositions, fail/pass evidence, and remaining gaps.
 
+## Actual core dispatch boundary
+
+Core send/poll do not necessarily pass through `handleAction`. Their authoritative owner is now the shared tier gate at each outbound adapter entrypoint (text, media, payload, poll), before runtime credential resolution. `src/channel-action-tiers.test.ts` invokes the real SDK-native message bridge and legacy outbound methods, with real send/client code and mocked fetch. It proves disabled denial before credentials/network, enabled text/poll delivery, and preservation of the direct internal reply entrypoint used by monitor.ts. Each of the four outbound gates is removed separately: the static-credential legacy test resolves/sends instead of rejecting, then restored guarded code passes (4/4 detected, log `zulip-b-core-mutations.log`). Bridge and legacy coverage preserve two supported host API contracts; handler tests remain primary only for plugin-owned actions.
+
+The supported SDK offers no trustworthy tool-vs-non-tool origin field on outbound context. Consequently messages off disables shared/core outbound (including scheduled/core-routed delivery), not just a guessed subset of tool sends. Normal inbound Zulip replies and lifecycle/progress delivery remain enabled because monitor.ts uses direct internal sendMessageZulip. This choice is explicit in upgrade documentation. No user-controlled payload flag bypasses the gate.
+
 ## Scope of test changes
 
 - `src/actions.test.ts` covers the tier model at the handler/discovery
@@ -21,9 +27,7 @@ overlap dispositions, fail/pass evidence, and remaining gaps.
 - `src/zulip/accounts.test.ts` holds tier resolution/merge contracts.
 - No production seam was added or removed for tests. `advertiseZulipActions`
   is exported because it is the discovery surface itself (used by
-  `describeMessageTool`), not a test-only seam; `resolveZulipAccountTiers` and
-  `requireZulipActionTier` stay private and are covered through
-  `handleAction`/`describeMessageTool`.
+  `describeMessageTool`), not a test-only seam. `resolveZulipAccountTiers` remains private; `requireZulipActionTier` is a shared production export used by actions.ts and channel.ts, covered through handler and actual outbound dispatch tests.
 
 ## Contract records
 
@@ -57,9 +61,7 @@ overlap dispositions, fail/pass evidence, and remaining gaps.
 
 ## Production seams touched
 
-- `requireZulipActionTier` — private, called inside `handleAction` before
-  `resolveZulipClient`; every non-test caller passes through the covered
-  boundary. No dynamic dispatch or external harness references it.
+- `requireZulipActionTier` — production export called inside `handleAction` before `resolveZulipClient` and at all four core outbound entrypoints before runtime account/SecretRef resolution. Core-owned send and poll bypass the handler, so outbound integration tests own their enforcement contract. Internal inbound reply callers deliberately retain direct delivery.
 - `advertiseZulipActions` — public export; grep shows actions.ts as the only
   importer. The SDK export gate (`check-sdk-exports.mjs`) re-runs clean.
 - `ResolvedZulipAccount.actionTiers` — additive typed field; `channel.ts`

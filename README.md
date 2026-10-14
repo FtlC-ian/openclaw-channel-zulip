@@ -1,5 +1,7 @@
 # openclaw-channel-zulip
 
+Setting `actionTiers.messages: "off"` blocks shared/core outbound text, media, payload and poll delivery before credential resolution (including core-routed/scheduled sends). Normal inbound Zulip replies and lifecycle/progress messages use the internal reply path and remain enabled. The supported SDK provides no trusted tool-origin flag on outbound sends, so there is no payload-based bypass.
+
 ## Local-file upload security
 
 Local uploads require host media roots or an explicit absolute allowlist:

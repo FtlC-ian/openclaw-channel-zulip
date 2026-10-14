@@ -2,8 +2,9 @@ import { listAgentIds, resolveAgentConfig, tryResolveDefaultAgentId } from "open
 // The pinned SDK ships this lightweight public subpath without declarations.
 // @ts-expect-error Upstream package omits model-ref-parse.d.ts.
 import { parseModelRef as parseSdkModelRef } from "openclaw/plugin-sdk/model-ref-parse";
+import { resolveAgentRoute } from "openclaw/plugin-sdk/routing";
 import type { OpenClawConfig } from "./sdk.js";
-import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from "./sdk.js";
+import { normalizeAccountId } from "./sdk.js";
 import { resolveZulipApprovers } from "./approval-auth.js";
 import { resolveDefaultZulipAccountId, resolveZulipAccount } from "./zulip/accounts.js";
 import type { ZulipConfig } from "./types.js";
@@ -35,6 +36,26 @@ function runtimeForModel(cfg: OpenClawConfig, agentId: string, provider: string,
     ?? providerConfig?.agentRuntime?.id?.trim();
 }
 
+function routableZulipAgentIds(cfg: OpenClawConfig, accountId: string): Set<string> {
+  const bindings = (cfg.bindings ?? []).filter((binding) => binding.type !== "acp");
+  const usedIds = new Set([...listAgentIds(cfg), ...bindings.flatMap((binding) => [binding.agentId, binding.match.peer?.id?.trim() ?? ""])]);
+  let unmatched = "zulip-approval-preview-unmatched";
+  while (usedIds.has(unmatched)) unmatched += "-next";
+  const peers = [
+    { kind: "direct" as const, id: unmatched },
+    { kind: "channel" as const, id: unmatched },
+    ...bindings.filter((binding) => binding.match.channel.toLowerCase().trim() === "zulip")
+      .flatMap((binding) => binding.match.peer && binding.match.peer.id.trim() !== "*"
+        ? [{ kind: binding.match.peer.kind === "direct" ? "direct" as const : "channel" as const, id: binding.match.peer.id }]
+        : []),
+  ];
+  // An empty roster lets the SDK resolve binding precedence without rejecting
+  // unmatched explicit multi-agent routes that have no default owner.
+  const routingCfg = { ...cfg, agents: { entries: {} }, bindings };
+  const defaultAgentId = tryResolveDefaultAgentId(cfg) ?? unmatched;
+  return new Set(peers.map((peer) => resolveAgentRoute({ cfg: routingCfg, channel: "zulip", accountId, peer, defaultAgentId }).agentId));
+}
+
 export function collectZulipApprovalSetupWarnings(cfg: OpenClawConfig, accountId: string, path: string): ApprovalSetupWarning[] {
   const warnings: ApprovalSetupWarning[] = [];
   if ((cfg.channels?.zulip as ZulipConfig | undefined)?.enabled === false
@@ -43,12 +64,7 @@ export function collectZulipApprovalSetupWarnings(cfg: OpenClawConfig, accountId
   const sessionMode = forwarding?.mode !== "targets";
   const targetsMode = forwarding?.mode === "targets" || forwarding?.mode === "both";
   const target = forwarding && targetsMode && hasAccountTarget(cfg, forwarding, accountId);
-  const agentIds = new Set((cfg.bindings ?? []).filter((binding) => binding.type !== "acp"
-    && binding.match.channel === "zulip"
-    && (binding.match.accountId === "*" || normalizeAccountId(binding.match.accountId ?? DEFAULT_ACCOUNT_ID) === accountId))
-    .map((binding) => binding.agentId));
-  const defaultAgent = tryResolveDefaultAgentId(cfg);
-  if (defaultAgent) agentIds.add(defaultAgent);
+  const agentIds = routableZulipAgentIds(cfg, accountId);
   let receivesPrompts = Boolean(forwarding?.enabled && target);
   for (const agentId of listAgentIds(cfg).filter((id) => agentIds.has(id))) {
     const agent = resolveAgentConfig(cfg, agentId);

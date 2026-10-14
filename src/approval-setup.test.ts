@@ -76,10 +76,49 @@ describe("approval setup doctor boundary", () => {
   });
   it("covers sole-agent fallback routing and wildcard account bindings", async () => {
     const cfg = fixture(); delete cfg.agents!.entries!.other; cfg.bindings = [];
-    expect(cli(await warnings(cfg))).toHaveLength(2);
+    expect(cli(await warnings(cfg))).toHaveLength(1);
     cfg.agents!.entries!.other = { model: "openai/test" };
     cfg.bindings = [{ agentId: "rex", match: { channel: "zulip", accountId: "*" } }];
-    expect(cli(await warnings(cfg))).toHaveLength(2);
+    expect(cli(await warnings(cfg))).toHaveLength(1);
+    delete (cfg.channels!.zulip as any).accounts;
+    const messages = cli(await warnings(cfg));
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toContain('channels.zulip:');
+  });
+  it("does not warn for a legacy default agent shadowed by an account-wide route", async () => {
+    const cfg = fixture();
+    cfg.agents = { defaults: cfg.agents!.defaults, list: [
+      { id: "rex", default: true, model: "anthropic/claude-test" }, { id: "other", model: "openai/test" },
+    ] };
+    cfg.bindings = [{ agentId: "other", match: { channel: "zulip", accountId: "work" } }];
+    expect(cli(await warnings(cfg))).toEqual([]);
+    cfg.bindings = [];
+    expect(cli(await warnings(cfg))).toHaveLength(1);
+  });
+  it("honors first-match peer shadowing while retaining a distinct CLI peer", async () => {
+    const cfg = fixture();
+    cfg.bindings = [
+      { agentId: "other", match: { channel: "zulip", accountId: "work", peer: { kind: "channel", id: "17" } } },
+      { agentId: "rex", match: { channel: "zulip", accountId: "work", peer: { kind: "channel", id: "17" } } },
+    ];
+    expect(cli(await warnings(cfg))).toEqual([]);
+    cfg.bindings[1].match.peer!.id = "18";
+    expect(cli(await warnings(cfg))).toHaveLength(1);
+  });
+  it("uses account precedence over an earlier channel wildcard, but peer precedence over both", async () => {
+    const cfg = fixture(); cfg.bindings = [
+      { agentId: "rex", match: { channel: "zulip", accountId: "*" } },
+      { agentId: "other", match: { channel: "zulip", accountId: "work" } },
+    ];
+    expect(cli(await warnings(cfg))).toEqual([]);
+    cfg.bindings.push({ agentId: "rex", match: { channel: "zulip", accountId: "work", peer: { kind: "group", id: "17" } } });
+    expect(cli(await warnings(cfg))).toHaveLength(1);
+  });
+  it("does not invent guild/team inputs absent from Zulip ingress", async () => {
+    const cfg = fixture(); cfg.bindings![0].match.guildId = "discord-only";
+    expect(cli(await warnings(cfg))).toEqual([]);
+    delete cfg.bindings![0].match.guildId; cfg.bindings![0].match.teamId = "slack-only";
+    expect(cli(await warnings(cfg))).toEqual([]);
   });
   it("uses the configured default account for targets with no account selector", async () => {
     const cfg = fixture(); (cfg.channels!.zulip as any).defaultAccount = "work";

@@ -65,11 +65,13 @@ emit the same-chat pending tool result. For those agents, merge
     { "approvals": { "exec": { "enabled": true, "mode": "session" } } }
 
 and explicit trusted emails into the account's allowFrom. Session forwarding is
-not enabled merely by omitting its mode. Targets/both modes also work when an
+enabled only by enabled=true; an omitted mode then defaults to session. Targets/both modes also work when an
 explicit target selects this Zulip account. Enabled forwarding without approvers
 gets one warning, replacing (not duplicating) the existing reaction warning.
-Disabled accounts/channels are skipped. Root and named-account scopes retain the
-existing doctor inheritance semantics. Each account start emits one combined
+Disabled accounts/channels are skipped. Approval setup inspects live account
+scopes only: a named-account map does not create an extra root runtime account.
+The older policy/reaction warnings retain their separate root inheritance checks.
+Each account start emits one combined
 warning log, outside the reconnect loop; no messages are sent to Zulip.
 Probe results include approvalSetupWarnings even when credentials are missing;
 the existing status snapshot/summary preserves probe JSON. Connection success
@@ -78,8 +80,11 @@ and setup health remain separate, so a setup hint does not overwrite lastError.
 Detection uses public SDK agent enumeration/config and model parsing plus
 OpenClawConfig types, not private runtime imports or provider-name suffix guesses.
 It inspects primary and fallback models of Zulip route bindings (including account
-wildcards) and the SDK-resolved default/sole fallback agent. Explicit ACP routes
-are excluded. Model runtime intent follows exact per-agent/default model entries,
+wildcards) and the SDK-resolved default/sole fallback agent only where core would
+actually select it. Direct/channel peer witnesses and unmatched peers pass through
+the public SDK route resolver, preserving peer/account/channel precedence and
+first-match shadowing. Zulip does not supply guild/team/role routing inputs.
+Explicit ACP routes are excluded. Model runtime intent follows exact per-agent/default model entries,
 provider model entries, agent/default provider wildcards, then provider runtime.
 The documented blocking identities are claude-cli and the legacy codex-cli
 backend/provider; codex (app-server), openclaw and unknown runtime names are not
@@ -107,7 +112,9 @@ pending request exists or that all filters match it.
 
 ### Test-value ledger
 
-- Doctor preview owns routing, runtime/model precedence, primary/fallback/alias,
+- Doctor preview owns effective routing (shadowed legacy defaults, first-match
+  peer bindings, account-over-channel precedence, group/channel equivalence, and
+  absent guild/team inputs), runtime/model precedence, primary/fallback/alias,
   forwarding modes/targets/filters, explicit approvers, inheritance and disabled
   scopes. Credible regressions are silently blocked CLI approval prompts and
   unactionable forwarded controls. Existing reaction cases retain separate
@@ -118,8 +125,10 @@ pending request exists or that all filters match it.
   missing credentials and a successful probe (network probe collaborator mocked).
 - No test-only production seam was introduced. The shared detector is called by
   doctor, startup and probe; account path resolution is used by startup/probe.
-- The new boundary tests on unchanged 4defd96 fail 21 cases (10 pass); all 31 pass
-  with the checks. Negative controls intentionally remain green on the baseline.
+- The 35 new boundary tests on unchanged 4defd96 fail 24 cases (11 pass); all 35
+  pass with the checks. Negative controls intentionally remain green on the
+  baseline. Hawk routing regressions fail five cases on 77dc56c (30 pass), then
+  pass after using real SDK precedence and removing phantom root runtime scopes.
 
 ## Allowlist edits
 

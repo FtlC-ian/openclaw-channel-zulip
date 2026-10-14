@@ -13,6 +13,7 @@ export const zulipDoctor: NonNullable<ChannelPlugin["doctor"]> = {
   collectPreviewWarnings: ({ cfg }) => {
     const warnings: string[] = [];
     if ((cfg.channels?.zulip as { enabled?: boolean } | undefined)?.enabled === false) return warnings;
+    const hasNamedAccounts = zulipPolicyScopes(cfg).length > 1;
     for (const { path, effective: account } of zulipPolicyScopes(cfg)) {
       if (account.enabled === false) continue;
       const groupPolicy = account.groupPolicy ?? cfg.channels?.defaults?.groupPolicy ?? "allowlist";
@@ -34,7 +35,8 @@ export const zulipDoctor: NonNullable<ChannelPlugin["doctor"]> = {
       const approverCfg = path === "channels.zulip"
         ? { ...cfg, channels: { ...cfg.channels, zulip: { ...account, accounts: undefined, defaultAccount: undefined } } }
         : cfg;
-      const setupWarnings = collectZulipApprovalSetupWarnings(approverCfg, accountId ?? "default", path);
+      const setupWarnings = path === "channels.zulip" && hasNamedAccounts ? []
+        : collectZulipApprovalSetupWarnings(approverCfg, accountId ?? "default", path);
       warnings.push(...setupWarnings.map((warning) => warning.message));
       if (account.approvalReactions && resolveZulipApprovers(approverCfg, accountId).length === 0
         && !setupWarnings.some((warning) => warning.kind === "approvers")) {

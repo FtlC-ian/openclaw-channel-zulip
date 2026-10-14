@@ -2,19 +2,21 @@
 
 ## Unreleased
 
-- Messages-tier denial also covers actual core outbound text/media/payload/poll dispatch before credential resolution. Setting messages off blocks shared/scheduled outbound delivery; ordinary inbound replies and lifecycle/progress messages retain their internal delivery path. This distinction is explicit because the supported SDK has no trusted outbound tool-origin field.
-
-### Security / upgrade notes
-- Local-file uploads now fail closed unless the canonical file is inside host-provided media roots or explicit account `media.localRoots`. Symlink escapes and traversal outside those roots are rejected; local reads use a bounded file descriptor and `mediaMaxMb` (account setting, then agent default, then 5 MB). Remote HTTP(S) and Zulip-hosted URLs are unchanged.
-- Local uploads remain enabled within allowed roots. Disable with `channels.zulip.media.localUploads: false`; opt into additional absolute directories with `channels.zulip.media.localRoots: ["/path/to/uploads"]` (also supported under accounts). A host read callback alone no longer authorizes arbitrary paths.
+## 2026.10.15
 
 ### Features
 - **Per-account action tiers**: Add `channels.zulip.actionTiers` (`messages`, `moderation`, `streamAdmin`) gating the shared message tool per account. Defaults are safe: `messages` is `"on"` (send, read, search, react, channel-list, and core-owned polls); `moderation` (message edit, delete/unsend, member-info) and `streamAdmin` (stream create/edit/delete) default to `"off"`. Gated-off actions are excluded from tool discovery and rejected before any Zulip network request. Edit/delete/unsend need the moderation tier even for the bot's own messages because ownership is not resolved over the network. All three tiers are honored: `messages: "off"` makes the message tool inert for that account. Tiers merge per key with account config overriding the top-level section. See `docs/ACTION_CAPABILITIES.md`.
+- Messages-tier denial also covers actual core outbound text/media/payload/poll dispatch before credential resolution. Setting messages off blocks shared/scheduled outbound delivery; ordinary inbound replies and lifecycle/progress messages retain their internal delivery path. This distinction is explicit because the supported SDK has no trusted outbound tool-origin field.
+
+### Security
+- Local-file uploads now fail closed unless the canonical file is inside host-provided media roots or explicit account `media.localRoots`. Symlink escapes and traversal outside those roots are rejected; local reads use a bounded file descriptor and `mediaMaxMb` (account setting, then agent default, then 5 MB). Remote HTTP(S) and Zulip-hosted URLs are unchanged.
+- Local uploads remain enabled within allowed roots. Disable with `channels.zulip.media.localUploads: false`; opt into additional absolute directories with `channels.zulip.media.localRoots: ["/path/to/uploads"]` (also supported under accounts). A host read callback alone no longer authorizes arbitrary paths.
 
 ### Upgrade notes
 - Upgrades tighten behavior by default: message `edit`/`delete`/`unsend` and stream `channel-create`/`channel-edit`/`channel-delete` now require explicit opt-in via `channels.zulip.actionTiers.moderation: "on"` and `actionTiers.streamAdmin: "on"` (top level or per account). Set them to restore the previous action surface.
 - `member-info` now requires the `moderation` tier: it is an unrestricted cross-user data lookup, so it shares the moderation opt-in instead of being available at the safe default.
 - The legacy `enableAdminActions` flag remains accepted but stays intentionally inert; message-tool capabilities are governed solely by `actionTiers`.
+- To keep 2026.10.14 behavior, set `channels.zulip.actionTiers: { messages: "on", moderation: "on", streamAdmin: "on" }` and list the directories agents may upload from in `channels.zulip.media.localRoots`.
 
 ## 2026.10.14
 

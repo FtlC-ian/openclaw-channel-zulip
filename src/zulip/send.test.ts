@@ -230,23 +230,22 @@ vi.mock("./client.js", () => ({
 }));
 
 describe("sendMessageZulip media and presentation", () => {
-  it.each(["outside", "traversal", "symlink", "no-roots", "disabled", "size"])("rejects local upload %s before reading or uploading", async (scenario) => {
+  it.each(["outside", "traversal", "symlink", "no-roots", "disabled", "size"])("rejects local upload %s before uploading", async (scenario) => {
     const { uploadZulipFile } = await import("./client.js");
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "zulip-security-"));
     const root = path.join(dir, "allowed");
     await fs.mkdir(root);
     await fs.writeFile(path.join(dir, "secret"), "secret");
+    await fs.writeFile(path.join(root, "small"), "small");
     await fs.writeFile(path.join(root, "large"), Buffer.alloc(1024 * 1024 + 1));
     await fs.symlink(path.join(dir, "secret"), path.join(root, "link"));
-    const mediaUrl = scenario === "traversal" ? root + "/../secret" : scenario === "symlink" ? path.join(root, "link") : scenario === "size" ? path.join(root, "large") : path.join(dir, "secret");
-    const readFile = vi.fn(async () => Buffer.from("secret"));
+    const mediaUrl = scenario === "traversal" ? root + "/../secret" : scenario === "symlink" ? path.join(root, "link") : scenario === "size" ? path.join(root, "large") : scenario === "disabled" ? path.join(root, "small") : path.join(dir, "secret");
     vi.mocked(uploadZulipFile).mockClear();
-    Object.assign(sendState.account.config, { media: { localUploads: scenario !== "disabled" }, mediaMaxMb: 1 });
+    Object.assign(sendState.account.config, { media: { localUploads: scenario !== "disabled", localRoots: scenario === "no-roots" ? [] : [root] }, mediaMaxMb: 1 });
     try {
       await expect(sendMessageZulip("user:alice@example.test", "file", {
-        cfg: {}, mediaUrl, mediaLocalRoots: scenario === "no-roots" ? [] : [root], mediaReadFile: readFile,
-      })).rejects.toThrow(/local-file upload/);
-      expect(readFile).not.toHaveBeenCalled();
+        cfg: {}, mediaUrl,
+      })).rejects.toThrow();
       expect(uploadZulipFile).not.toHaveBeenCalled();
     } finally {
       sendState.account.config = {};

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Security / upgrade notes
+- Local-file uploads now fail closed unless the canonical file is inside host-provided media roots or explicit account `media.localRoots`. Symlink escapes and traversal outside those roots are rejected; local reads use a bounded file descriptor and `mediaMaxMb` (account setting, then agent default, then 5 MB). Remote HTTP(S) and Zulip-hosted URLs are unchanged.
+- Local uploads remain enabled within allowed roots. Disable with `channels.zulip.media.localUploads: false`; opt into additional absolute directories with `channels.zulip.media.localRoots: ["/path/to/uploads"]` (also supported under accounts). A host read callback alone no longer authorizes arbitrary paths.
+
 ## 2026.10.14
 
 ### Compatibility

@@ -95,8 +95,10 @@ export type ZulipAccountConfig = {
   groupAllowFrom?: Array<string | number>;
   /** Group message policy (allowlist/open/disabled). */
   groupPolicy?: GroupPolicy;
-  /** Inbound media max size (MB). Default: 5. */
+  /** Inbound and local outbound media max size (MB). Default: 5. */
   mediaMaxMb?: number;
+  /** Local uploads require host roots or this explicit allowlist. */
+  media?: { localUploads?: boolean; localRoots?: string[] };
   /** Mark successfully handled inbound messages read after durable completion. Default: false. */
   markHandledRead?: boolean;
   /** Approval message controls. Defaults: ✅ allow-once, ❌ deny. */

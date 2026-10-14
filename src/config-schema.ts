@@ -227,6 +227,10 @@ const ZulipAccountSchemaBase = z
     groupAllowFrom: z.array(z.union([z.string(), z.number()])).optional(),
     groupPolicy: GroupPolicySchema.optional(),
     mediaMaxMb: z.number().int().positive().optional(),
+    media: z.object({
+      localUploads: z.boolean().optional(),
+      localRoots: z.array(z.string().trim().min(1)).optional(),
+    }).strict().optional(),
     markHandledRead: z.boolean().optional(),
     reactionTriggers: ReactionTriggersSchema.optional(),
     approvalReactions: z.object({ approve: ZulipReactionEmojiSchema.min(1).optional(), deny: ZulipReactionEmojiSchema.min(1).optional() }).strict().optional(),

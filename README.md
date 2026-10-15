@@ -319,7 +319,12 @@ stream events. They do not disable outbound stream actions.
 ### Doctor and allowlists
 
 `openclaw doctor` previews unsafe DM/group policy, all-public-stream scope,
-expanding overrides, and configured reaction approvals without explicit approvers.
+expanding overrides, and approval setup: CLI primary/fallback models without
+reliable exec forwarding, and forwarded prompts without explicit approver emails.
+An account emits one setup warning log at startup (not on each reconnect or in
+chat); the same hints appear in channel probe/status JSON as
+`probe.approvalSetupWarnings`. Hints name the exact account config path; no
+automatic policy changes are made. See [diagnostic limits](docs/POLICY_ADAPTERS.md#approval-setup-diagnostics).
 `openclaw doctor --fix` only removes exact duplicate sender entries; it does not
 choose access policies, approvers or credentials.
 

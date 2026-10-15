@@ -5,8 +5,8 @@
 The adapters are typed through `ChannelPlugin["doctor"]` and
 `ChannelPlugin["allowlist"]` from the existing exported
 `openclaw/plugin-sdk/core` import, using the pinned OpenClaw 2026.9.6 SDK.
-No new runtime SDK subpath is required. The exports checker audits all 34 source/built subpaths (including type-only
-imports, with 27 emitted runtime subpaths), and `test:hosts` imports the built index/setup entry and
+Approval setup additionally uses the public agent-scope-runtime and model-ref-parse subpaths. The exports checker audits all 37 source/built subpaths (including type-only
+imports, with 29 emitted runtime subpaths), and `test:hosts` imports the built index/setup entry and
 exercises both adapters on actual npm hosts 2026.9.3, 2026.9.6,
 2026.10.1-beta.1 and 2026.10.1-beta.2.
 
@@ -56,6 +56,79 @@ It does not normalize identities: inbound sender matching and approval matching
 have distinct public compatibility semantics (for example `user:@email`).
 Exact deduplication preserves both boundaries, is idempotent, does not choose
 users/policies/streams, and never edits credentials. Risk warnings remain manual.
+
+## Approval setup diagnostics
+
+CLI-backed tools can block while an exec approval is pending, so they cannot
+emit the same-chat pending tool result. For those agents, merge
+
+    { "approvals": { "exec": { "enabled": true, "mode": "session" } } }
+
+and explicit trusted emails into the account's allowFrom. Session forwarding is
+enabled only by enabled=true; an omitted mode then defaults to session. Targets/both modes also work when an
+explicit target selects this Zulip account. Enabled forwarding without approvers
+gets one warning, replacing (not duplicating) the existing reaction warning.
+Disabled accounts/channels are skipped. Approval setup inspects live account
+scopes only: a named-account map does not create an extra root runtime account.
+The older policy/reaction warnings retain their separate root inheritance checks.
+Each account start emits one combined
+warning log, outside the reconnect loop; no messages are sent to Zulip.
+Probe results include approvalSetupWarnings even when credentials are missing;
+the existing status snapshot/summary preserves probe JSON. Connection success
+and setup health remain separate, so a setup hint does not overwrite lastError.
+
+Detection uses public SDK agent enumeration/config and model parsing plus
+OpenClawConfig types, not private runtime imports or provider-name suffix guesses.
+It inspects primary and fallback models of Zulip route bindings (including account
+wildcards) and the SDK-resolved default/sole fallback agent only where core would
+actually select it. Direct/channel peer witnesses and unmatched peers pass through
+the public SDK route resolver, preserving peer/account/channel precedence and
+first-match shadowing. Zulip does not supply guild/team/role routing inputs.
+Explicit ACP routes are excluded. Model runtime intent follows exact per-agent/default model entries,
+provider model entries, agent/default provider wildcards, then provider runtime.
+The documented blocking identities are claude-cli and the legacy codex-cli
+backend/provider; codex (app-server), openclaw and unknown runtime names are not
+classified as blocking CLI backends. The supported public SDK offers no general
+CLI-harness classifier or access to session-selected runtime overrides; custom
+harnesses and later interactive model switches remain an operator check. See
+APPROVAL_REACTIONS.md for the tagged core producer/forwarder trace. Config-only
+inspection intentionally does not load plugin registries or inspect transcripts.
+Primary/fallback refs must be explicitly provider-qualified or configured aliases;
+ambiguous bare model IDs and implicit host model defaults are not guessed. The
+lightweight public model-ref-parse export omits declarations on the pinned host;
+its type is derived from the same parser exported by agent-runtime, without
+loading that broad runtime surface and its unrelated host dependencies.
+
+The preview cannot prove whether any particular command will require approval:
+remote host exec-approvals stores, session overrides, tool arguments and runtime
+policy can be stricter than config. It therefore says "if exec approval is
+required" even for mode=full, but skips explicit deny (no execution). A nonempty
+sessionFilter is treated as restricted, even if a literal/regex happens to cover
+some Zulip sessions: config cannot prove it covers every account/DM/topic/session
+shape. Agent filters must include the routed agent. The fix removes excluding
+filters rather than recommending broader sender access. Forwarding enablement
+and approver warnings describe configured delivery intent, not a promise that a
+pending request exists or that all filters match it.
+
+### Test-value ledger
+
+- Doctor preview owns effective routing (shadowed legacy defaults, first-match
+  peer bindings, account-over-channel precedence, group/channel equivalence, and
+  absent guild/team inputs), runtime/model precedence, primary/fallback/alias,
+  forwarding modes/targets/filters, explicit approvers, inheritance and disabled
+  scopes. Credible regressions are silently blocked CLI approval prompts and
+  unactionable forwarded controls. Existing reaction cases retain separate
+  forwarding-off coverage; one combined forwarding warning prevents duplication.
+- Gateway startAccount owns the one-log-per-start/no-chat contract; the lifecycle
+  is mocked only to avoid starting a monitor. This does not prove live transport
+  startup. ProbeAccount plus the real snapshot/summary owns hint exposure on both
+  missing credentials and a successful probe (network probe collaborator mocked).
+- No test-only production seam was introduced. The shared detector is called by
+  doctor, startup and probe; account path resolution is used by startup/probe.
+- The 35 new boundary tests on unchanged 4defd96 fail 24 cases (11 pass); all 35
+  pass with the checks. Negative controls intentionally remain green on the
+  baseline. Hawk routing regressions fail five cases on 77dc56c (30 pass), then
+  pass after using real SDK precedence and removing phantom root runtime scopes.
 
 ## Allowlist edits
 

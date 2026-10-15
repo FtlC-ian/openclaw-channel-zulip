@@ -28,6 +28,7 @@ import {
   type ResolvedZulipAccount,
 } from "./zulip/accounts.js";
 import { zulipApprovalAuth } from "./approval-auth.js";
+import { approvalSetupPath, collectZulipApprovalSetupWarnings } from "./approval-setup.js";
 import { renderZulipApprovalPresentation } from "./zulip/approval-presentation.js";
 import { normalizeZulipBaseUrl } from "./zulip/client.js";
 import { sendMessageZulip, sendPollZulip, type ZulipSendResult } from "./zulip/send.js";
@@ -416,15 +417,16 @@ export const zulipPlugin = {
       };
     },
     probeAccount: async ({ account, timeoutMs, cfg }) => {
+      const approvalSetupWarnings = collectZulipApprovalSetupWarnings(cfg, account.accountId, approvalSetupPath(cfg, account.accountId)).map((warning) => warning.message);
       const runtimeAccount = await resolveZulipRuntimeAccount({ cfg, accountId: account.accountId });
       const apiKey = runtimeAccount.apiKey?.trim();
       const email = runtimeAccount.email?.trim();
       const baseUrl = runtimeAccount.baseUrl?.trim();
       if (!apiKey || !email || !baseUrl) {
-        return { ok: false, error: "apiKey, email, or url missing" };
+        return { ok: false, error: "apiKey, email, or url missing", approvalSetupWarnings };
       }
       const { probeZulip } = await import("./zulip/probe.js");
-      return await probeZulip(baseUrl, email, apiKey, timeoutMs);
+      return { ...await probeZulip(baseUrl, email, apiKey, timeoutMs), approvalSetupWarnings };
     },
     buildAccountSnapshot: ({ account, runtime, probe }) =>
       ({
@@ -549,6 +551,8 @@ export const zulipPlugin = {
         emailSource: account.emailSource,
       } as ChannelAccountSnapshot);
       ctx.log?.info(`[${account.accountId}] starting channel`);
+      const setupWarnings = collectZulipApprovalSetupWarnings(ctx.cfg, account.accountId, approvalSetupPath(ctx.cfg, account.accountId));
+      if (setupWarnings.length) ctx.log?.warn("[" + account.accountId + "] approval setup: " + setupWarnings.map((warning) => warning.message).join(" "));
       return runZulipAccount({
         email: account.email ?? undefined,
         baseUrl: account.baseUrl ?? undefined,

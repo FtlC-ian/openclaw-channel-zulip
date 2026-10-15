@@ -3,6 +3,7 @@ import { resolveMessagePresentationActionValue } from "../sdk.js";
 import type { resolveApprovalOverGateway, ApprovalResolveResult } from "openclaw/plugin-sdk/approval-gateway-runtime";
 import { getExecApprovalReplyMetadata } from "openclaw/plugin-sdk/approval-reply-runtime";
 import type { zulipApprovalAuth } from "../approval-auth.js";
+import { readApprovalDeliveryMetadata } from "./approval-metadata.js";
 export type ApprovalDecision = "allow-once" | "allow-always" | "deny";
 export type ApprovalBindingMetadata = {
   approvalId: string;
@@ -11,7 +12,7 @@ export type ApprovalBindingMetadata = {
 };
 // 2026.9.6 ships this public runtime subpath without its declaration file.
 // @ts-expect-error Upstream package explicitly excludes this .d.ts.
-import { readApprovalReactionPresentationBinding, readApprovalReactionDeliveryMetadata, readApprovalReactionDeliveredBinding, buildApprovalReactionDeliveredBindingMarker, settleApprovalReaction as settle, createApprovalReactionTargetStore, listApprovalReactionBindings } from "openclaw/plugin-sdk/approval-reaction-runtime";
+import { readApprovalReactionPresentationBinding, readApprovalReactionDeliveredBinding, buildApprovalReactionDeliveredBindingMarker, settleApprovalReaction as settle, createApprovalReactionTargetStore, listApprovalReactionBindings } from "openclaw/plugin-sdk/approval-reaction-runtime";
 export { createApprovalReactionTargetStore, listApprovalReactionBindings };
 const DELIVERED_BINDING_KEY = "zulipApprovalBinding";
 export function markRenderedApproval(payload: ReplyPayload, binding: ApprovalBindingMetadata): ReplyPayload {
@@ -19,7 +20,7 @@ export function markRenderedApproval(payload: ReplyPayload, binding: ApprovalBin
 }
 type Payload = Pick<ReplyPayload, "channelData" | "presentation">;
 const readTyped = readApprovalReactionPresentationBinding as (params: { payload: Payload }) => ApprovalBindingMetadata | null;
-const readMetadata = readApprovalReactionDeliveryMetadata as (payload: Payload) => ApprovalBindingMetadata | null;
+const readMetadata = readApprovalDeliveryMetadata as (payload: Payload) => ApprovalBindingMetadata | null;
 export function readApprovalBinding({ payload }: { payload: Payload }): ApprovalBindingMetadata | null {
   const state = (payload.channelData?.execApproval as { state?: unknown } | undefined)?.state;
   if (state !== undefined && state !== "pending") return null;

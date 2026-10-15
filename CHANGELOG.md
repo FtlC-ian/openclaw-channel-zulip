@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Compatibility
+- Keep Zulip loadable on OpenClaw 2026.10.5-beta.4 after removal of the approval metadata SDK re-export. Use a local metadata reader preserving upstream validation exactly. Audit runtime named SDK exports against real supported hosts.
+
 ### Features
 - Account-scoped approval setup doctor warnings: CLI primary/fallback models need reliable core exec forwarding, and forwarded Zulip prompts need explicit approver emails. Avoid duplicating the reaction-approver warning. Emit one startup log hint per account start and expose the same hints in probe/status JSON; no chat messages or automatic config edits.
 

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2026.10.16
+
 ### Compatibility
 - Keep Zulip loadable on OpenClaw 2026.10.5-beta.4 after removal of the approval metadata SDK re-export. Use a local metadata reader preserving upstream validation exactly. Audit runtime named SDK exports against real supported hosts.
 

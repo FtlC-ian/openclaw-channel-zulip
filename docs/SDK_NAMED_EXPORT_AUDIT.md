@@ -1,6 +1,6 @@
 # SDK named-export compatibility audit
 
-Runtime imports and re-exports in `src`, root entries, and compiled `dist` were parsed with TypeScript and checked by loading the actual host module. Aliases and destructured dynamic imports use their exported names. Type-only imports require the public subpath but are not runtime namespace members.
+Runtime imports and re-exports in `src`, root entries, and compiled `dist` were parsed with TypeScript and checked by loading the actual host module. Aliases and destructured dynamic imports use their exported names. The guarded namespace factory in durable-bindings.ts has an explicit alternative-name contract: at least one of its two supported factory spellings must be a function. Namespace alternatives are declared, not inferred as mandatory individual names. Type-only imports require the public subpath but are not runtime namespace members.
 
 | SDK specifier | Required runtime names | 9.3 | 9.6 | 10.3 | 10.5-beta.4 |
 | --- | --- | --- | --- | --- | --- |
@@ -24,6 +24,7 @@ Runtime imports and re-exports in `src`, root entries, and compiled `dist` were 
 | openclaw/plugin-sdk/media-runtime | buildOutboundMediaLoadOptions | OK | OK | OK | OK |
 | openclaw/plugin-sdk/model-ref-parse | parseModelRef | OK | OK | OK | OK |
 | openclaw/plugin-sdk/param-readers | readNumberParam, readStringParam | OK | OK | OK | OK |
+| openclaw/plugin-sdk/plugin-state-store-runtime | createPluginStateKeyedStore OR createPluginStateSyncKeyedStore (function) | OK | OK | OK | OK |
 | openclaw/plugin-sdk/question-gateway-runtime | questionGatewayRuntime | OK | OK | OK | OK |
 | openclaw/plugin-sdk/routing | buildAgentSessionKey, resolveAgentRoute | OK | OK | OK | OK |
 | openclaw/plugin-sdk/runtime-store | createPluginRuntimeStore | OK | OK | OK | OK |
@@ -38,7 +39,7 @@ All 37 source/built subpaths pass. The only missing runtime name in base `6fe1bc
 ## Validation and test ownership
 
 - Local metadata drift: `src/zulip/approval-metadata.test.ts` compares the production reader with the pinned 2026.9.6 SDK across malformed metadata, decisions, IDs, slugs and both option flags. Newer system-agent support is asserted separately because the pinned SDK predates it. No runtime SDK-reader selection remains. This module is called by production approval binding validation, not a test-only seam.
-- Missing named exports: `scripts/check-sdk-exports.test.mjs` owns parser/loader regression detection (real fixture exports, renamed re-export, dynamic destructuring and absent names). The base-commit failure is the actual plugin regression control.
+- Missing named exports: `scripts/check-sdk-exports.test.mjs` owns parser/loader regression detection (real fixture exports, renamed re-export, dynamic destructuring and absent names). Its namespace-factory regression accepts each factory independently and rejects removal of both or a non-function export; this owns the guarded durability compatibility branch without treating either spelling individually as mandatory. The namespace regression fails against checker revision 4fed78a (false success when both exports disappear) and passes against the corrected checker. The base-commit failure is the actual plugin regression control.
 - Approval authorization/delivery: existing approval unit tests and six real-host built-plugin smokes retain state, presentation/marker validation, unauthorized-actor denial and terminal cleanup. These are distinct integration/security risks, not copies of the metadata drift test.
 - The mandatory test-value-audit skill was searched and requested by exact name but is not installed; this contract/owner/regression record follows TEAM_PROTOCOL directly.
 

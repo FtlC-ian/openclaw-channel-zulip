@@ -6,6 +6,31 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
+test("namespace store factory contract accepts either host spelling but rejects losing both", async () => {
+  const root = await mkdtemp(join(tmpdir(), "zulip-sdk-namespace-check-"));
+  try {
+    await mkdir(join(root, "dist"));
+    await writeFile(join(root, "dist", "index.js"), `
+      const sdk = await import("openclaw/plugin-sdk/plugin-state-store-runtime");
+      const create = sdk.createPluginStateKeyedStore ?? sdk.createPluginStateSyncKeyedStore;
+    `);
+    const packagePath = join(root, "package.json");
+    await writeFile(packagePath, JSON.stringify({ type: "module", version: "fixture", exports: { "./plugin-sdk/plugin-state-store-runtime": "./state.js" } }));
+    const run = () => spawnSync(process.execPath, [fileURLToPath(new URL("./check-sdk-exports.mjs", import.meta.url)), packagePath], { cwd: root, encoding: "utf8" });
+    for (const name of ["createPluginStateKeyedStore", "createPluginStateSyncKeyedStore"]) {
+      await writeFile(join(root, "state.js"), "export function " + name + "() {}");
+      const success = run();
+      assert.equal(success.status, 0, success.stderr);
+    }
+    for (const source of ["export const unrelated = 1;", "export const createPluginStateKeyedStore = 1;"]) {
+      await writeFile(join(root, "state.js"), source);
+      const failure = run();
+      assert.equal(failure.status, 1);
+      assert.ok(failure.stderr.includes("missing named exports from openclaw/plugin-sdk/plugin-state-store-runtime: createPluginStateKeyedStore OR createPluginStateSyncKeyedStore"), failure.stderr);
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("built and type-only source SDK imports must be publicly exported", async () => {
   const root = await mkdtemp(join(tmpdir(), "zulip-sdk-check-"));
   try {

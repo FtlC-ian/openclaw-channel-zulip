@@ -10,6 +10,10 @@ const packagePath = process.argv[2] ?? resolve(dirname(require.resolve("openclaw
 const host = JSON.parse(await readFile(packagePath, "utf8"));
 const specifiers = new Set();
 const names = new Map();
+// Namespace compatibility branches require one export from each alternative group.
+const namespaceContracts = new Map([
+  ["openclaw/plugin-sdk/plugin-state-store-runtime", [["createPluginStateKeyedStore", "createPluginStateSyncKeyedStore"]]],
+]);
 async function scan(directory, recursive = true) {
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const path = resolve(directory, entry.name);
@@ -57,7 +61,8 @@ if (missing.length) {
   process.exitCode = 1;
 } else {
   for (const [specifier, required] of [...names].sort()) {
-    if (!required.size) continue;
+    const alternatives = namespaceContracts.get(specifier) ?? [];
+    if (!required.size && !alternatives.length) continue;
     const target = host.exports[specifier.replace(/^openclaw\//u, "./")];
     const runtimeTarget = (value) => {
       if (typeof value === "string") return value;
@@ -74,7 +79,11 @@ if (missing.length) {
     try {
       const module = await import(pathToFileURL(resolve(dirname(packagePath), runtimeTarget(target))).href);
       const absent = [...required].filter(name => !Object.hasOwn(module, name));
-      if (process.env.SDK_EXPORT_AUDIT_TABLE) console.log(`${specifier} | ${[...required].sort().join(", ")} | ${absent.length ? "MISSING " + absent.join(", ") : "OK"}`);
+      for (const group of alternatives) {
+        if (!group.some(name => typeof module[name] === "function")) absent.push(group.join(" OR "));
+      }
+      const auditedNames = [...required].sort().concat(alternatives.map(group => "(" + group.join(" OR ") + ")"));
+      if (process.env.SDK_EXPORT_AUDIT_TABLE) console.log(`${specifier} | ${auditedNames.join(", ")} | ${absent.length ? "MISSING " + absent.join(", ") : "OK"}`);
       if (absent.length) {
         console.error(`OpenClaw ${host.version} missing named exports from ${specifier}: ${absent.join(", ")}`);
         process.exitCode = 1;

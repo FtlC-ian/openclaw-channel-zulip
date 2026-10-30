@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { ZulipAccountConfig } from "../types.js";
 import { fetchZulipUser, type ZulipClient, type ZulipEvent, type ZulipMessage } from "./client.js";
 import { resolveZulipReactionSpec } from "./status-reactions.js";
+import { updateKeyedStore, type ConditionalStore } from "./keyed-store.js";
 
 export function reactionTriggerEmoji(config: ZulipAccountConfig): string {
   return resolveZulipReactionSpec(config.reactionTriggers?.emoji ?? "fast_forward").emojiName;
@@ -14,13 +15,10 @@ export function reactionTriggerApprovalCollision(config: Pick<ZulipAccountConfig
     .some(raw => resolveZulipReactionSpec(raw).emojiName === emoji);
 }
 
-export type ReactionTriggerLedger = {
-  update?: (key: string, update: (current: { keys: string[] } | undefined) => { keys: string[] } | undefined) => Promise<boolean>;
-};
+export type ReactionTriggerLedger = ConditionalStore<{ keys: string[] }>;
 
 export async function claimReactionTrigger(ledger: ReactionTriggerLedger, scope: string, key: string): Promise<boolean> {
-  if (!ledger.update) return false;
-  return ledger.update(scope, current => current?.keys.includes(key)
+  return updateKeyedStore(ledger, scope, current => current?.keys.includes(key)
     ? undefined : { keys: [...(current?.keys ?? []), key] });
 }
 

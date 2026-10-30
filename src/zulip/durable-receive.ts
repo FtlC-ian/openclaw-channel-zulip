@@ -3,6 +3,7 @@ import { createDurableInboundReceiveJournalFromQueue } from "openclaw/plugin-sdk
 import type { PluginJsonValue } from "openclaw/plugin-sdk/plugin-entry";
 
 import { getZulipRuntime } from "../runtime.js";
+import { hasAtomicMutations, openCompatibleKeyedStore, updateKeyedStore } from "./keyed-store.js";
 
 const ZULIP_DURABLE_INBOUND_PENDING_MAX_ENTRIES = 250;
 const ZULIP_DURABLE_INBOUND_COMPLETED_MAX_ENTRIES = 700;
@@ -68,23 +69,21 @@ export function deserializeZulipDurableInboundMessage<T>(
 
 export function createZulipDurableInboundReceiveJournal(accountId: string) {
   const runtime = getZulipRuntime();
-  if (
-    typeof runtime.state?.openKeyedStore !== "function" ||
-    typeof runtime.state?.openChannelIngressQueue !== "function"
-  ) {
+  if (typeof runtime.state?.openChannelIngressQueue !== "function") {
     throw new Error("durable plugin state is not available");
   }
   const accountPart = hashNamespacePart(accountId);
-  const legacyPendingStore = runtime.state.openKeyedStore<LegacyPendingRecord>({
+  const legacyPendingStore = openCompatibleKeyedStore<LegacyPendingRecord>(runtime.state, {
     namespace: `inbound.v1.pending.${accountPart}`,
     maxEntries: ZULIP_DURABLE_INBOUND_PENDING_MAX_ENTRIES,
     defaultTtlMs: ZULIP_DURABLE_INBOUND_PENDING_TTL_MS,
   });
-  const legacyCompletedStore = runtime.state.openKeyedStore<LegacyCompletedRecord>({
+  const legacyCompletedStore = openCompatibleKeyedStore<LegacyCompletedRecord>(runtime.state, {
     namespace: `inbound.v1.completed.${accountPart}`,
     maxEntries: ZULIP_DURABLE_INBOUND_COMPLETED_MAX_ENTRIES,
     defaultTtlMs: ZULIP_DURABLE_INBOUND_COMPLETED_TTL_MS,
   });
+  if (!legacyPendingStore || !legacyCompletedStore) throw new Error("durable plugin state is not available");
   const queueJournal = createDurableInboundReceiveJournalFromQueue<
     ZulipDurableInboundPayload,
     ZulipDurableInboundMetadata,
@@ -248,8 +247,9 @@ export function createZulipDurableInboundReceiveJournal(accountId: string) {
         lastAttemptAt: releasedAt,
         ...(options?.lastError === undefined ? {} : { lastError: options.lastError }),
       };
-      if (legacyPendingStore.update) {
-        await legacyPendingStore.update(
+      if (hasAtomicMutations(legacyPendingStore)) {
+        await updateKeyedStore(
+          legacyPendingStore,
           key,
           (current) => current ? {
             ...current,

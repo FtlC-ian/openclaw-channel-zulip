@@ -4,6 +4,7 @@ import { fetchTopicHistory, resolveTopicHistoryConfig, shouldFetchTopicHistory }
 import { startDurableBindings, durableBindings, bindingScope, type DurableRecord } from "./durable-bindings.js";
 import { ZulipConnection } from "./connection.js";
 import { buildReactionContinuation, claimReactionTrigger } from "./reaction-triggers.js";
+import { hasAtomicMutations, openCompatibleKeyedStore } from "./keyed-store.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type {
@@ -2211,12 +2212,10 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     }
   })();
   const pendingReceiveCheckpoints = new Set<Promise<void>>();
-  const reactionLedger = typeof core.state?.openKeyedStore === "function"
-    ? core.state.openKeyedStore<{ keys: string[] }>({
-        namespace: "zulip.reaction-triggers.v1", maxEntries: 10, overflowPolicy: "reject-new",
-      })
-    : undefined;
-  if (account.config.reactionTriggers?.enabled && (!durableInboundJournal || !reactionLedger?.update)) {
+  const reactionLedger = openCompatibleKeyedStore<{ keys: string[] }>(core.state, {
+    namespace: "zulip.reaction-triggers.v1", maxEntries: 10, overflowPolicy: "reject-new",
+  });
+  if (account.config.reactionTriggers?.enabled && (!durableInboundJournal || !hasAtomicMutations(reactionLedger))) {
     throw new Error("reactionTriggers requires durable ingress and atomic plugin state updates");
   }
   const queue = await registerZulipQueue(client, {
@@ -2527,7 +2526,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     onReceiveCheckpoint: () => void,
   ): Promise<void> => {
     const messageId = String(message.id ?? "");
-    if (message.reactionTriggerKey && (!durableInboundJournal || !reactionLedger?.update)) {
+    if (message.reactionTriggerKey && (!durableInboundJournal || !hasAtomicMutations(reactionLedger))) {
       runtime.error?.("zulip: reaction continuation requires durable ingress and atomic plugin state updates");
       return;
     }
@@ -2545,7 +2544,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       acceptInbound = async (): Promise<boolean> => {
         try {
           if (message.reactionTriggerKey) {
-            if (!reactionLedger?.update) return false;
+            if (!reactionLedger || !hasAtomicMutations(reactionLedger)) return false;
             const claimed = await claimReactionTrigger(reactionLedger, bindingScope(client) + ":" + account.accountId, message.reactionTriggerKey);
             if (!claimed) return false;
           }

@@ -204,6 +204,7 @@ const state = vi.hoisted(() => {
       | undefined
       | {
           openKeyedStore: ReturnType<typeof vi.fn>;
+          openKeyedStoreV2?: ReturnType<typeof vi.fn>;
           openChannelIngressQueue: ReturnType<typeof vi.fn>;
         },
     system: {
@@ -590,11 +591,36 @@ describe("reaction continuation ingress", () => {
       throw new Error("Unexpected request " + path);
     });
   }
-  it("dispatches one same-topic turn across replay, removal/re-add and monitor restart", async () => {
+  it.each(["legacy", "v2", "v2-conflict"])("dispatches one same-topic turn across replay, removal/re-add and monitor restart (%s)", async api => {
     setup();
+    const legacyOpen = state.core.state!.openKeyedStore;
+    let conflict = api === "v2-conflict";
+    if (api !== "legacy") {
+      state.core.state!.openKeyedStoreV2 = vi.fn((options: { namespace: string }) => {
+        const store = legacyOpen(options);
+        const { update: _update, ...dataOnly } = store;
+        return {
+          ...dataOnly,
+          observe: async (key: string) => {
+            const value = await store.lookup(key);
+            return { value, comparison: JSON.stringify(value) ?? "absent" };
+          },
+          compareAndApply: async (key: string, comparison: string, intent: { value: unknown }) => {
+            if (conflict) { conflict = false; return { status: "conflict" }; }
+            if ((JSON.stringify(await store.lookup(key)) ?? "absent") !== comparison) return { status: "conflict" };
+            await store.register(key, intent.value);
+            return { status: "applied" };
+          },
+        };
+      });
+    }
     state.pollResponses = [{ events: [reaction, { ...reaction, id: 2, op: "remove" }, { ...reaction, id: 3 }] }];
     await runMonitorOnce();
     expect(state.core.channel.inbound.dispatch).toHaveBeenCalledTimes(1);
+    if (api !== "legacy") {
+      expect(state.core.state!.openKeyedStoreV2).toHaveBeenCalledWith(expect.objectContaining({ namespace: "zulip.reaction-triggers.v1" }));
+      for (const store of state.durableStores.values()) expect(store.update).not.toHaveBeenCalled();
+    }
     const ctx = state.core.channel.inbound.dispatch.mock.calls[0][0].ctxPayload;
     expect(ctx.SessionKey).toContain("zulip");
     expect(ctx.BodyForAgent).toBe("Go ahead.");

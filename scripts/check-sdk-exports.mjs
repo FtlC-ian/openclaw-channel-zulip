@@ -12,7 +12,7 @@ const specifiers = new Set();
 const names = new Map();
 // Namespace compatibility branches require one export from each alternative group.
 const namespaceContracts = new Map([
-  ["openclaw/plugin-sdk/plugin-state-store-runtime", [["createPluginStateKeyedStore", "createPluginStateSyncKeyedStore"]]],
+  ["openclaw/plugin-sdk/plugin-state-store-runtime", [["createPluginStateKeyedStoreV2", "createPluginStateKeyedStore", "createPluginStateSyncKeyedStore"]]],
 ]);
 async function scan(directory, recursive = true) {
   for (const entry of await readdir(directory, { withFileTypes: true })) {

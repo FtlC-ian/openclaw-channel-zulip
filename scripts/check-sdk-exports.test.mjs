@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
-test("namespace store factory contract accepts either host spelling but rejects losing both", async () => {
+test("namespace store factory contract accepts V2 or either legacy spelling but rejects losing all", async () => {
   const root = await mkdtemp(join(tmpdir(), "zulip-sdk-namespace-check-"));
   try {
     await mkdir(join(root, "dist"));
@@ -17,7 +17,7 @@ test("namespace store factory contract accepts either host spelling but rejects 
     const packagePath = join(root, "package.json");
     await writeFile(packagePath, JSON.stringify({ type: "module", version: "fixture", exports: { "./plugin-sdk/plugin-state-store-runtime": "./state.js" } }));
     const run = () => spawnSync(process.execPath, [fileURLToPath(new URL("./check-sdk-exports.mjs", import.meta.url)), packagePath], { cwd: root, encoding: "utf8" });
-    for (const name of ["createPluginStateKeyedStore", "createPluginStateSyncKeyedStore"]) {
+    for (const name of ["createPluginStateKeyedStoreV2", "createPluginStateKeyedStore", "createPluginStateSyncKeyedStore"]) {
       await writeFile(join(root, "state.js"), "export function " + name + "() {}");
       const success = run();
       assert.equal(success.status, 0, success.stderr);
@@ -26,7 +26,7 @@ test("namespace store factory contract accepts either host spelling but rejects 
       await writeFile(join(root, "state.js"), source);
       const failure = run();
       assert.equal(failure.status, 1);
-      assert.ok(failure.stderr.includes("missing named exports from openclaw/plugin-sdk/plugin-state-store-runtime: createPluginStateKeyedStore OR createPluginStateSyncKeyedStore"), failure.stderr);
+      assert.ok(failure.stderr.includes("missing named exports from openclaw/plugin-sdk/plugin-state-store-runtime: createPluginStateKeyedStoreV2 OR createPluginStateKeyedStore OR createPluginStateSyncKeyedStore"), failure.stderr);
     }
   } finally { await rm(root, { recursive: true, force: true }); }
 });

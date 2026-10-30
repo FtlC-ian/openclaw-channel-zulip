@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 2026.10.17
+
+### Compatibility
+- Move durable bindings, the inbound pending journal, and the reaction-trigger ledger to the V2 keyed plugin-state store (`observe` plus `compareAndApply`, retrying conflicts up to 8 times) when the host provides it, and fall back to the legacy `update`/`deleteIf` stores on older hosts such as 2026.10.9. This removes the `PluginStateKeyedStore.update is deprecated` startup warning on OpenClaw 2026.10.10 betas ahead of the legacy API's removal in January 2027. Namespaces, limits, and TTLs are unchanged, so no data migration is needed.
+
 ## 2026.10.16
 
 ### Compatibility

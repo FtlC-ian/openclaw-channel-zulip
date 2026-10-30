@@ -240,13 +240,6 @@ export function createZulipDurableInboundReceiveJournal(accountId: string) {
         return await queueJournal.release(key, options);
       }
       const releasedAt = options?.releasedAt ?? Date.now();
-      const next: LegacyPendingRecord = {
-        ...pending,
-        updatedAt: releasedAt,
-        attempts: pending.attempts + 1,
-        lastAttemptAt: releasedAt,
-        ...(options?.lastError === undefined ? {} : { lastError: options.lastError }),
-      };
       if (hasAtomicMutations(legacyPendingStore)) {
         await updateKeyedStore(
           legacyPendingStore,
@@ -261,6 +254,13 @@ export function createZulipDurableInboundReceiveJournal(accountId: string) {
           { ttlMs: ZULIP_DURABLE_INBOUND_PENDING_TTL_MS },
         );
       } else {
+        const next: LegacyPendingRecord = {
+          ...pending,
+          updatedAt: releasedAt,
+          attempts: pending.attempts + 1,
+          lastAttemptAt: releasedAt,
+          ...(options?.lastError === undefined ? {} : { lastError: options.lastError }),
+        };
         await legacyPendingStore.register(key, next, {
           ttlMs: ZULIP_DURABLE_INBOUND_PENDING_TTL_MS,
         });

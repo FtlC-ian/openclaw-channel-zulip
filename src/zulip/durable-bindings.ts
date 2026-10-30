@@ -60,7 +60,11 @@ export class DurableBindings {
       const claimed = await updateKeyedStore(store, key, current => isCurrent && !isCurrent() || expected && current?.generation !== expected ? undefined : next);
       return claimed ? next : undefined;
     } catch (error) {
-      if (error === stale) return;
+      const seen = new Set<unknown>();
+      for (let cause = error; cause instanceof Error && !seen.has(cause); cause = cause.cause) {
+        if (cause === stale) return;
+        seen.add(cause);
+      }
       throw error;
     }
   }

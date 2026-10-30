@@ -13,7 +13,7 @@ vi.mock("openclaw/plugin-sdk/channel-outbound", () => ({ createDurableInboundRec
 function fakeStore<T>(v2: boolean, authority?: StateAuthority) {
   const rows = new Map<string, T>();
   let revision = 0;
-  const controls = { conflicts: 0, beforeApply: undefined as (() => void) | undefined };
+  const controls = { conflicts: 0, wrapAuthorityErrors: false, beforeApply: undefined as (() => void) | undefined };
   const store = {
     lookup: vi.fn(async (key: string) => rows.get(key)),
     entries: vi.fn(async () => [...rows].map(([key, value]) => ({ key, value }))),
@@ -62,7 +62,10 @@ describe.each([false, true])("durable binding factory V2=%s", v2 => {
       view.observe = vi.fn(async key => { authority?.assertCurrent(); return memory.store.observe!(key); });
       view.compareAndApply = vi.fn(async (...args) => {
         memory.controls.beforeApply?.();
-        authority?.assertCurrent();
+        try { authority?.assertCurrent(); } catch (cause) {
+          if (memory.controls.wrapAuthorityErrors) throw new Error("Host admission refused", { cause });
+          throw cause;
+        }
         return memory.store.compareAndApply!(...args);
       });
       return view;
@@ -84,9 +87,10 @@ describe.each([false, true])("durable binding factory V2=%s", v2 => {
     expect(store.update).toHaveBeenCalledTimes(v2 ? 0 : 3);
     expect(store.deleteIf).toHaveBeenCalledTimes(v2 ? 0 : 2);
   });
-  it("never commits a writer that is no longer current", async () => {
+  it.each(v2 ? [false, true] : [false])("never commits a writer that is no longer current (wrapped=%s)", async wrapped => {
     const { rows, controls, bindings } = setup();
     let current = true;
+    controls.wrapAuthorityErrors = wrapped;
     if (v2) controls.beforeApply = () => { current = false; };
     else current = false;
     expect(await bindings.claim("k", record, undefined, () => current)).toBeUndefined();
@@ -186,6 +190,17 @@ it("missing stores still disable optional durability", async () => {
   expect(await new DurableBindings().claim("k", record)).toBeUndefined();
   expect(openCompatibleKeyedStore(undefined, { namespace: "missing", maxEntries: 1 })).toBeUndefined();
   expect(() => createZulipDurableInboundReceiveJournal("default")).toThrow("not available");
+});
+
+it("does not turn an unknown claim outcome into a refusal after revocation", async () => {
+  const { store } = fakeStore<DurableRecord>(true);
+  let current = true;
+  const unknown = new Error("unknown outcome");
+  store.compareAndApply!.mockImplementation(async () => { current = false; throw unknown; });
+  const bindings = new DurableBindings(async () => store);
+  await expect(bindings.claim("k", record, undefined, () => current)).rejects.toBe(unknown);
+  expect(store.compareAndApply).toHaveBeenCalledOnce();
+  expect(store.update).not.toHaveBeenCalled();
 });
 
 it("retains the synchronous factory spelling on older hosts", async () => {

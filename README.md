@@ -89,12 +89,14 @@ For an existing tracked npm installation, use [`openclaw plugins update zulip`](
 instead of repeating the install. The npm package name is `openclaw-channel-zulip`;
 the runtime plugin id is `zulip`. `plugins install` has no `--wait` option.
 
-The project's [ClawHub listing](https://clawhub.ai/ftlc-ian/skills/openclaw-zulip-channel)
-is an install/setup **skill** that points to this npm package, not a separately
-installable ClawHub plugin artifact. A similarly named plugin from another
-publisher is not this project. Keep npm as the installation source unless an
-exact project-owned plugin artifact and its reviewed, installable version have
-been verified.
+This project is also listed on ClawHub as the plugin
+[`@ftlc-ian/openclaw-channel-zulip`](https://clawhub.ai/plugins/@ftlc-ian/openclaw-channel-zulip).
+The catalog name is scoped, but the npm package name remains
+`openclaw-channel-zulip`, and both install the runtime plugin id `zulip`. ClawHub
+releases can trail npm, so check the version before choosing a source. A separate
+[install/setup skill](https://clawhub.ai/ftlc-ian/skills/openclaw-zulip-channel)
+points to the npm package. `@niyazmft/openclaw-zulip` and other similarly named
+plugins from other publishers are not this project.
 
 ### Manual (for development or customization)
 

@@ -6,27 +6,27 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
-test("namespace store factory contract accepts V2 or either legacy spelling but rejects losing all", async () => {
+test("namespace store factory contract accepts V2 or keyed store but rejects sync-only hosts", async () => {
   const root = await mkdtemp(join(tmpdir(), "zulip-sdk-namespace-check-"));
   try {
     await mkdir(join(root, "dist"));
     await writeFile(join(root, "dist", "index.js"), `
       const sdk = await import("openclaw/plugin-sdk/plugin-state-store-runtime");
-      const create = sdk.createPluginStateKeyedStore ?? sdk.createPluginStateSyncKeyedStore;
+      const create = sdk.createPluginStateKeyedStore;
     `);
     const packagePath = join(root, "package.json");
     await writeFile(packagePath, JSON.stringify({ type: "module", version: "fixture", exports: { "./plugin-sdk/plugin-state-store-runtime": "./state.js" } }));
     const run = () => spawnSync(process.execPath, [fileURLToPath(new URL("./check-sdk-exports.mjs", import.meta.url)), packagePath], { cwd: root, encoding: "utf8" });
-    for (const name of ["createPluginStateKeyedStoreV2", "createPluginStateKeyedStore", "createPluginStateSyncKeyedStore"]) {
+    for (const name of ["createPluginStateKeyedStoreV2", "createPluginStateKeyedStore"]) {
       await writeFile(join(root, "state.js"), "export function " + name + "() {}");
       const success = run();
       assert.equal(success.status, 0, success.stderr);
     }
-    for (const source of ["export const unrelated = 1;", "export const createPluginStateKeyedStore = 1;"]) {
+    for (const source of ["export const unrelated = 1;", "export const createPluginStateKeyedStore = 1;", "export function createPluginStateSyncKeyedStore() {}"]) {
       await writeFile(join(root, "state.js"), source);
       const failure = run();
       assert.equal(failure.status, 1);
-      assert.ok(failure.stderr.includes("missing named exports from openclaw/plugin-sdk/plugin-state-store-runtime: createPluginStateKeyedStoreV2 OR createPluginStateKeyedStore OR createPluginStateSyncKeyedStore"), failure.stderr);
+      assert.ok(failure.stderr.includes("missing named exports from openclaw/plugin-sdk/plugin-state-store-runtime: createPluginStateKeyedStoreV2 OR createPluginStateKeyedStore"), failure.stderr);
     }
   } finally { await rm(root, { recursive: true, force: true }); }
 });

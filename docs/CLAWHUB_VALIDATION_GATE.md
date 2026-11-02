@@ -11,7 +11,9 @@ The manifest declares display name `Zulip` and no longer declares the unused
 top-level `channelEnvVars`. Package `openclaw.channel.configuredState.env` is
 the single source for setup discovery: allOf ZULIP_API_KEY and ZULIP_EMAIL;
 anyOf ZULIP_URL, ZULIP_SITE and ZULIP_REALM. Credentials, runtime source,
-doctor behavior and the >=2026.9.3 host floor are unchanged.
+doctor behavior and the then-current >=2026.9.3 host floor were unchanged in that
+candidate. The current host floor is >=2026.9.6 following #132; the evidence below
+is historical.
 
 Debbie verified host source for 2026.9.3, 2026.9.6, 2026.10.1-beta.2,
 2026.10.2 and 2026.10.3: resolveChannelEnvVars reads only

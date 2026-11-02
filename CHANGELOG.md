@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 2026.10.18
+
+### Release
+- Republish of 2026.10.17 with no code changes. The 2026.10.17 ClawHub upload stalled after ClawHub's SkillSpector scanner failed before ClawScan returned a verdict, and that version number stays reserved by the failed attempt. Runtime behavior is identical to 2026.10.17.
+
 ## 2026.10.17
 
 ### Compatibility

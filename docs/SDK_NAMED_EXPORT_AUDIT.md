@@ -21,8 +21,8 @@ Runtime imports and re-exports in `src`, root entries, and compiled `dist` were 
 | openclaw/plugin-sdk/gateway-runtime | createOperatorApprovalsGatewayClient, startGatewayClientWhenEventLoopReady | OK | OK | OK | OK |
 | openclaw/plugin-sdk/interactive-runtime | normalizeMessagePresentation, resolveMessagePresentationActionValue | OK | OK | OK | OK |
 | openclaw/plugin-sdk/lazy-runtime | createLazyRuntimeSurface | OK | OK | OK | OK |
-| openclaw/plugin-sdk/media-runtime | buildOutboundMediaLoadOptions | OK | OK | OK | OK |
 | openclaw/plugin-sdk/model-ref-parse | parseModelRef | OK | OK | OK | OK |
+| openclaw/plugin-sdk/outbound-media | loadOutboundMediaFromUrl | OK | OK | OK | OK |
 | openclaw/plugin-sdk/param-readers | readNumberParam, readStringParam | OK | OK | OK | OK |
 | openclaw/plugin-sdk/plugin-state-store-runtime | createPluginStateKeyedStore OR createPluginStateSyncKeyedStore (function) | OK | OK | OK | OK |
 | openclaw/plugin-sdk/question-gateway-runtime | questionGatewayRuntime | OK | OK | OK | OK |
@@ -32,7 +32,11 @@ Runtime imports and re-exports in `src`, root entries, and compiled `dist` were 
 | openclaw/plugin-sdk/secret-input-runtime | coerceSecretRef, normalizeSecretInputString, resolveConfiguredSecretInputString, resolveSecretInputString | OK | OK | OK | OK |
 | openclaw/plugin-sdk/ssrf-runtime | fetchWithSsrFGuard | OK | OK | OK | OK |
 | openclaw/plugin-sdk/temp-path | resolvePreferredOpenClawTmpDir | OK | OK | OK | OK |
-| openclaw/plugin-sdk/web-media | loadWebMedia | OK | OK | OK | OK |
+| openclaw/plugin-sdk/web-media | (type-only WebMediaResult) | OK | OK | OK | OK |
+
+For #136, `outbound-media` exports `loadOutboundMediaFromUrl` on 2026.9.3, 2026.9.6, 2026.10.9 and 2026.10.10-beta.5, but does not export `buildOutboundMediaLoadOptions` on any of them. The loader calls the same internal implementation used by `media-runtime`: 9.3/9.6 forward all ten supported option fields, while 10.9/beta.5 pass the options directly. The plugin now re-exports that loader instead of maintaining its own wrapper. Supported hosts lack declarations for this runtime subpath; `src/sdk-outbound-media.d.ts` supplies the narrow consumed contract, retaining the public `WebMediaResult` type. The export checker discovers specifiers automatically; no specifier list or checker-test change is needed.
+
+The #136 build audits 36 source/built specifiers. `src/sdk.test.ts` owns the real focused-loader contract: allowed local roots produce the expected bytes/name, and the byte limit rejects an oversized file. Existing `send.test.ts` media cases own upload authorization, Zulip-hosted URL handling and the runtime remote-buffer fallback; they import the SDK but do not invoke this loader branch. No SDK mocks needed updating. The new direct test closes that execution gap without adding a production seam; `send.ts` remains the production caller. The source grep and actual host named-export checks own the deprecated-import regression, while this test independently guards loader behavior. The required test-value-audit skill is still unavailable; this record applies TEAM_PROTOCOL directly.
 
 All 37 source/built subpaths pass. The only missing runtime name in base `6fe1bca1e37f04eeaa53598ef6ef462599de68bb` is `readApprovalReactionDeliveryMetadata` from `approval-reaction-runtime` on 10.5-beta.4. Running the enhanced checker against an archive compiled from that exact base fails (exit 1) with that name; the fixed tree passes (exit 0) on each host. Existing 10.1-beta.1/beta.2 smoke fixtures are also retained.
 

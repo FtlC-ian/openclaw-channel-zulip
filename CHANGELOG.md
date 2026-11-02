@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Compatibility
+- Use the focused outbound-media SDK loader instead of the deprecated media-runtime barrel, preserving outbound media loading on OpenClaw 2026.9.3 and newer (#136).
+
 ## 2026.10.18
 
 ### Release

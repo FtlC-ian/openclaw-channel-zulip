@@ -38,7 +38,7 @@ For #136, `outbound-media` exports `loadOutboundMediaFromUrl` on 2026.9.3, 2026.
 
 The #136 build audits 36 source/built specifiers. `src/sdk.test.ts` owns the real focused-loader contract: allowed local roots produce the expected bytes/name, and the byte limit rejects an oversized file. Existing `send.test.ts` media cases own upload authorization, Zulip-hosted URL handling and the runtime remote-buffer fallback; they import the SDK but do not invoke this loader branch. No SDK mocks needed updating. The new direct test closes that execution gap without adding a production seam; `send.ts` remains the production caller. The source grep and actual host named-export checks own the deprecated-import regression, while this test independently guards loader behavior. The required test-value-audit skill is still unavailable; this record applies TEAM_PROTOCOL directly.
 
-All 37 source/built subpaths pass. The only missing runtime name in base `6fe1bca1e37f04eeaa53598ef6ef462599de68bb` is `readApprovalReactionDeliveryMetadata` from `approval-reaction-runtime` on 10.5-beta.4. Running the enhanced checker against an archive compiled from that exact base fails (exit 1) with that name; the fixed tree passes (exit 0) on each host. Existing 10.1-beta.1/beta.2 smoke fixtures are also retained.
+Before #136, all 37 source/built subpaths passed. The only missing runtime name in base `6fe1bca1e37f04eeaa53598ef6ef462599de68bb` is `readApprovalReactionDeliveryMetadata` from `approval-reaction-runtime` on 10.5-beta.4. Running the enhanced checker against an archive compiled from that exact base fails (exit 1) with that name; the fixed tree passes (exit 0) on each host. Existing 10.1-beta.1/beta.2 smoke fixtures are also retained.
 
 ## Validation and test ownership
 

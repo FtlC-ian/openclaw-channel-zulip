@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixes
+- Make `actionTiers.messages: "off"` disable discovery and execution of every message-tool action, even when moderation or stream administration is enabled. Gated-off errors name the messages tier before any credential or network access (#133).
+
 ## 2026.10.18
 
 ### Release

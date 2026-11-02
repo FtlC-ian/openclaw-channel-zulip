@@ -105,17 +105,29 @@ const ZULIP_GATED_OFF_ACTIONS: ReadonlySet<ChannelMessageActionName> = new Set(
 
 /**
  * Actions to advertise for a resolved tier map; gated-off tiers are excluded
- * and the result keeps the canonical advertised order. Every tier is honored:
- * an all-off account discovers nothing, so the message tool performs no Zulip
- * work for that account.
+ * and the result keeps the canonical advertised order.
  */
 export function advertiseZulipActions(
   tiers: Record<ZulipActionTierKey, boolean>,
 ): ChannelMessageActionName[] {
   return ZULIP_ADVERTISED_ACTIONS.filter((action) => {
-    const tier = ZULIP_ACTION_TIER_FOR_ACTION.get(action);
-    return tier !== undefined && tiers[tier];
+    return !resolveZulipBlockingTier(action, tiers);
   });
+}
+
+function resolveZulipBlockingTier(
+  action: ChannelMessageActionName,
+  tiers: Record<ZulipActionTierKey, boolean>,
+): ZulipActionTierKey | undefined {
+  const tier = ZULIP_ACTION_TIER_FOR_ACTION.get(action);
+  if (!tier) {
+    return undefined;
+  }
+  // The messages tier is the master switch for every message-tool action.
+  if (!tiers.messages) {
+    return "messages";
+  }
+  return tiers[tier] ? undefined : tier;
 }
 
 function resolveZulipAccountTiers(params: {
@@ -146,12 +158,8 @@ export function requireZulipActionTier(params: {
   cfg: OpenClawConfig;
   accountId?: string | null;
 }): void {
-  const tier = ZULIP_ACTION_TIER_FOR_ACTION.get(params.action);
+  const tier = resolveZulipBlockingTier(params.action, resolveZulipAccountTiers(params));
   if (!tier) {
-    return;
-  }
-  const tiers = resolveZulipAccountTiers(params);
-  if (tiers[tier]) {
     return;
   }
   throw new Error(

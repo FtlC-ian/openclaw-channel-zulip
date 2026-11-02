@@ -30,7 +30,7 @@ export function createGateway(executable = "openclaw") {
       }
       return result;
     } catch {
-      throw new Error(`${method} did not return a successful JSON result. Requires OpenClaw 2026.9.3 or newer.`);
+      throw new Error(`${method} did not return a successful JSON result. Requires OpenClaw 2026.9.6 or newer.`);
     }
   };
 }

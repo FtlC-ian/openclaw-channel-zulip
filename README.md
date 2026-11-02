@@ -57,11 +57,12 @@ visual cleanup or persistent recovery.
 
 ## Installation
 
-This release requires **OpenClaw >=2026.9.3** and **Node.js >=24.16.0 <25 or
+This release requires **OpenClaw >=2026.9.6** and **Node.js >=24.16.0 <25 or
 >=26.1.0**. The development SDK and lockfile are pinned to OpenClaw 2026.9.6.
-The minimum host remains 2026.9.3 because every SDK subpath used by the plugin,
-including its asynchronous outbound session-routing hook, is public in that
-version.
+OpenClaw 2026.9.6 is the first published release exporting
+`createPluginStateKeyedStore`. Durable bindings prefer the V2 factory when
+available and otherwise use this non-deprecated factory; namespaces and stored
+data are unchanged. If neither factory is available, optional durability is disabled.
 
 Durable inbound handling uses the shared ingress queue API. When upgrading an existing installation,
 pending records and
@@ -693,7 +694,7 @@ Core closures use human statuses such as “⚪ Cancelled: approval session ende
 before a decision”, not internal resolver codes as approver names. Unrecognized
 explicit system resolvers show `⚪ Closed by the system` with an inert reason.
 
-Reaction approvals are enabled on audited hosts 2026.9.3, 2026.9.6 and
+Reaction approvals are enabled on audited supported hosts 2026.9.6 and
 2026.10.1-beta.1/beta.2 using only public SDK exports. Delivered targets expire
 after 24 hours; the Gateway still enforces actual approval expiry. Without a
 passive observer, external decisions are reflected on the next local interaction,
@@ -730,9 +731,8 @@ conversation topics, hashes and revision floors, never message content or creden
 They share a bounded 40-record budget across accounts (legacy hosts reserve 950
 of the 1000 plugin-state rows for ingress); records expire after 30 days.
 Pending approval controls are rebound from the public pending lists. Native
-questions are probed with a denied authorizer on 2026.9.6 and later. On 2026.9.3,
-which lacks that safety capability, question widgets are terminalized instead
-of risking an answer replay. Resolved/unknown recovery states have generic
+questions are probed with a denied authorizer on supported hosts.
+Resolved/unknown recovery states have generic
 inert labels because message content and terminal decision history are not stored.
 Interrupted per-turn drafts are deleted on startup; cards retain their message ids.
 Recovery terminal notices are at-most-once: a reserved send is never replayed

@@ -47,7 +47,7 @@ const record = { kind: "card" as const, accountId: "default", scope: "scope", me
 
 beforeEach(() => {
   for (const key of Object.keys(mocks.sdk)) delete mocks.sdk[key];
-  Object.assign(mocks.sdk, { createPluginStateKeyedStoreV2: undefined, createPluginStateKeyedStore: undefined, createPluginStateSyncKeyedStore: undefined });
+  Object.assign(mocks.sdk, { createPluginStateKeyedStoreV2: undefined, createPluginStateKeyedStore: undefined });
   mocks.runtime = {};
   vi.clearAllMocks();
   startDurableBindings();
@@ -187,7 +187,14 @@ it("never retries an unknown write or falls back after a V2 failure", async () =
 });
 
 it("missing stores still disable optional durability", async () => {
-  expect(await new DurableBindings().claim("k", record)).toBeUndefined();
+  const bindings = new DurableBindings();
+  const claimed = { ...record, generation: "missing" };
+  expect(await bindings.claim("k", record)).toBeUndefined();
+  expect(await bindings.get("k")).toBeUndefined();
+  expect(await bindings.save("k", claimed)).toBe(false);
+  expect(await bindings.current("k", claimed)).toBe(true);
+  await expect(bindings.remove("k", claimed)).resolves.toBeUndefined();
+  expect(await bindings.records("default", { baseUrl: "https://zulip.example" } as any)).toEqual([]);
   expect(openCompatibleKeyedStore(undefined, { namespace: "missing", maxEntries: 1 })).toBeUndefined();
   expect(() => createZulipDurableInboundReceiveJournal("default")).toThrow("not available");
 });
@@ -201,15 +208,6 @@ it("does not turn an unknown claim outcome into a refusal after revocation", asy
   await expect(bindings.claim("k", record, undefined, () => current)).rejects.toBe(unknown);
   expect(store.compareAndApply).toHaveBeenCalledOnce();
   expect(store.update).not.toHaveBeenCalled();
-});
-
-it("retains the synchronous factory spelling on older hosts", async () => {
-  const { store, rows } = fakeStore<DurableRecord>(false);
-  mocks.sdk.createPluginStateSyncKeyedStore = vi.fn(() => store);
-  const bindings = new DurableBindings();
-  expect(await bindings.claim("k", record)).toBeDefined();
-  expect(rows.get("k")?.messageId).toBe("42");
-  expect(store.update).toHaveBeenCalledOnce();
 });
 
 it("retains the register fallback for old ingress stores without update", async () => {

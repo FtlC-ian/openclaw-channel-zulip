@@ -1,6 +1,6 @@
 # Release checklist
 
-Supported hosts: **OpenClaw >=2026.9.3** and **Node.js >=24.16.0 <25 or >=26.1.0**.
+Supported hosts: **OpenClaw >=2026.9.6** and **Node.js >=24.16.0 <25 or >=26.1.0**.
 The development SDK and lockfile stay pinned to the reviewed OpenClaw baseline in
 `package.json`.
 

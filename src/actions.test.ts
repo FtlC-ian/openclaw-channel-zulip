@@ -1,6 +1,9 @@
 import type { OpenClawConfig } from "./sdk.js";
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
+import * as accounts from "./zulip/accounts.js";
+import * as client from "./zulip/client.js";
 import {
+  advertiseZulipActions,
   splitStreamTarget,
   ZULIP_ACTION_TIERS,
   ZULIP_ADVERTISED_ACTIONS,
@@ -69,6 +72,7 @@ async function runReactAction(
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -109,6 +113,40 @@ async function expectRejectedWithoutFetch(
 }
 
 describe("gated-off action tier defaults", () => {
+  const messagesOffCfg: OpenClawConfig = {
+    channels: {
+      zulip: {
+        ...cfg.channels!.zulip,
+        actionTiers: { messages: "off", moderation: "on", streamAdmin: "on" },
+      },
+    },
+  };
+
+  it("advertises no actions or scoped schema when messages is off even with other tiers on", () => {
+    expect(advertiseZulipActions({ messages: false, moderation: true, streamAdmin: true })).toEqual([]);
+    const discovery = zulipMessageActions.describeMessageTool({ cfg: messagesOffCfg });
+    expect(discovery.actions).toEqual([]);
+    expect(discovery.schema ?? []).toEqual([]);
+  });
+
+  it.each([...ZULIP_ACTION_TIERS.moderation, ...ZULIP_ACTION_TIERS.streamAdmin])(
+    "rejects %s before credentials, client creation, or fetch when messages is off",
+    async (action) => {
+      const runtimeAccount = vi.spyOn(accounts, "resolveZulipRuntimeAccount");
+      const createClient = vi.spyOn(client, "createZulipClient");
+      const fetchImpl = vi.fn<typeof fetch>();
+      await expect(runAction(action, {
+        messageId: "123", message: "replacement", userId: "42",
+        name: "new-stream", streamId: "7", confirm: true,
+      }, { cfg: messagesOffCfg, fetchImpl })).rejects.toThrow(
+        /gated off; set channels\.zulip\.actionTiers\.messages: "on"/,
+      );
+      expect(runtimeAccount).not.toHaveBeenCalled();
+      expect(createClient).not.toHaveBeenCalled();
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
+
   it("starts every configured account from safe defaults", () => {
     const discovery = zulipMessageActions.describeMessageTool({ cfg });
     expect(discovery?.actions).toEqual(

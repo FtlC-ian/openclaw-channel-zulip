@@ -48,6 +48,98 @@ one queue registration.
 
 ## Cancellation and durable receive
 
+### Plugin replacement on OpenClaw 2026.10.3
+
+Account cancellation below is **not** a pre-drain plugin-replacement signal. On
+2026.10.3, replacement can wait indefinitely before stopping an account. The plugin
+cannot safely guarantee a sub-60-second replacement while a core-owned turn retains
+its generation. Increasing the timeout or using `plugins reload zulip --wait` does
+not resolve that ownership dependency. No fast-drain fix is claimed here.
+
+Installed 2026.10.3 evidence (paths relative to the host's `dist/`):
+
+- `runtime-plugins-DhLN9OKn.mjs:25-37,286`: core retains every invocation instance
+  selected by a prepared registry, including an adopted channel. The release handle
+  belongs to core, not the channel monitor.
+- `registry-inspection-resources-D5IWWCVp.mjs:119-143`: both borrowed channel records
+  and owned channel values participate. This can retain Zulip even for work not
+  dispatched by Zulip's monitor.
+- `prepared-model-runtime.plugin-generation-BdMtDzab.mjs:1538-1557,1630,1644-1649`:
+  admitted prepared-generation leases retain work until their host release and
+  required physical cleanup settle. Idle publication custody is distinct.
+- `server-plugin-reload-CmdLeOon.mjs:625-641,659-673`: reservation precedes the
+  first retained-work wait; channel pause, account stop and disposal occur later.
+  The first wait excludes consumers/calls but still joins core's retained-work set.
+- `plugin-setup-module-CY2F4E2x.mjs:1803-1819,1822-1834,2078-2079`: reservation
+  does not abort the lifecycle signal. Only disposal aborts it; a drain timeout
+  cancels the observer, not the admitted work.
+- The same module at `:1121-1138` shows `runInBackgroundContext` still enters
+  `instance.runInRegistry`; it detaches caller context, not instance custody.
+
+Plugin turns await `core.channel.inbound.dispatch` in `src/zulip/monitor.ts:1971`,
+with plugin-owned delivery, typing and progress callbacks and the account signal
+at `:1996`. Abort cleanup at `:2629-2633` cannot run before core sends that signal.
+Durable receive checkpoints protect replayable inbound events; they are not an
+SDK transfer of a running dispatch or its executable reply callbacks. Returning
+early or releasing a journal row while its old dispatch can still send risks
+concurrent replay and duplicate replies. Clearing cosmetic timers cannot release
+core's prepared-registry retention.
+
+The live M6 log on 2026-10-14 records 10 retained items at 19:34:41Z, 8 at
+19:35:53Z and 4 at 19:49:36Z. Polling continued during the wait. New replies
+failed with `Model runtime replacement is in progress; admitted plugin work
+cannot wait for the reload` at 20:00:56Z, 20:03:01Z, 20:04:52Z and 20:06:15Z.
+A prepared-dispatch-runtime wait lasted 667,843ms before restart; the reload
+request ended after 1,282,202ms. The log does not identify each retained token,
+so those counts must not be labeled as ten plugin timers or ten active turns.
+
+#### Smallest safe upstream direction
+
+Core must separate **replacement-blocking execution** from **physical custody of
+retired channel generations** for prepared turns. A channel-only replacement
+should fence new admissions, publish a successor, and let already-admitted turns
+keep their exact old delivery owner until terminal delivery/cleanup. The old
+module must remain loaded while its callbacks can execute. Retiring unrelated
+prepared-model publication must not wait on the channel retention it is supposed
+to replace. Do not simply delete `retainWork()` or move disposal before drain.
+
+If core instead transfers turns, it needs a documented handoff API carrying run
+identity, delivery receipts and reply ownership, plus a pre-drain lifecycle signal
+to stop polling/observers while preserving the received batch. A pre-drain abort
+alone is insufficient: the existing account signal also cancels accepted turns.
+
+Upstream acceptance must exercise actual gateway replacement during a blocked
+turn, then unblock the turn and observe exactly one reply, durable acceptance of
+an event racing handoff, no overlapping polls and no orphaned timers.
+
+#### Plugin-side mitigation and reproduction
+
+Until that contract exists, wait for active turns and prepared-runtime work to
+settle **before** requesting replacement. Keep the old generation active when
+drain fails; do not manually release durable claims, disable admission guarantees
+or detach reply promises. An operator-managed idle maintenance window is the safe
+mitigation; restarting the gateway interrupts turns and is not a no-loss fix.
+
+Run the real-host contract probes without changing the gateway:
+
+```sh
+OPENCLAW_DRAIN_HOST=/path/to/openclaw/package node --test scripts/plugin-drain-host.test.mjs
+```
+
+These three probes document the **blocking** host contract, not passing fast-drain
+acceptance. They execute real host instances and core retention with no patched
+host files or production test seams: (1) reservation/timeout sends no disposal
+signal, (2) prepared-registry channel custody requires its core release, and
+(3) background execution remains drain-blocking. Timers and pending promises are
+settled in test cleanup. Replacing either timeout assertion with an assertion that
+drain resolves before release fails on unmodified 2026.10.3.
+
+Test-value ledger: the primary boundary is real host instance admission and
+prepared-registry custody. Existing monitor abort/replay tests remain the owner
+of plugin cancellation and journal safety; they cannot establish gateway reload
+ordering or exactly-once delivery across plugin replacement. No runtime change
+is made, and end-to-end replacement acceptance remains blocked upstream.
+
 Core's account abort cancels polling **and** accepted turns immediately. There is no
 secondary turn signal or grace period waiting for a second core stop: pinned core serializes
 repeated stops behind the first stop promise. `gateway.stopAccount` joins the same teardown.

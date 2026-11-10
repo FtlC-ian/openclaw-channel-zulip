@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Compatibility
+- **OpenClaw host floor** (#132): Require OpenClaw >=2026.9.6, the first published release exporting `createPluginStateKeyedStore`, and remove the deprecated synchronous factory fallback from durable bindings. Prefer V2 when available; a missing store still disables optional durability without breaking Zulip. Namespaces, limits, TTLs, and stored data are unchanged.
+
 ### Fixes
 - Make `actionTiers.messages: "off"` disable discovery and execution of every message-tool action, even when moderation or stream administration is enabled. Gated-off errors name the messages tier before any credential or network access (#133).
 

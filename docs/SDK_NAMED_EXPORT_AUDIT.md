@@ -1,5 +1,8 @@
 # SDK named-export compatibility audit
 
+The matrix below preserves the original audit, except the keyed-store row now
+reflects #132: the supported host floor is >=2026.9.6, and 9.3 is unsupported.
+
 Runtime imports and re-exports in `src`, root entries, and compiled `dist` were parsed with TypeScript and checked by loading the actual host module. Aliases and destructured dynamic imports use their exported names. The guarded namespace factory in durable-bindings.ts has an explicit alternative-name contract: at least one of its two supported factory spellings must be a function. Namespace alternatives are declared, not inferred as mandatory individual names. Type-only imports require the public subpath but are not runtime namespace members.
 
 | SDK specifier | Required runtime names | 9.3 | 9.6 | 10.3 | 10.5-beta.4 |
@@ -24,7 +27,7 @@ Runtime imports and re-exports in `src`, root entries, and compiled `dist` were 
 | openclaw/plugin-sdk/media-runtime | buildOutboundMediaLoadOptions | OK | OK | OK | OK |
 | openclaw/plugin-sdk/model-ref-parse | parseModelRef | OK | OK | OK | OK |
 | openclaw/plugin-sdk/param-readers | readNumberParam, readStringParam | OK | OK | OK | OK |
-| openclaw/plugin-sdk/plugin-state-store-runtime | createPluginStateKeyedStore OR createPluginStateSyncKeyedStore (function) | OK | OK | OK | OK |
+| openclaw/plugin-sdk/plugin-state-store-runtime | createPluginStateKeyedStoreV2 OR createPluginStateKeyedStore (function) | Unsupported | OK | OK | OK |
 | openclaw/plugin-sdk/question-gateway-runtime | questionGatewayRuntime | OK | OK | OK | OK |
 | openclaw/plugin-sdk/routing | buildAgentSessionKey, resolveAgentRoute | OK | OK | OK | OK |
 | openclaw/plugin-sdk/runtime-store | createPluginRuntimeStore | OK | OK | OK | OK |
@@ -34,7 +37,7 @@ Runtime imports and re-exports in `src`, root entries, and compiled `dist` were 
 | openclaw/plugin-sdk/temp-path | resolvePreferredOpenClawTmpDir | OK | OK | OK | OK |
 | openclaw/plugin-sdk/web-media | loadWebMedia | OK | OK | OK | OK |
 
-All 37 source/built subpaths pass. The only missing runtime name in base `6fe1bca1e37f04eeaa53598ef6ef462599de68bb` is `readApprovalReactionDeliveryMetadata` from `approval-reaction-runtime` on 10.5-beta.4. Running the enhanced checker against an archive compiled from that exact base fails (exit 1) with that name; the fixed tree passes (exit 0) on each host. Existing 10.1-beta.1/beta.2 smoke fixtures are also retained.
+All 37 source/built subpaths passed in the original audit. The only missing runtime name in base `6fe1bca1e37f04eeaa53598ef6ef462599de68bb` is `readApprovalReactionDeliveryMetadata` from `approval-reaction-runtime` on 10.5-beta.4. Running the enhanced checker against an archive compiled from that exact base fails (exit 1) with that name; the fixed tree passed (exit 0) on each original host. Existing 10.1-beta.1/beta.2 smoke fixtures are also retained; the current smoke matrix excludes unsupported 9.3.
 
 ## Validation and test ownership
 

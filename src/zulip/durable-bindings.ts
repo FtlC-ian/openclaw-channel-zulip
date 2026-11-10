@@ -37,7 +37,7 @@ async function loadStore(authority?: StateAuthority): Promise<Store | undefined>
           },
         }) as Store;
       }
-      const create = sdk.createPluginStateKeyedStore ?? sdk.createPluginStateSyncKeyedStore;
+      const create = sdk.createPluginStateKeyedStore;
       if (typeof create !== "function") return;
       const store = create("zulip", options);
       if (typeof store.update !== "function" || typeof store.deleteIf !== "function") return;

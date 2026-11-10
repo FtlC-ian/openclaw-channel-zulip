@@ -9,7 +9,7 @@ const root = process.env.OPENCLAW_HOST_FIXTURES;
 if (!root) throw new Error("Set OPENCLAW_HOST_FIXTURES to the directory containing npm-extracted <version>/package hosts");
 const require = createRequire(import.meta.url);
 const artifact = process.env.OPENCLAW_PLUGIN_ARTIFACT ?? ".";
-for (const version of ["2026.9.3", "2026.9.6", "2026.10.1-beta.1", "2026.10.1-beta.2", "2026.10.3", "2026.10.5-beta.4"]) {
+for (const version of ["2026.9.6", "2026.10.1-beta.1", "2026.10.1-beta.2", "2026.10.3", "2026.10.5-beta.4"]) {
   test(`built Zulip doctor/allowlist, real core approval routing/rendering, heartbeat typing and Zulip delivery on ${version}`, (t) => {
     const host = resolve(root, version, "package");
     execFileSync(process.execPath, ["scripts/check-sdk-exports.mjs", resolve(host, "package.json")], { stdio: "pipe" });
@@ -26,7 +26,7 @@ for (const version of ["2026.9.3", "2026.9.6", "2026.10.1-beta.1", "2026.10.1-be
       await import("./dist/index.js");
       await import("./dist/setup-entry.js");
       const stateSdk = await import("openclaw/plugin-sdk/plugin-state-store-runtime");
-      const createDurableStore = stateSdk.createPluginStateKeyedStore ?? stateSdk.createPluginStateSyncKeyedStore;
+      const createDurableStore = stateSdk.createPluginStateKeyedStore;
       assert.equal(typeof createDurableStore, "function");
       const durableStore = createDurableStore("zulip", { namespace: "zulip.host-smoke.bindings", maxEntries: 2, defaultTtlMs: 60000, env: { ...process.env, OPENCLAW_STATE_DIR: ${JSON.stringify(scratch)} + "/state" } });
       await durableStore.register("card", { generation: "first", messageId: "42" });

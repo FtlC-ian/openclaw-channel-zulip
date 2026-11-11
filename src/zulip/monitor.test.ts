@@ -722,7 +722,7 @@ describe("monitorZulipProvider", () => {
     }
     expect(state.core.channel.inbound.dispatch).not.toHaveBeenCalled();
     const { createZulipDurableInboundReceiveJournal } = await import("./durable-receive.js");
-    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
     expect((await journal.pending()).map(record => (record.payload as any).message.id).sort()).toEqual(messages.map(message => message.id));
     expect(deleteZulipQueueMock).toHaveBeenCalledTimes(1);
   });

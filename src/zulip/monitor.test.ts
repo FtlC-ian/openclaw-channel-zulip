@@ -505,6 +505,8 @@ async function runMonitorOnce(
   });
 }
 
+const testDurableIdentity = () => ({ realmUrl: state.account.baseUrl, botUserId: state.botUser.id });
+
 function enableDurableInboundJournal(
   journalOptions: {
     completedLookupFailuresAfterAccept?: number;
@@ -577,6 +579,154 @@ function enableDurableInboundJournal(
 }
 
 describe("monitorZulipProvider", () => {
+  it("keeps polling reactions and new messages while five dispatches wait for approval", async () => {
+    vi.useFakeTimers();
+    enableDurableInboundJournal();
+    state.autoAbort = false;
+    const controller = new AbortController();
+    const { zulipApprovalReactions } = await import("./approval-reactions.js");
+    const react = vi.spyOn(zulipApprovalReactions, "react").mockResolvedValue(undefined);
+    state.core.channel.inbound.dispatch.mockImplementation(() => new Promise(() => {}));
+    const messages = Array.from({ length: 6 }, (_, i) => makeChannelMessage(9820200 + i));
+    const reaction = { id: 6, type: "reaction", op: "add", message_id: 700, user_id: 123, emoji_name: "thumbs_up" };
+    state.pollResponses = [
+      { events: messages.slice(0, 5).map((message, i) => ({ id: i + 1, type: "message", message })) },
+      { events: [reaction, { id: 7, type: "message", message: messages[5] }] },
+    ];
+    // Dispatch deliberately never settles, including during teardown.
+    void runMonitorOnce(controller);
+    try {
+      await vi.waitFor(() => expect(state.core.channel.inbound.dispatch).toHaveBeenCalled());
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(state.core.channel.inbound.dispatch).toHaveBeenCalledTimes(6);
+      expect(react).toHaveBeenCalledWith(expect.objectContaining({ event: reaction }));
+      expect(state.core.channel.inbound.dispatch.mock.calls.map(([params]) => params.ctxPayload.MessageSid))
+        .toEqual(messages.map(message => String(message.id)));
+      expect(getZulipEventsWithRetryMock.mock.calls[1][1].lastEventId).toBe(5);
+    } finally {
+      controller.abort();
+      await vi.advanceTimersByTimeAsync(0);
+      react.mockRestore();
+    }
+  });
+
+  it("bounds in-flight messages before downloads and backpressures subsequent polls", async () => {
+    vi.useFakeTimers();
+    state.autoAbort = false;
+    const controller = new AbortController();
+    const messages = Array.from({ length: 10 }, (_, i) => makeChannelMessage(9820000 + i));
+    const started: string[] = [];
+    const releases: Array<() => void> = [];
+    let active = 0;
+    let peak = 0;
+    state.extractedUploadUrls = ["https://zulip.example.test/user_uploads/small.bin"];
+    downloadZulipUploadMock.mockImplementation(async () => {
+      peak = Math.max(peak, ++active);
+      await new Promise<void>(resolve => releases.push(resolve));
+      active--;
+      return null;
+    });
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ ctx }: any) => {
+      started.push(ctx.MessageSid);
+    });
+    state.pollResponses = [{ result: "success", events: messages.map((message, i) => ({ id: i + 1, type: "message", message })) }];
+    const running = runMonitorOnce(controller);
+    try {
+      await vi.waitFor(() => expect(downloadZulipUploadMock).toHaveBeenCalled());
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(downloadZulipUploadMock).toHaveBeenCalledTimes(4);
+      expect(getZulipEventsWithRetryMock).toHaveBeenCalledTimes(1);
+      for (let i = 0; i < messages.length; i++) {
+        releases.shift()?.();
+        await vi.advanceTimersByTimeAsync(250);
+      }
+      expect(peak).toBe(4);
+      expect(started).toEqual(messages.map(message => String(message.id)));
+      expect(getZulipEventsWithRetryMock.mock.calls[1][1].lastEventId).toBe(10);
+    } finally {
+      controller.abort();
+      releases.splice(0).forEach(release => release());
+      await running;
+      downloadZulipUploadMock.mockImplementation(async () => state.downloadedUploads.shift() ?? null);
+    }
+  });
+
+  it.each(["early return", "pre-dispatch error", "dispatch error", "success"])("releases slots exactly once after %s", async outcome => {
+    vi.useFakeTimers();
+    state.autoAbort = false;
+    const controller = new AbortController();
+    const releases: Array<() => void> = [];
+    const baseId = 9820300 + ["early return", "pre-dispatch error", "dispatch error", "success"].indexOf(outcome) * 100;
+    const messages = Array.from({ length: 12 }, (_, i) => makeChannelMessage(baseId + i));
+    // Messages authored by the bot are ignored before media processing.
+    if (outcome === "early return") messages.slice(0, 4).forEach(message => { message.sender_id = 999; });
+    if (outcome === "pre-dispatch error") {
+      for (let i = 0; i < 4; i++) state.core.channel.inbound.buildContext.mockImplementationOnce(() => { throw new Error("context failed"); });
+    }
+    if (outcome === "dispatch error") {
+      for (let i = 0; i < 4; i++) state.core.channel.inbound.dispatch.mockRejectedValueOnce(new Error("dispatch failed"));
+    }
+    state.extractedUploadUrls = ["https://zulip.example.test/user_uploads/small.bin"];
+    downloadZulipUploadMock.mockImplementation(async () => {
+      if (downloadZulipUploadMock.mock.calls.length <= (outcome === "early return" ? 0 : 4)) return null;
+      await new Promise<void>(resolve => releases.push(resolve));
+      return null;
+    });
+    state.pollResponses = [{ events: messages.map((message, i) => ({ id: i + 1, type: "message", message })) }];
+    const running = runMonitorOnce(controller);
+    try {
+      await vi.waitFor(() => expect(downloadZulipUploadMock).toHaveBeenCalled());
+      await vi.advanceTimersByTimeAsync(4000);
+      expect(releases).toHaveLength(4);
+      expect(getZulipEventsWithRetryMock).toHaveBeenCalledTimes(1);
+      expect(state.core.channel.inbound.dispatch).toHaveBeenCalledTimes(
+        outcome === "dispatch error" || outcome === "success" ? 4 : 0,
+      );
+      if (outcome === "pre-dispatch error") expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(4);
+      releases.shift()!();
+      await vi.advanceTimersByTimeAsync(250);
+      expect(releases).toHaveLength(4);
+    } finally {
+      controller.abort();
+      releases.splice(0).forEach(release => release());
+      await running;
+      downloadZulipUploadMock.mockImplementation(async () => state.downloadedUploads.shift() ?? null);
+    }
+  });
+
+  it("aborts a full in-flight queue and journals the waiting message and batch tail", async () => {
+    vi.useFakeTimers();
+    enableDurableInboundJournal();
+    state.autoAbort = false;
+    const controller = new AbortController();
+    state.extractedUploadUrls = ["https://zulip.example.test/user_uploads/small.bin"];
+    downloadZulipUploadMock.mockImplementation(async () => {
+      if (!controller.signal.aborted) {
+        await new Promise<void>(resolve => controller.signal.addEventListener("abort", () => resolve(), { once: true }));
+      }
+      return null;
+    });
+    const messages = Array.from({ length: 9 }, (_, i) => makeChannelMessage(9820100 + i));
+    state.pollResponses = [{ result: "success", events: messages.map((message, i) => ({ id: i + 20, type: "message", message })) }];
+    const running = runMonitorOnce(controller);
+    try {
+      await vi.waitFor(() => expect(downloadZulipUploadMock).toHaveBeenCalled());
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(downloadZulipUploadMock).toHaveBeenCalledTimes(4);
+      expect(state.core.channel.inbound.dispatch).not.toHaveBeenCalled();
+      expect(getZulipEventsWithRetryMock).toHaveBeenCalledTimes(1);
+    } finally {
+      controller.abort();
+      await running;
+      downloadZulipUploadMock.mockImplementation(async () => state.downloadedUploads.shift() ?? null);
+    }
+    expect(state.core.channel.inbound.dispatch).not.toHaveBeenCalled();
+    const { createZulipDurableInboundReceiveJournal } = await import("./durable-receive.js");
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
+    expect((await journal.pending()).map(record => (record.payload as any).message.id).sort()).toEqual(messages.map(message => message.id));
+    expect(deleteZulipQueueMock).toHaveBeenCalledTimes(1);
+  });
+
   describe("authenticated sender allowlists", () => {
     const cases = [
       { entry: "owner@test", name: "owner@test", allowed: false },
@@ -684,6 +834,41 @@ describe("reaction continuation ingress", () => {
     expect(state.core.channel.inbound.dispatch).not.toHaveBeenCalled();
     const ledger = state.durableStores.get("zulip.reaction-triggers.v1");
     expect(await ledger?.entries()).toEqual([]);
+  });
+  it("journals the batch tail when shutdown interrupts a reaction continuation waiting for a slot", async () => {
+    vi.useFakeTimers();
+    setup();
+    state.autoAbort = false;
+    const controller = new AbortController();
+    state.extractedUploadUrls = ["https://zulip.example.test/user_uploads/small.bin"];
+    downloadZulipUploadMock.mockImplementation(async () => {
+      if (!controller.signal.aborted) {
+        await new Promise<void>(resolve => controller.signal.addEventListener("abort", () => resolve(), { once: true }));
+      }
+      return null;
+    });
+    const blocking = Array.from({ length: 4 }, (_, i) => makeChannelMessage(9830100 + i));
+    const tail = Array.from({ length: 2 }, (_, i) => makeChannelMessage(9830200 + i));
+    state.pollResponses = [{ result: "success", events: [
+      ...blocking.map((message, i) => ({ id: i + 40, type: "message", message })),
+      { ...reaction, id: 44 },
+      ...tail.map((message, i) => ({ id: i + 45, type: "message", message })),
+    ] }];
+    const running = runMonitorOnce(controller);
+    try {
+      await vi.waitFor(() => expect(downloadZulipUploadMock).toHaveBeenCalledTimes(4));
+      await vi.waitFor(() => expect(state.client.request.mock.calls.some(([path]) => path === "/messages/" + reaction.message_id)).toBe(true));
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(state.core.channel.inbound.dispatch).not.toHaveBeenCalled();
+    } finally {
+      controller.abort();
+      await running;
+      downloadZulipUploadMock.mockImplementation(async () => state.downloadedUploads.shift() ?? null);
+    }
+    const { createZulipDurableInboundReceiveJournal } = await import("./durable-receive.js");
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
+    const pendingIds = (await journal.pending()).map(record => (record.payload as any).message.id);
+    for (const message of [...blocking, ...tail]) expect(pendingIds).toContain(message.id);
   });
   it("ignores reactions on another sender's message", async () => {
     setup({ ...makeChannelMessage(81001), sender_id: 777 });
@@ -3023,6 +3208,39 @@ describe("reaction continuation ingress", () => {
     );
   });
 
+  it.each([
+    { name: "attachment count", size: 1, calls: 10, lastLimit: 5 * 1024 * 1024 },
+    { name: "aggregate bytes", size: 5 * 1024 * 1024, calls: 4, lastLimit: 5 * 1024 * 1024 },
+    { name: "partial remaining budget", size: 3 * 1024 * 1024, calls: 7, lastLimit: 2 * 1024 * 1024 },
+    { name: "failed transfer budget", size: 2, calls: 4, lastLimit: 5 * 1024 * 1024 },
+  ])("stops inbound downloads at the $name limit", async ({ name, size, calls, lastLimit }) => {
+    state.extractedUploadUrls = Array.from({ length: 12 }, (_, i) =>
+      `https://zlp.pubnerd.app/user_uploads/${i}.bin`);
+    state.downloadedUploads = state.extractedUploadUrls.map((_, index) => ({
+      buffer: Buffer.alloc(name === "partial remaining budget" && index === 6 ? lastLimit : size),
+      contentType: "application/octet-stream", filename: "small.bin",
+    }));
+    state.core.channel.media.saveMediaBuffer.mockResolvedValue({
+      path: "/managed/small.bin", contentType: "application/octet-stream",
+    });
+    if (name === "failed transfer budget") {
+      for (let i = 0; i < calls; i++) {
+        downloadZulipUploadMock.mockRejectedValueOnce(new Error("Zulip upload exceeds max size"));
+      }
+    }
+    state.pollResponses = [{ result: "success", events: [
+      { id: 1, type: "message", message: makeChannelMessage(98102 + size) },
+    ] }];
+    await runMonitorOnce();
+    expect(downloadZulipUploadMock).toHaveBeenCalledTimes(calls);
+    expect(downloadZulipUploadMock.mock.calls.at(-1)).toEqual([
+      state.extractedUploadUrls[calls - 1], "https://zlp.pubnerd.app", "fake-auth", lastLimit,
+    ]);
+    expect(state.core.channel.inbound.buildContext).toHaveBeenCalledWith(expect.objectContaining({
+      message: expect.objectContaining({ bodyForAgent: expect.stringContaining("Some Zulip attachments were skipped") }),
+    }));
+  });
+
   it("stores last-route delivery context for stream-topic messages", async () => {
     state.core.config.session = { store: "/configured/{agentId}/sessions.json" };
     state.core.agent.session.resolveStorePath.mockReturnValue("/resolved/debbie/session-store");
@@ -3248,6 +3466,54 @@ describe("reaction continuation ingress", () => {
     expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
     for (const store of state.durableStores.values()) {
       await expect(store.entries()).resolves.toEqual([]);
+    }
+  });
+
+  it.each([
+    { label: "bare name", content: "<p>Debbie is useful</p>", flags: [], admitted: false },
+    { label: "name suffix", content: "<p>@DebbieSuffix hello</p>", flags: [], admitted: false },
+    { label: "inline code", content: "<p><code>@DebbieSuffix</code> is not a mention</p>", flags: [], admitted: false },
+    { label: "email-like text", content: "<p>mail me at x@DebbieSuffix.example</p>", flags: [], admitted: false },
+    { label: "another user with the same name", content: '<p><span class="user-mention" data-user-id="998">@Debbie</span> hello</p>', flags: [], admitted: false },
+    { label: "native bot mention", content: '<p><span class="user-mention" data-user-id="999">@Debbie</span> hello</p>', flags: ["mentioned"], admitted: true },
+    { label: "raw Markdown bot mention", content: "@**Debbie|999** hello", flags: ["mentioned"], admitted: true },
+    { label: "renamed bot mention", content: "@**Previous name|999** hello", flags: ["mentioned"], admitted: true },
+    ...["all", "everyone", "topic"].map(name => ({
+      label: "wildcard @" + name, content: "@**" + name + "** hello",
+      flags: ["wildcard_mentioned", name === "topic" ? "topic_wildcard_mentioned" : "stream_wildcard_mentioned"], admitted: false,
+    })),
+  ])("requires native mention metadata: $label", async ({ label, content, flags, admitted }) => {
+    state.account.requireMention = true;
+    state.core.channel.groups.resolveRequireMention.mockImplementation(({ requireMentionOverride }) => requireMentionOverride);
+    state.pollResponses = [{ result: "success", events: [{
+      id: 1, type: "message", flags, message: { ...makeChannelMessage(98100), id: "mention-" + label, content },
+    }] }];
+
+    await runMonitorOnce();
+
+    expect(state.core.channel.inbound.dispatch).toHaveBeenCalledTimes(admitted ? 1 : 0);
+  });
+
+  it.each(["configured regex", "onchar"])("preserves %s mention-gate triggers", async trigger => {
+    state.account.requireMention = true;
+    state.core.channel.groups.resolveRequireMention.mockImplementation(({ requireMentionOverride }) => requireMentionOverride);
+    const content = trigger === "onchar" ? "! hello" : "assistant: hello";
+    if (trigger === "onchar") {
+      state.account.chatmode = "onchar";
+    } else {
+      const patterns = [/^assistant:/i];
+      state.core.channel.mentions.buildMentionRegexes.mockReturnValue(patterns);
+      state.core.channel.mentions.matchesMentionPatterns.mockImplementation((text, regexes) => regexes.some(regex => regex.test(text)));
+    }
+    state.pollResponses = [{ result: "success", events: [{
+      id: 1, type: "message", flags: [], message: { ...makeChannelMessage(98200 + content.length), content },
+    }] }];
+
+    await runMonitorOnce();
+
+    expect(state.core.channel.inbound.dispatch).toHaveBeenCalledTimes(1);
+    if (trigger === "configured regex") {
+      expect(state.core.channel.mentions.matchesMentionPatterns).toHaveBeenCalledWith(content, [/^assistant:/i]);
     }
   });
 
@@ -3495,11 +3761,11 @@ describe("reaction continuation ingress", () => {
       serializeZulipDurableInboundMessage,
     } = await import("./durable-receive.js");
     const message = makeChannelMessage(1219);
-    const durableId = createZulipDurableInboundMessageId({
+    const durableId = createZulipDurableInboundMessageId({ identity: testDurableIdentity(),
       accountId: state.account.accountId,
       messageId: String(message.id),
     });
-    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
     await journal.accept(durableId, {
       message: serializeZulipDurableInboundMessage(message),
       receivedAt: Date.now(),
@@ -3539,11 +3805,11 @@ describe("reaction continuation ingress", () => {
       serializeZulipDurableInboundMessage,
     } = await import("./durable-receive.js");
     const message = makeChannelMessage(1220);
-    const durableId = createZulipDurableInboundMessageId({
+    const durableId = createZulipDurableInboundMessageId({ identity: testDurableIdentity(),
       accountId: state.account.accountId,
       messageId: String(message.id),
     });
-    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
     await journal.accept(durableId, {
       message: serializeZulipDurableInboundMessage(message),
       receivedAt: Date.now(),
@@ -3589,11 +3855,11 @@ describe("reaction continuation ingress", () => {
       createZulipDurableInboundMessageId,
       createZulipDurableInboundReceiveJournal,
     } = await import("./durable-receive.js");
-    const durableId = createZulipDurableInboundMessageId({
+    const durableId = createZulipDurableInboundMessageId({ identity: testDurableIdentity(),
       accountId: state.account.accountId,
       messageId: String(message.id),
     });
-    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
     await expect(journal.pending()).resolves.toEqual([
       expect.objectContaining({
         id: durableId,
@@ -3624,11 +3890,11 @@ describe("reaction continuation ingress", () => {
       serializeZulipDurableInboundMessage,
     } = await import("./durable-receive.js");
     const message = makeChannelMessage(1214);
-    const durableId = createZulipDurableInboundMessageId({
+    const durableId = createZulipDurableInboundMessageId({ identity: testDurableIdentity(),
       accountId: state.account.accountId,
       messageId: String(message.id),
     });
-    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
     await journal.accept(durableId, {
       message: serializeZulipDurableInboundMessage(message),
       receivedAt: Date.now(),
@@ -3661,11 +3927,11 @@ describe("reaction continuation ingress", () => {
       serializeZulipDurableInboundMessage,
     } = await import("./durable-receive.js");
     const message = makeChannelMessage(1215);
-    const durableId = createZulipDurableInboundMessageId({
+    const durableId = createZulipDurableInboundMessageId({ identity: testDurableIdentity(),
       accountId: state.account.accountId,
       messageId: String(message.id),
     });
-    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
     await journal.accept(durableId, {
       message: serializeZulipDurableInboundMessage(message),
       receivedAt: Date.now(),
@@ -3724,7 +3990,78 @@ describe("reaction continuation ingress", () => {
     }
   });
 
-  it("drains legacy keyed-journal records through the queue-backed compatibility journal", async () => {
+  it.each(["same", "realm", "bot"])("identity-scoped replay: %s identity", async (change) => {
+    enableDurableInboundJournal();
+    const { createZulipDurableInboundReceiveJournal } = await import("./durable-receive.js");
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, {
+      realmUrl: state.account.baseUrl, botUserId: state.botUser.id,
+    });
+    await journal.accept("identity-replay", {
+      message: makeChannelMessage(9294001), receivedAt: Date.now(),
+    });
+    if (change === "realm") state.account.baseUrl = "https://other-realm.example.test";
+    if (change === "bot") state.botUser.id = 1000;
+    await runMonitorOnce();
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher)
+      .toHaveBeenCalledTimes(change === "same" ? 1 : 0);
+  });
+
+  it.each(["realm", "bot"])("does not reuse completed tombstones after changing %s", async (change) => {
+    enableDurableInboundJournal();
+    const { createZulipDurableInboundReceiveJournal, createZulipDurableInboundMessageId } =
+      await import("./durable-receive.js");
+    const identity = testDurableIdentity();
+    const idFor = (current: typeof identity) => createZulipDurableInboundMessageId({
+      accountId: state.account.accountId, messageId: "9294003", identity: current,
+    });
+    const payload = { message: makeChannelMessage(9294003), receivedAt: Date.now() };
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, identity);
+    await journal.accept(idFor(identity), payload);
+    await journal.complete(idFor(identity));
+    await expect(journal.accept(idFor(identity), payload)).resolves.toMatchObject({ kind: "completed" });
+    const changed = change === "realm"
+      ? { ...identity, realmUrl: "https://other.example" }
+      : { ...identity, botUserId: 1000 };
+    const other = createZulipDurableInboundReceiveJournal(state.account.accountId, changed);
+    await expect(other.accept(idFor(changed), payload)).resolves.toMatchObject({ kind: "accepted" });
+    await expect(other.accept(idFor(changed), payload)).resolves.toMatchObject({ kind: "pending", duplicate: true });
+  });
+
+  it.each([
+    ["queue", false], ["keyed", false], ["queue", true], ["keyed", true],
+  ])("drops unverifiable %s entries (mismatched stamp=%s) and logs once", async (source, mismatched) => {
+    enableDurableInboundJournal();
+    const { createZulipDurableInboundReceiveJournal } = await import("./durable-receive.js");
+    const log = vi.fn();
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, {
+      realmUrl: state.account.baseUrl, botUserId: state.botUser.id,
+    }, log);
+    const payload = {
+      message: makeChannelMessage(9294002), receivedAt: Date.now(),
+      ...(mismatched ? { identityFingerprint: "another-identity" } : {}),
+    };
+    if (source === "queue") {
+      const queue = state.durableQueues.get(state.account.accountId)!;
+      await queue.enqueue("legacy-one", payload);
+      await queue.enqueue("legacy-two", payload);
+    } else {
+      const store = Array.from(state.durableStores.entries()).find(([ns]) => ns.includes(".pending."))![1];
+      for (const id of ["legacy-one", "legacy-two"]) await store.register(id, {
+        id, payload, receivedAt: 1, updatedAt: 1, attempts: 0,
+      });
+    }
+    await expect(journal.pending()).resolves.toEqual([]);
+    await expect(journal.pending()).resolves.toEqual([]);
+    expect(log).toHaveBeenCalledTimes(1);
+    await expect(state.durableQueues.get(state.account.accountId)!.listPending()).resolves.toEqual([]);
+    for (const [namespace, store] of state.durableStores) {
+      if (namespace.includes(".pending.")) await expect(store.entries()).resolves.toEqual([]);
+    }
+    await runMonitorOnce();
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+  });
+
+  it("drains identity-attributed keyed-journal records through the queue-backed compatibility journal", async () => {
     enableDurableInboundJournal();
     const {
       createZulipDurableInboundMessageId,
@@ -3732,11 +4069,11 @@ describe("reaction continuation ingress", () => {
       serializeZulipDurableInboundMessage,
     } = await import("./durable-receive.js");
     const message = makeChannelMessage(2100);
-    const durableId = createZulipDurableInboundMessageId({
+    const durableId = createZulipDurableInboundMessageId({ identity: testDurableIdentity(),
       accountId: state.account.accountId,
       messageId: String(message.id),
     });
-    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
     const pendingStore = Array.from(state.durableStores.entries()).find(([namespace]) =>
       namespace.includes(".pending."),
     )?.[1];
@@ -3746,6 +4083,7 @@ describe("reaction continuation ingress", () => {
       payload: {
         message: serializeZulipDurableInboundMessage(message),
         receivedAt: 100,
+        identityFingerprint: (await import("./durable-receive.js")).fingerprintZulipDurableInboundIdentity(testDurableIdentity()),
       },
       receivedAt: 100,
       updatedAt: 100,
@@ -3788,11 +4126,11 @@ describe("reaction continuation ingress", () => {
       serializeZulipDurableInboundMessage,
     } = await import("./durable-receive.js");
     const message = makeChannelMessage(2101);
-    const durableId = createZulipDurableInboundMessageId({
+    const durableId = createZulipDurableInboundMessageId({ identity: testDurableIdentity(),
       accountId: state.account.accountId,
       messageId: String(message.id),
     });
-    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
     const queue = state.durableQueues.get(state.account.accountId);
     const completedStore = Array.from(state.durableStores.entries()).find(([namespace]) =>
       namespace.includes(".completed."),
@@ -3838,11 +4176,11 @@ describe("reaction continuation ingress", () => {
       serializeZulipDurableInboundMessage,
     } = await import("./durable-receive.js");
     const message = makeChannelMessage(2102);
-    const durableId = createZulipDurableInboundMessageId({
+    const durableId = createZulipDurableInboundMessageId({ identity: testDurableIdentity(),
       accountId: state.account.accountId,
       messageId: String(message.id),
     });
-    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
     const queue = state.durableQueues.get(state.account.accountId);
     const completedStore = Array.from(state.durableStores.entries()).find(([namespace]) =>
       namespace.includes(".completed."),
@@ -3875,11 +4213,11 @@ describe("reaction continuation ingress", () => {
       serializeZulipDurableInboundMessage,
     } = await import("./durable-receive.js");
     const message = makeChannelMessage(2105);
-    const durableId = createZulipDurableInboundMessageId({
+    const durableId = createZulipDurableInboundMessageId({ identity: testDurableIdentity(),
       accountId: state.account.accountId,
       messageId: String(message.id),
     });
-    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
     const queue = state.durableQueues.get(state.account.accountId);
     const completedStore = Array.from(state.durableStores.entries()).find(([namespace]) =>
       namespace.includes(".completed."),
@@ -3909,11 +4247,11 @@ describe("reaction continuation ingress", () => {
       serializeZulipDurableInboundMessage,
     } = await import("./durable-receive.js");
     const message = makeChannelMessage(2103);
-    const durableId = createZulipDurableInboundMessageId({
+    const durableId = createZulipDurableInboundMessageId({ identity: testDurableIdentity(),
       accountId: state.account.accountId,
       messageId: String(message.id),
     });
-    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
     const completedStore = Array.from(state.durableStores.entries()).find(([namespace]) =>
       namespace.includes(".completed."),
     )?.[1];
@@ -3957,11 +4295,47 @@ describe("reaction continuation ingress", () => {
     expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(1);
   });
 
+  it("releases deferred replay capacity before a stalled dispatch", async () => {
+    vi.useFakeTimers();
+    enableDurableInboundJournal({ completedLookupFailuresAfterAccept: 1 });
+    state.autoAbort = false;
+    const controller = new AbortController();
+    const releases: Array<() => void> = [];
+    const message = makeChannelMessage(9820800);
+    const uploads = Array.from({ length: 5 }, (_, i) => makeChannelMessage(9820801 + i));
+    state.core.channel.inbound.dispatch.mockImplementation(() => new Promise(() => {}));
+    extractZulipUploadUrlsMock.mockImplementation(content => content === "blocked upload"
+      ? ["https://zulip.example.test/user_uploads/small.bin"] : []);
+    uploads.forEach(message => { message.content = "blocked upload"; });
+    downloadZulipUploadMock.mockImplementation(async () => {
+      await new Promise<void>(resolve => releases.push(resolve));
+      return null;
+    });
+    state.pollResponses = [
+      { events: [{ id: 1, type: "message", message }] },
+      { events: uploads.map((message, i) => ({ id: i + 2, type: "message", message })) },
+    ];
+    void runMonitorOnce(controller);
+    try {
+      await vi.waitFor(() => expect(state.core.channel.inbound.dispatch).toHaveBeenCalledTimes(1));
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(state.core.channel.inbound.dispatch.mock.calls[0][0].ctxPayload.MessageSid).toBe(String(message.id));
+      expect(downloadZulipUploadMock).toHaveBeenCalledTimes(4);
+      expect(releases).toHaveLength(4);
+    } finally {
+      controller.abort();
+      releases.splice(0).forEach(release => release());
+      await vi.advanceTimersByTimeAsync(0);
+      extractZulipUploadUrlsMock.mockImplementation(() => state.extractedUploadUrls);
+      downloadZulipUploadMock.mockImplementation(async () => state.downloadedUploads.shift() ?? null);
+    }
+  });
+
   it("retries only the deferred durable message while another message is in flight", async () => {
     const { createZulipDurableInboundMessageId } = await import("./durable-receive.js");
     const firstMessage = makeChannelMessage(99200);
     const deferredMessage = makeChannelMessage(99201);
-    const deferredDurableId = createZulipDurableInboundMessageId({
+    const deferredDurableId = createZulipDurableInboundMessageId({ identity: testDurableIdentity(),
       accountId: state.account.accountId,
       messageId: String(deferredMessage.id),
     });
@@ -4001,7 +4375,7 @@ describe("reaction continuation ingress", () => {
   it("retries deferred durable replay after a transient pending-list failure", async () => {
     const { createZulipDurableInboundMessageId } = await import("./durable-receive.js");
     const message = makeChannelMessage(99202);
-    const durableId = createZulipDurableInboundMessageId({
+    const durableId = createZulipDurableInboundMessageId({ identity: testDurableIdentity(),
       accountId: state.account.accountId,
       messageId: String(message.id),
     });
@@ -4041,7 +4415,7 @@ describe("reaction continuation ingress", () => {
   it("keeps retrying a deferred durable message after transient replay metadata failure", async () => {
     const { createZulipDurableInboundMessageId } = await import("./durable-receive.js");
     const message = makeChannelMessage(99203);
-    const durableId = createZulipDurableInboundMessageId({
+    const durableId = createZulipDurableInboundMessageId({ identity: testDurableIdentity(),
       accountId: state.account.accountId,
       messageId: String(message.id),
     });
@@ -4080,7 +4454,7 @@ describe("reaction continuation ingress", () => {
   it("retries only journal completion after a deferred reply was delivered", async () => {
     const { createZulipDurableInboundMessageId } = await import("./durable-receive.js");
     const message = makePrivateMessage(99206);
-    const durableId = createZulipDurableInboundMessageId({
+    const durableId = createZulipDurableInboundMessageId({ identity: testDurableIdentity(),
       accountId: state.account.accountId,
       messageId: String(message.id),
     });
@@ -4111,11 +4485,11 @@ describe("reaction continuation ingress", () => {
     const { createZulipDurableInboundMessageId } = await import("./durable-receive.js");
     const retryableMessage = makeChannelMessage(99204);
     const readyMessage = makePrivateMessage(99205);
-    const retryableDurableId = createZulipDurableInboundMessageId({
+    const retryableDurableId = createZulipDurableInboundMessageId({ identity: testDurableIdentity(),
       accountId: state.account.accountId,
       messageId: String(retryableMessage.id),
     });
-    const readyDurableId = createZulipDurableInboundMessageId({
+    const readyDurableId = createZulipDurableInboundMessageId({ identity: testDurableIdentity(),
       accountId: state.account.accountId,
       messageId: String(readyMessage.id),
     });
@@ -4547,7 +4921,7 @@ describe("reaction continuation ingress", () => {
     await runMonitorOnce();
 
     const { createZulipDurableInboundReceiveJournal } = await import("./durable-receive.js");
-    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
     await expect(journal.pending()).resolves.toEqual([]);
     expect(state.sendMessageZulip).toHaveBeenCalledTimes(2);
     expect(state.editZulipMessage).not.toHaveBeenCalled();
@@ -4613,7 +4987,7 @@ describe("reaction continuation ingress", () => {
       await runMonitorOnce();
 
       const { createZulipDurableInboundReceiveJournal } = await import("./durable-receive.js");
-      const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+      const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
       const completedStore = Array.from(state.durableStores.entries()).find(([namespace]) =>
         namespace.includes(".completed."),
       )?.[1];
@@ -4720,11 +5094,11 @@ describe("reaction continuation ingress", () => {
       serializeZulipDurableInboundMessage,
     } = await import("./durable-receive.js");
     const message = makeChannelMessage(2102);
-    const durableId = createZulipDurableInboundMessageId({
+    const durableId = createZulipDurableInboundMessageId({ identity: testDurableIdentity(),
       accountId: state.account.accountId,
       messageId: String(message.id),
     });
-    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
     await journal.accept(durableId, {
       message: serializeZulipDurableInboundMessage(message),
       receivedAt: Date.now(),
@@ -4746,11 +5120,11 @@ describe("reaction continuation ingress", () => {
       serializeZulipDurableInboundMessage,
     } = await import("./durable-receive.js");
     const message = makePrivateMessage(99208);
-    const durableId = createZulipDurableInboundMessageId({
+    const durableId = createZulipDurableInboundMessageId({ identity: testDurableIdentity(),
       accountId: state.account.accountId,
       messageId: String(message.id),
     });
-    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
     await journal.accept(durableId, {
       message: serializeZulipDurableInboundMessage(message),
       receivedAt: Date.now(),
@@ -4782,10 +5156,10 @@ describe("reaction continuation ingress", () => {
     } = await import("./durable-receive.js");
     const firstMessage = makeChannelMessage(2105);
     const secondMessage = makeChannelMessage(2106);
-    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
-    for (const message of [firstMessage, secondMessage]) {
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
+    for (const [index, message] of [firstMessage, secondMessage].entries()) {
       await journal.accept(
-        createZulipDurableInboundMessageId({
+        createZulipDurableInboundMessageId({ identity: testDurableIdentity(),
           accountId: state.account.accountId,
           messageId: String(message.id),
         }),
@@ -4793,6 +5167,7 @@ describe("reaction continuation ingress", () => {
           message: serializeZulipDurableInboundMessage(message),
           receivedAt: Date.now(),
         },
+        { receivedAt: 100 + index },
       );
     }
     let dispatchStarted!: () => void;
@@ -4847,9 +5222,9 @@ describe("reaction continuation ingress", () => {
       serializeZulipDurableInboundMessage,
     } = await import("./durable-receive.js");
     const message = makeChannelMessage(2107);
-    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
     await journal.accept(
-      createZulipDurableInboundMessageId({
+      createZulipDurableInboundMessageId({ identity: testDurableIdentity(),
         accountId: state.account.accountId,
         messageId: String(message.id),
       }),
@@ -4932,11 +5307,11 @@ describe("reaction continuation ingress", () => {
 
     const { createZulipDurableInboundMessageId, createZulipDurableInboundReceiveJournal } =
       await import("./durable-receive.js");
-    const durableId = createZulipDurableInboundMessageId({
+    const durableId = createZulipDurableInboundMessageId({ identity: testDurableIdentity(),
       accountId: state.account.accountId,
       messageId: String(message.id),
     });
-    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
     await expect(journal.pending()).resolves.toEqual([
       expect.objectContaining({ id: durableId, attempts: 1 }),
     ]);
@@ -4997,7 +5372,7 @@ describe("reaction continuation ingress", () => {
     expect(deleteZulipQueueMock).toHaveBeenCalledTimes(1);
     expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
     const { createZulipDurableInboundReceiveJournal } = await import("./durable-receive.js");
-    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
     await expect(journal.pending()).resolves.toHaveLength(2);
     state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }: any) => {
       await dispatcherOptions.deliver({ text: "Recovered reply" }, { kind: "final" });
@@ -5019,7 +5394,7 @@ describe("reaction continuation ingress", () => {
     enableDurableInboundJournal();
     // Open the production journal first so its backing queue exists.
     const { createZulipDurableInboundReceiveJournal } = await import("./durable-receive.js");
-    createZulipDurableInboundReceiveJournal(state.account.accountId);
+    createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
     const queue = Array.from(state.durableQueues.values())[0];
     queue.listPending.mockRejectedValueOnce(new Error("replay storage failure"));
     await expect(runMonitorOnce()).rejects.toThrow("replay storage failure");
@@ -5132,10 +5507,10 @@ describe("reaction continuation ingress", () => {
     state.autoAbort = false;
     const controller = new AbortController();
     const { createZulipDurableInboundMessageId, createZulipDurableInboundReceiveJournal } = await import("./durable-receive.js");
-    createZulipDurableInboundReceiveJournal(state.account.accountId);
+    createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
     const queue = state.durableQueues.get(state.account.accountId);
     const enqueue = queue.enqueue.getMockImplementation();
-    const tailId = createZulipDurableInboundMessageId({ accountId: state.account.accountId, messageId: "9595041" });
+    const tailId = createZulipDurableInboundMessageId({ identity: testDurableIdentity(), accountId: state.account.accountId, messageId: "9595041" });
     queue.enqueue.mockImplementation(async (id: string, ...args: any[]) => {
       if (id === tailId) throw new Error("stopped batch storage failure");
       return enqueue(id, ...args);
@@ -5162,7 +5537,7 @@ describe("reaction continuation ingress", () => {
       return { stream_id: 7, name: "debbie" };
     });
     const { createZulipDurableInboundReceiveJournal } = await import("./durable-receive.js");
-    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
     const queue = state.durableQueues.get(state.account.accountId);
     queue.enqueue.mockRejectedValue(new Error("abort admission storage failure"));
     state.pollResponses = [{ result: "success", events: [{
@@ -5184,7 +5559,7 @@ describe("reaction continuation ingress", () => {
     state.autoAbort = false;
     const controller = new AbortController();
     const { createZulipDurableInboundReceiveJournal } = await import("./durable-receive.js");
-    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
     const queue = state.durableQueues.get(state.account.accountId);
     const enqueue = queue.enqueue.getMockImplementation();
     let release!: () => void;

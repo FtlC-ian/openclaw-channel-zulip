@@ -15,6 +15,7 @@ export type SerializedZulipDurableInboundMessage = PluginJsonValue;
 export type ZulipDurableInboundPayload = {
   message: SerializedZulipDurableInboundMessage;
   receivedAt: number;
+  identityFingerprint?: string;
 };
 
 export type ZulipDurableInboundMetadata = {
@@ -46,12 +47,24 @@ function hashNamespacePart(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 24);
 }
 
+export type ZulipDurableInboundIdentity = { realmUrl: string; botUserId: string | number };
+
+export function fingerprintZulipDurableInboundIdentity(identity: ZulipDurableInboundIdentity): string {
+  const origin = new URL(identity.realmUrl).origin;
+  const botUserId = Number(identity.botUserId);
+  if (origin === "null" || !Number.isSafeInteger(botUserId) || botUserId <= 0) {
+    throw new Error("Durable inbound receive requires a verified realm and bot user ID");
+  }
+  return createHash("sha256").update(JSON.stringify([origin, botUserId])).digest("hex");
+}
+
 export function createZulipDurableInboundMessageId(params: {
+  identity: ZulipDurableInboundIdentity;
   accountId: string;
   messageId: string;
 }): string {
   return createHash("sha256")
-    .update(`${params.accountId}\n${params.messageId}`)
+    .update(JSON.stringify([params.accountId, fingerprintZulipDurableInboundIdentity(params.identity), params.messageId]))
     .digest("hex");
 }
 
@@ -67,7 +80,13 @@ export function deserializeZulipDurableInboundMessage<T>(
   return JSON.parse(JSON.stringify(message)) as T;
 }
 
-export function createZulipDurableInboundReceiveJournal(accountId: string) {
+export function createZulipDurableInboundReceiveJournal(
+  accountId: string,
+  identity: ZulipDurableInboundIdentity,
+  log?: (message: string) => void,
+) {
+  const identityFingerprint = fingerprintZulipDurableInboundIdentity(identity);
+  let loggedIdentityDrop = false;
   const runtime = getZulipRuntime();
   if (typeof runtime.state?.openChannelIngressQueue !== "function") {
     throw new Error("durable plugin state is not available");
@@ -154,7 +173,7 @@ export function createZulipDurableInboundReceiveJournal(accountId: string) {
       if (pending) {
         return { kind: "pending" as const, duplicate: true as const, record: pending };
       }
-      const result = await queueJournal.accept(key, payload, options);
+      const result = await queueJournal.accept(key, { ...payload, identityFingerprint }, options);
       let completedAfterAccept: LegacyCompletedRecord | undefined;
       try {
         completedAfterAccept = await legacyCompletedStore.lookup(key);
@@ -204,7 +223,22 @@ export function createZulipDurableInboundReceiveJournal(accountId: string) {
           records.set(record.id, record);
         }
       }
-      return [...records.values()].sort(
+      const matching: LegacyPendingRecord[] = [];
+      for (const record of records.values()) {
+        if (record.payload.identityFingerprint === identityFingerprint) {
+          matching.push(record);
+          continue;
+        }
+        // Older payloads contain no trustworthy receiving realm/bot identity.
+        // Sender addresses and recipient IDs cannot establish that identity.
+        if (!loggedIdentityDrop) {
+          loggedIdentityDrop = true;
+          log?.("zulip: dropping durable inbound entries with missing or mismatched realm/bot identity; old entries cannot be safely attributed");
+        }
+        await legacyPendingStore.delete(record.id);
+        await queueJournal.deletePending(record.id);
+      }
+      return matching.sort(
         (left, right) => left.receivedAt - right.receivedAt || left.id.localeCompare(right.id),
       );
     },

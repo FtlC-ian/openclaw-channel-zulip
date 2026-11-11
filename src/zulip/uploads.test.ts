@@ -106,14 +106,25 @@ describe("downloadZulipUpload", () => {
     expect(release).toHaveBeenCalled();
   });
 
-  it("rejects chunked uploads above the configured max size after buffering", async () => {
+  it.each([undefined, "1"])("cancels unknown-length or understated-length uploads at limit plus one (length=%s)", async (contentLength) => {
+    const limit = 64;
+    let bytesRead = 0;
+    const cancel = vi.fn();
     const release = vi.fn(async () => {});
     sdkState.fetchWithSsrFGuard.mockResolvedValueOnce({
       release,
-      response: new Response(Buffer.from("too big"), {
+      response: new Response(new ReadableStream({
+        pull(controller) {
+          if (bytesRead === 1024) { controller.close(); return; }
+          bytesRead += 1;
+          controller.enqueue(new Uint8Array(1));
+        },
+        cancel,
+      }, { highWaterMark: 0 }), {
         status: 200,
         headers: {
           "content-type": "audio/mpeg",
+          ...(contentLength ? { "content-length": contentLength } : {}),
         },
       }),
     });
@@ -123,9 +134,11 @@ describe("downloadZulipUpload", () => {
         "https://zlp.pubnerd.app/user_uploads/2/ab/song.mp3",
         "https://zlp.pubnerd.app",
         "encoded-auth",
-        3,
+        limit,
       ),
-    ).rejects.toThrow("Zulip upload exceeds max size (7 > 3)");
+    ).rejects.toThrow("Zulip upload exceeds max size");
+    expect(bytesRead).toBe(limit + 1);
+    expect(cancel).toHaveBeenCalledOnce();
     expect(release).toHaveBeenCalled();
   });
 

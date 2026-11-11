@@ -1,8 +1,19 @@
 # Changelog
 
-## Unreleased
+## 2026.11.2
+
+### Upgrade notes
+- Zulip approvals now require explicit approver emails in `allowFrom`; `["*"]`, empty, or numeric-only lists no longer allow anyone to approve.
+- Stream mention gating (`requireMention`) now activates only on a real Zulip mention of the bot (or a configured mention pattern/onchar trigger), not on text that merely contains the bot name.
+- Pending inbound work saved by 2026.11.1 or earlier cannot be attributed to a realm and bot and is dropped once on upgrade; restart cleanly before upgrading.
 
 ### Security
+- Require Zulip's authenticated-bot mentioned flag rather than bot-name substrings for stream mention gates, rejecting code literals, email-like text and mentions of another user. Configured mention regexes and onchar triggers are unchanged; wildcard-only mentions (@all, @everyone, @topic) still do not activate the bot.
+- Bound inbound upload streaming before buffering full bodies, and limit each message to 10 attachment attempts and four times the per-file media byte limit, with an agent-visible note for skipped attachments.
+- Bind durable inbound replay and message deduplication IDs to the normalized realm origin and authenticated bot user ID. Drop pending entries from another identity, or older entries whose receiving identity cannot be verified, with one warning per journal startup. On upgrade, unverifiable pending work is discarded and old completed dedupe IDs no longer suppress redelivered messages; drain pending work before upgrading to avoid that one-time loss.
+- Bound per-account pre-dispatch processing to four in-flight messages before media downloads, applying poll backpressure without blocking on agent turns or dropping events and preserving queued work on shutdown.
+- Deny exec and plugin approvals when no explicit Zulip approver emails are configured, including empty, wildcard-only, and non-email-only allowlists.
+- Clean up plugin-created outbound media temporary files and directories even when uploads fail, without deleting host-managed media or masking the upload error.
 - Authorize inbound senders by authenticated email or Zulip user ID only, never display names. Numeric allowlist IDs now match even when a sender has an email.
 - Validate message, stream and user resource IDs before building API paths, including message-tool actions, preventing reaction removal from being redirected to message deletion.
 

@@ -43,7 +43,10 @@ export const zulipApprovalAuth = {
   }) {
     const approvers = resolveZulipApprovers(cfg, accountId);
     if (approvers.length === 0) {
-      return { authorized: true } as const;
+      return {
+        authorized: false,
+        reason: "❌ No Zulip approvers configured; add explicit emails to allowFrom to approve requests.",
+      } as const;
     }
     const normalizedSenderId = senderId ? normalizeZulipApproverId(senderId) : undefined;
     if (normalizedSenderId && approvers.includes(normalizedSenderId)) {

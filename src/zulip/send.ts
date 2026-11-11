@@ -354,10 +354,13 @@ export async function sendMessageZulip(
       tempFilePath = temp.filePath;
       tempDir = temp.dir;
       tempFileCleanup = true;
-      const upload = await uploadZulipFile(client, tempFilePath);
-      mediaUrl = upload.url;
-      await fsPromises.unlink(tempFilePath).catch(() => undefined);
-      await fsPromises.rmdir(tempDir).catch(() => undefined);
+      try {
+        const upload = await uploadZulipFile(client, tempFilePath);
+        mediaUrl = upload.url;
+      } finally {
+        await fsPromises.unlink(tempFilePath).catch(() => undefined);
+        await fsPromises.rmdir(tempDir).catch(() => undefined);
+      }
     } else if (isHttpUrl(mediaUrl) && !isZulipHosted) {
       const maxBytes = (opts.cfg.agents?.defaults?.mediaMaxMb ?? 5) * 1024 * 1024;
       const fetched = await core.channel.media.readRemoteMediaBuffer({
@@ -386,12 +389,15 @@ export async function sendMessageZulip(
         tempDir = temp.dir;
         tempFileCleanup = true;
       }
-      const upload = await uploadZulipFile(client, tempFilePath);
-      mediaUrl = upload.url;
-      if (tempFileCleanup && tempFilePath) {
-        await fsPromises.unlink(tempFilePath).catch(() => undefined);
-        if (tempDir) {
-          await fsPromises.rmdir(tempDir).catch(() => undefined);
+      try {
+        const upload = await uploadZulipFile(client, tempFilePath);
+        mediaUrl = upload.url;
+      } finally {
+        if (tempFileCleanup && tempFilePath) {
+          await fsPromises.unlink(tempFilePath).catch(() => undefined);
+          if (tempDir) {
+            await fsPromises.rmdir(tempDir).catch(() => undefined);
+          }
         }
       }
     }

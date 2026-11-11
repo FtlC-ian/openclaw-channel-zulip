@@ -617,6 +617,8 @@ export function registerZulipMonitorReactionHooks(api: OpenClawPluginApi): void 
   api.on("gateway_stop", clearActiveZulipMonitorReactionLifecycles);
 }
 
+const MAX_IN_FLIGHT_MESSAGES = 4;
+
 function delay(ms: number, signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) {
     return Promise.resolve();
@@ -674,6 +676,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
   const client = createZulipClient({ baseUrl, email, apiKey });
   const botUser = await fetchZulipMe(client);
   const botUserId = botUser.id;
+  const durableInboundIdentity = { realmUrl: baseUrl, botUserId };
   const botEmail = botUser.email ?? "";
   const botUsername = botUser.full_name ?? "";
 
@@ -692,6 +695,33 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
   let stopApprovalObserver = () => {};
 
   const activeMessageTasks = new Set<Promise<void>>();
+  let inFlightMessages = 0;
+  const admissionWaiters = new Set<() => void>();
+  const acquireMessageSlot = async (): Promise<(() => void) | undefined> => {
+    while (!opts.abortSignal?.aborted) {
+      if (inFlightMessages < MAX_IN_FLIGHT_MESSAGES) {
+        inFlightMessages++;
+        let released = false;
+        return () => {
+          if (released) return;
+          released = true;
+          inFlightMessages--;
+          for (const wake of admissionWaiters) wake();
+        };
+      }
+      await new Promise<void>((resolve) => {
+        const wake = () => {
+          admissionWaiters.delete(wake);
+          opts.abortSignal?.removeEventListener("abort", wake);
+          resolve();
+        };
+        admissionWaiters.add(wake);
+        opts.abortSignal?.addEventListener("abort", wake, { once: true });
+        if (opts.abortSignal?.aborted) wake();
+      });
+    }
+    return undefined;
+  };
   let abortedMessagePreservationFailed = false;
   let abortedMessagePreservationError: unknown;
   const activeReactionCleanups = new Set<() => Promise<void>>();
@@ -815,6 +845,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       streamDecision?: InboundStreamDecision;
       replay?: boolean;
       acceptInbound?: () => Promise<boolean>;
+      releaseSlot?: () => void;
     } = {},
   ) => {
     const cfg = opts.getConfig?.() ?? opts.config!;
@@ -919,9 +950,11 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     const oncharTriggered = oncharEnabled && oncharResult.triggered;
 
     const mentionRegexes = core.channel.mentions.buildMentionRegexes(cfg, "main");
+    // Queue flags target the authenticated bot, even with raw Markdown content.
+    // Wildcard-only mentions do not activate the bot; configured triggers remain separate.
     const wasMentioned =
       !isDM &&
-      (rawText.toLowerCase().includes(`@${botUsername.toLowerCase()}`) ||
+      (message.flags?.includes("mentioned") === true ||
         core.channel.mentions.matchesMentionPatterns(rawText, mentionRegexes));
 
     const dmPolicy = messageAccount.config.dmPolicy ?? "pairing";
@@ -1092,7 +1125,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     const shouldBypassMention =
       isControlCommand && shouldRequireMention && !wasMentioned && commandAuthorized;
     const effectiveWasMentioned = wasMentioned || shouldBypassMention || oncharTriggered;
-    const canDetectMention = Boolean(botUsername) || mentionRegexes.length > 0;
+    const canDetectMention = true;
 
     const shouldApplyOncharGate =
       oncharEnabled && (kind === "dm" || inboundStreamPolicy?.requireMention !== false);
@@ -1100,7 +1133,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       return;
     }
 
-    if (kind !== "dm" && shouldRequireMention && canDetectMention) {
+    if (kind !== "dm" && shouldRequireMention) {
       if (!effectiveWasMentioned) {
         return;
       }
@@ -1120,19 +1153,32 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     const mediaPaths: string[] = [];
     const mediaTypes: string[] = [];
     const mediaUrls: string[] = [];
+    const maxInboundAttachments = 10;
+    let remainingUploadBytes = mediaMaxBytes * 4;
+    let attemptedUploads = 0;
+    let skippedAttachments = false;
     if (uploadUrls.length > 0) {
       logVerboseMessage(
         `zulip: discovered ${uploadUrls.length} upload${uploadUrls.length === 1 ? "" : "s"} for message ${messageId} maxBytes=${mediaMaxBytes}`,
       );
       for (const uploadUrl of uploadUrls) {
+        if (attemptedUploads >= maxInboundAttachments || remainingUploadBytes <= 0) {
+          skippedAttachments = true;
+          break;
+        }
+        attemptedUploads += 1;
+        const downloadLimit = Math.min(mediaMaxBytes, remainingUploadBytes);
+        // Failed transfers consume their allowance too, so oversized bodies cannot bypass the budget.
+        remainingUploadBytes -= downloadLimit;
         try {
           logVerboseMessage(`zulip: downloading upload ${uploadUrl}`);
           const downloaded = await downloadZulipUpload(
             uploadUrl,
             baseUrl,
             client.authHeader,
-            mediaMaxBytes,
+            downloadLimit,
           );
+          remainingUploadBytes += downloadLimit - downloaded.buffer.length;
           logVerboseMessage(
             `zulip: downloaded upload filename=${downloaded.filename} type=${downloaded.contentType} bytes=${downloaded.buffer.length}`,
           );
@@ -1153,6 +1199,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
           }
         } catch (err) {
           logVerboseMessage(`zulip: failed to download/save upload ${uploadUrl}: ${String(err)}`);
+          skippedAttachments = true;
         }
       }
     }
@@ -1235,7 +1282,11 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
           botUserId: String(botUserId), botEmail, config: historyConfig,
           placeholderTexts: [thinkingPlaceholderText, thinkingPlaceholderConfig?.errorText ?? ""], log: message => runtime.log?.(message) })
       : undefined;
-    const textWithId = `${bodyText}\n[zulip message id: ${messageId}]${topicHistory ? `\n\n${topicHistory}` : ""}`;
+    const attachmentNote = skippedAttachments
+      ? "[Some Zulip attachments were skipped because they could not be downloaded or exceeded inbound attachment limits.]"
+      : undefined;
+    const bodyForAgent = [bodyText, attachmentNote, topicHistory].filter(Boolean).join("\n\n");
+    const textWithId = `${bodyText}\n[zulip message id: ${messageId}]${attachmentNote ? `\n\n${attachmentNote}` : ""}${topicHistory ? `\n\n${topicHistory}` : ""}`;
     const body = formatInboundEnvelope({
       channel: "Zulip",
       from: fromLabel,
@@ -1271,7 +1322,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         messageThreadId: isDM ? undefined : topic,
       },
       message: { body, rawBody: bodyText, commandBody: bodyText,
-        ...(topicHistory ? { bodyForAgent: bodyText + "\n\n" + topicHistory } : {}) },
+        ...(topicHistory || attachmentNote ? { bodyForAgent } : {}) },
       access: {
         commands: { authorized: commandAuthorized },
         ...(kind !== "dm" ? {
@@ -1972,6 +2023,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         }
       | undefined;
     try {
+      options.releaseSlot?.();
       const turnResult = await subagentContext.run(() =>
         core.channel.inbound.dispatch({
           cfg,
@@ -2208,7 +2260,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
   }) ? ["*"] : streams;
   const durableInboundJournal = (() => {
     try {
-      return createZulipDurableInboundReceiveJournal(account.accountId);
+      return createZulipDurableInboundReceiveJournal(account.accountId, durableInboundIdentity, runtime.log);
     } catch (err) {
       logVerboseMessage(`zulip: durable inbound receive journal unavailable: ${String(err)}`);
       return undefined;
@@ -2290,6 +2342,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       streamDecision?: InboundStreamDecision;
       acceptInbound?: () => Promise<boolean>;
       durableAccepted?: () => boolean;
+      releaseSlot?: () => void;
     } = {},
   ): Promise<"settled" | "pending-delivery" | "pending-completion" | "pending-completion-handled"> => {
     try {
@@ -2298,6 +2351,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         replay: options.replay,
         streamDecision: options.streamDecision,
         acceptInbound: options.acceptInbound,
+        releaseSlot: options.releaseSlot,
       });
       if (outcome === ABORTED_INBOUND_MESSAGE && options.acceptInbound && options.durableAccepted?.() !== true) {
         await options.acceptInbound();
@@ -2465,12 +2519,18 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
               disposition = "settled";
             } else {
               const payload = record.payload as ZulipDurableInboundPayload;
-              disposition = await deliverDurableInboundMessage(
-                record.id,
-                deserializeZulipDurableInboundMessage<ZulipMessage>(payload.message),
-                record.metadata,
-                { replay: true },
-              );
+              const releaseSlot = await acquireMessageSlot();
+              if (!releaseSlot) break;
+              try {
+                disposition = await deliverDurableInboundMessage(
+                  record.id,
+                  deserializeZulipDurableInboundMessage<ZulipMessage>(payload.message),
+                  record.metadata,
+                  { replay: true, releaseSlot },
+                );
+              } finally {
+                releaseSlot();
+              }
             }
             if (disposition !== "settled") {
               if (
@@ -2527,6 +2587,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     queueEventId: number | undefined,
     streamResolution: InboundStreamResolution | undefined,
     onReceiveCheckpoint: () => void,
+    releaseSlot: () => void,
   ): Promise<void> => {
     const messageId = String(message.id ?? "");
     if (message.reactionTriggerKey && (!durableInboundJournal || !hasAtomicMutations(reactionLedger))) {
@@ -2541,6 +2602,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     if (durableInboundJournal && messageId) {
       const acceptedDurableId = createZulipDurableInboundMessageId({
         accountId: account.accountId,
+        identity: durableInboundIdentity,
         messageId: message.reactionTriggerKey ?? messageId,
       });
       durableId = acceptedDurableId;
@@ -2617,6 +2679,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       streamDecision,
       acceptInbound,
       durableAccepted: () => durableAccepted,
+      releaseSlot,
     });
     if (
       (disposition === "pending-completion" || disposition === "pending-completion-handled") &&
@@ -2644,12 +2707,19 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         break;
       }
       const payload = record.payload as ZulipDurableInboundPayload;
-      const disposition = await deliverDurableInboundMessage(
-        record.id,
-        deserializeZulipDurableInboundMessage<ZulipMessage>(payload.message),
-        record.metadata,
-        { replay: true },
-      );
+      const releaseSlot = await acquireMessageSlot();
+      if (!releaseSlot) break;
+      let disposition;
+      try {
+        disposition = await deliverDurableInboundMessage(
+          record.id,
+          deserializeZulipDurableInboundMessage<ZulipMessage>(payload.message),
+          record.metadata,
+          { replay: true, releaseSlot },
+        );
+      } finally {
+        releaseSlot();
+      }
       if (
         disposition === "pending-completion" ||
         disposition === "pending-completion-handled"
@@ -2737,114 +2807,134 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
 
         resetPollBackoff();
 
-        // Process messages with staggered start times for more natural feel
-        for (const [eventIndex, event] of events.entries()) {
-          if (opts.abortSignal?.aborted) {
-            if (durableInboundJournal) {
-              persistingStoppedBatch = true;
-              for (const pendingEvent of events.slice(eventIndex)) {
-                if (pendingEvent.type !== "message" || !pendingEvent.message) continue;
-                const pendingMessage = pendingEvent.flags
-                  ? { ...pendingEvent.message, flags: [...pendingEvent.flags] }
-                  : pendingEvent.message;
-                const messageId = String(pendingMessage.id ?? "");
-                if (!messageId) continue;
-                const eventId = Number(pendingEvent.id);
-                await durableInboundJournal.accept(
-                  createZulipDurableInboundMessageId({ accountId: account.accountId, messageId }),
-                  { message: serializeZulipDurableInboundMessage(pendingMessage), receivedAt: Date.now() },
-                  {
-                    receivedAt: Date.now(),
-                    ...(Number.isFinite(eventId) && eventId >= 0 ? { metadata: { queueEventId: eventId } } : {}),
-                  },
-                );
-              }
-              persistingStoppedBatch = false;
-            }
-            break;
-          }
-          const nextEventId = Number((event as { id?: unknown })?.id);
-          const validEventId =
-            !Number.isNaN(nextEventId) && nextEventId >= 0 ? nextEventId : undefined;
-          if (validEventId !== undefined) {
-            lastEventId = validEventId;
-          }
-
-          let inboundEventMessage = event.type === "message" ? event.message : undefined;
-          if (event.type === "reaction") {
-            try {
-              await zulipApprovalReactions.react({
-                abortSignal: opts.abortSignal,
-                getConfig: opts.getConfig,
-                cfg: opts.getConfig?.() ?? cfg,
-                accountId: account.accountId,
-                botUserId: String(botUserId),
-                event,
-                client,
-              });
-            } catch (error) {
-              runtime.error?.(`zulip: approval reaction failed: ${String(error)}`);
-            }
-          }
-          if (event.type === "reaction") {
-            try {
-              const currentAccount = await resolveZulipRuntimeAccount({ cfg: opts.getConfig?.() ?? cfg, accountId: account.accountId });
-              const continuation = await buildReactionContinuation({
-                event, config: currentAccount.config, client, botUserId: String(botUserId),
-                isApprovalPrompt: messageId => zulipApprovalReactions.isPrompt(account.accountId, messageId, client),
-              });
-              inboundEventMessage = continuation;
-            } catch (error) {
-              runtime.error?.("zulip: reaction continuation failed: " + String(error));
-            }
-          }
-          if (inboundEventMessage) {
-            const inboundMessage = event.flags
-              ? { ...inboundEventMessage, flags: [...event.flags] }
-              : inboundEventMessage;
-            let streamResolution: InboundStreamResolution;
-            try {
-              streamResolution = {
-                ok: true,
-                decision: await resolveInboundStreamDecision(inboundMessage),
-              };
-            } catch (error) {
-              streamResolution = { ok: false, error };
-            }
-            if (streamResolution.ok) {
-              const streamDecision = streamResolution.decision;
-              if (streamDecision === RETRYABLE_STREAM_POLICY) {
-                continue;
-              }
-              if (streamDecision && !streamDecision.accepted) {
-                logRejectedStreamDecision(
-                  streamDecision,
-                  inboundMessage.sender_email?.trim() || String(inboundMessage.sender_id ?? ""),
-                );
-                continue;
-              }
-            }
-            // Start processing without awaiting (fire-and-forget with error handling)
-            let receiveCheckpoint!: () => void;
-            const checkpoint = new Promise<void>((resolve) => { receiveCheckpoint = resolve; });
-            pendingReceiveCheckpoints.add(checkpoint);
-            void checkpoint.then(() => pendingReceiveCheckpoints.delete(checkpoint));
-            if (!durableInboundJournal) receiveCheckpoint();
-            const messageTask = processMessage(inboundMessage, validEventId, streamResolution, receiveCheckpoint).catch(
-              (err) => {
-                if (err instanceof ZulipAbortPreservationError || opts.abortSignal?.aborted) {
-                  abortedMessagePreservationFailed = true;
-                  abortedMessagePreservationError ??= err;
-                }
-                runtime.error?.(`zulip: message processing failed: ${String(err)}`);
+        // On shutdown, journal the unprocessed message events in this batch so they replay on restart.
+        const persistStoppedBatch = async (fromIndex: number) => {
+          if (!durableInboundJournal) return;
+          persistingStoppedBatch = true;
+          for (const pendingEvent of events.slice(fromIndex)) {
+            if (pendingEvent.type !== "message" || !pendingEvent.message) continue;
+            const pendingMessage = pendingEvent.flags
+              ? { ...pendingEvent.message, flags: [...pendingEvent.flags] }
+              : pendingEvent.message;
+            const messageId = String(pendingMessage.id ?? "");
+            if (!messageId) continue;
+            const eventId = Number(pendingEvent.id);
+            await durableInboundJournal.accept(
+              createZulipDurableInboundMessageId({ accountId: account.accountId, identity: durableInboundIdentity, messageId }),
+              { message: serializeZulipDurableInboundMessage(pendingMessage), receivedAt: Date.now() },
+              {
+                receivedAt: Date.now(),
+                ...(Number.isFinite(eventId) && eventId >= 0 ? { metadata: { queueEventId: eventId } } : {}),
               },
-            ).finally(receiveCheckpoint);
-            activeMessageTasks.add(messageTask);
-            void messageTask.finally(() => {
-              activeMessageTasks.delete(messageTask);
-            });
-            // Small delay between starting each eligible message for natural pacing
-            await delay(200, opts.abortSignal);
+            );
+          }
+          persistingStoppedBatch = false;
+        };
+
+        // Wait before advancing the event cursor so a full account backpressures polling.
+        for (const [eventIndex, event] of events.entries()) {
+          let releaseSlot = event.type === "message" && event.message
+            ? await acquireMessageSlot()
+            : undefined;
+          try {
+            if (opts.abortSignal?.aborted) {
+              await persistStoppedBatch(eventIndex);
+              break;
+            }
+            const nextEventId = Number((event as { id?: unknown })?.id);
+            const validEventId =
+              !Number.isNaN(nextEventId) && nextEventId >= 0 ? nextEventId : undefined;
+            if (validEventId !== undefined) {
+              lastEventId = validEventId;
+            }
+
+            let inboundEventMessage = event.type === "message" ? event.message : undefined;
+            if (event.type === "reaction") {
+              try {
+                await zulipApprovalReactions.react({
+                  abortSignal: opts.abortSignal,
+                  getConfig: opts.getConfig,
+                  cfg: opts.getConfig?.() ?? cfg,
+                  accountId: account.accountId,
+                  botUserId: String(botUserId),
+                  event,
+                  client,
+                });
+              } catch (error) {
+                runtime.error?.(`zulip: approval reaction failed: ${String(error)}`);
+              }
+            }
+            if (event.type === "reaction") {
+              try {
+                const currentAccount = await resolveZulipRuntimeAccount({ cfg: opts.getConfig?.() ?? cfg, accountId: account.accountId });
+                const continuation = await buildReactionContinuation({
+                  event, config: currentAccount.config, client, botUserId: String(botUserId),
+                  isApprovalPrompt: messageId => zulipApprovalReactions.isPrompt(account.accountId, messageId, client),
+                });
+                inboundEventMessage = continuation;
+              } catch (error) {
+                runtime.error?.("zulip: reaction continuation failed: " + String(error));
+              }
+            }
+            if (inboundEventMessage) {
+              releaseSlot ??= await acquireMessageSlot();
+              if (!releaseSlot) {
+                await persistStoppedBatch(eventIndex + 1);
+                break;
+              }
+              const inboundMessage = event.flags
+                ? { ...inboundEventMessage, flags: [...event.flags] }
+                : inboundEventMessage;
+              let streamResolution: InboundStreamResolution;
+              try {
+                streamResolution = {
+                  ok: true,
+                  decision: await resolveInboundStreamDecision(inboundMessage),
+                };
+              } catch (error) {
+                streamResolution = { ok: false, error };
+              }
+              if (streamResolution.ok) {
+                const streamDecision = streamResolution.decision;
+                if (streamDecision === RETRYABLE_STREAM_POLICY) {
+                  continue;
+                }
+                if (streamDecision && !streamDecision.accepted) {
+                  logRejectedStreamDecision(
+                    streamDecision,
+                    inboundMessage.sender_email?.trim() || String(inboundMessage.sender_id ?? ""),
+                  );
+                  continue;
+                }
+              }
+              const releaseMessageSlot = releaseSlot!;
+              releaseSlot = undefined;
+              let receiveCheckpoint!: () => void;
+              const checkpoint = new Promise<void>((resolve) => { receiveCheckpoint = resolve; });
+              pendingReceiveCheckpoints.add(checkpoint);
+              void checkpoint.then(() => pendingReceiveCheckpoints.delete(checkpoint));
+              if (!durableInboundJournal) receiveCheckpoint();
+              const messageTask = processMessage(inboundMessage, validEventId, streamResolution, receiveCheckpoint, releaseMessageSlot).catch(
+                (err) => {
+                  if (err instanceof ZulipAbortPreservationError || opts.abortSignal?.aborted) {
+                    abortedMessagePreservationFailed = true;
+                    abortedMessagePreservationError ??= err;
+                  }
+                  runtime.error?.(`zulip: message processing failed: ${String(err)}`);
+                },
+              ).finally(() => {
+                receiveCheckpoint();
+                releaseMessageSlot();
+              });
+              activeMessageTasks.add(messageTask);
+              void messageTask.finally(() => {
+                activeMessageTasks.delete(messageTask);
+              });
+              // Small delay between starting each eligible message for natural pacing
+              await delay(200, opts.abortSignal);
+            }
+          } finally {
+            releaseSlot?.();
           }
         }
       } catch (err) {

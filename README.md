@@ -17,6 +17,7 @@ The same `media` object works per account. Roots are additive with host roots; n
 - ✅ **Concurrent message processing** — events fire-and-forget with staggered start times (200 ms apart), so a burst of incoming messages is handled in parallel rather than queued sequentially
 - ✅ **Native session conversation binding** — stream topics resolve through the SDK session-conversation hook instead of hand-rolled session key grammar
 - ✅ **File uploads** — inbound Zulip file attachments are downloaded and forwarded to the AI pipeline; outbound media is uploaded via Zulip's file upload API
+  Inbound messages attempt at most 10 unique attachments and share a download budget of four times the per-file `mediaMaxMb` limit (5 MB per file and 20 MB per message by default). Failed downloads consume their attempted allowance; downloads stop when either budget is exhausted. Oversized streaming bodies are cancelled as soon as the limit is crossed, without buffering the full response. The agent receives a short note when attachments are skipped. These count and aggregate multipliers are fixed limits.
 - ✅ **Native message actions** — send, read, search, react, edit, delete/unsend, polls, member lookup, and stream list/create/edit/delete with an [audited capability matrix](docs/ACTION_CAPABILITIES.md); per-account `actionTiers` opt in to moderation actions (message edit/delete/unsend, member lookup) and stream create/edit/delete (`streamAdmin`)
 - ✅ **Topic directives** — reply topics can be scoped per-message, enabling organized thread-based conversations
 - ✅ **Multi-account support** — run multiple Zulip bot accounts in one OpenClaw instance via the `accounts` map
@@ -446,7 +447,11 @@ public plugin hooks, so they cannot truthfully drive this indicator.
 
 Topic-scoped conversations now resolve through the SDK session-conversation hook, plus the plugin ships a bootstrap-safe `session-key-api.ts` export for core fallbacks.
 
-Basic approval authorization is now wired through `approvalCapability`, using normalized Zulip identities from `allowFrom` as the first pass.
+Approval authorization uses `approvalCapability` and requires explicit account
+`allowFrom` email identities. Empty, wildcard-only (`["*"]`), and non-email-only
+lists deny exec and plugin approvals, including typed `/approve` and zform controls.
+Pairing and numeric sender allowlist IDs do not grant approval authority; add trusted
+emails explicitly.
 
 ### Topic isolation and migration
 
@@ -664,7 +669,8 @@ queued work retains normal durable ingress retry behavior. This is an at-most-on
 
 Exec and plugin approval messages retain their zform buttons and also offer
 ✅ **Allow once** and ❌ **Deny** reactions. Only explicit account `allowFrom`
-email identities may use reactions; an empty list does **not** make reaction
+email identities may approve through reactions, zform buttons, or typed `/approve`.
+An empty, wildcard-only, or non-email-only list denies approval; it never makes
 approvals public. Bot reactions, removal events and unrelated messages are ignored.
 
 For the claude-cli runtime (which blocks inside Bash), enable core forwarding:

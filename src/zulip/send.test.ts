@@ -230,6 +230,55 @@ vi.mock("./client.js", () => ({
 }));
 
 describe("sendMessageZulip media and presentation", () => {
+  it.each([
+    ["host-loader", false], ["host-loader", true],
+    ["remote-fallback", false], ["remote-fallback", true],
+    ["host-managed", false], ["host-managed", true],
+  ] as const)("preserves media ownership for %s (upload failure: %s)", async (source, fails) => {
+    const { uploadZulipFile } = await import("./client.js");
+    const sdk = await import("../sdk.js");
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "zulip-upload-test-"));
+    const managed = path.join(dir, "managed.pdf");
+    await fs.writeFile(managed, "private media");
+    const tmp = vi.spyOn(sdk, "resolvePreferredOpenClawTmpDir").mockReturnValue(dir);
+    const loader = vi.spyOn(sdk, "loadOutboundMediaFromUrl").mockResolvedValue({
+      buffer: Buffer.from("private media"), fileName: "report.pdf", contentType: "application/pdf", type: "document",
+    });
+    const media = sendState.runtime.channel.media;
+    const save = media.saveMediaBuffer;
+    if (source === "remote-fallback") Object.assign(media, { saveMediaBuffer: undefined });
+    save.mockResolvedValueOnce({ path: managed });
+    media.readRemoteMediaBuffer.mockResolvedValueOnce({ buffer: Buffer.from("private media"), contentType: "application/pdf" });
+    const originalError = new Error("upload failed");
+    let uploadedPath: string | undefined;
+    vi.mocked(uploadZulipFile).mockImplementationOnce(async (_client, file) => {
+      uploadedPath = file;
+      expect(await fs.readFile(file, "utf8")).toBe("private media");
+      if (fails) throw originalError;
+      return { url: "/user_uploads/test/report.pdf" };
+    });
+    try {
+      const send = sendMessageZulip("user:alice@example.test", "file", {
+        cfg: {}, mediaUrl: "https://files.example.test/report.pdf",
+        ...(source === "host-loader" ? { mediaAccess: {} } : {}),
+      });
+      if (fails) await expect(send).rejects.toBe(originalError);
+      else await expect(send).resolves.toMatchObject({ messageId: "9001" });
+      expect(uploadedPath).toBeDefined();
+      if (source !== "host-managed") {
+        await expect(fs.stat(uploadedPath!)).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(fs.stat(path.dirname(uploadedPath!))).rejects.toMatchObject({ code: "ENOENT" });
+      }
+      expect(await fs.readFile(managed, "utf8")).toBe("private media");
+    } finally {
+      tmp.mockRestore();
+      loader.mockRestore();
+      Object.assign(media, { saveMediaBuffer: save });
+      save.mockReset();
+      media.readRemoteMediaBuffer.mockReset();
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
   it.each(["outside", "traversal", "symlink", "no-roots", "disabled", "size"])("rejects local upload %s before uploading", async (scenario) => {
     const { uploadZulipFile } = await import("./client.js");
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "zulip-security-"));

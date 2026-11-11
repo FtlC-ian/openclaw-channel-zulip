@@ -579,6 +579,76 @@ function enableDurableInboundJournal(
 }
 
 describe("monitorZulipProvider", () => {
+  it("bounds in-flight messages before downloads and backpressures subsequent polls", async () => {
+    vi.useFakeTimers();
+    state.autoAbort = false;
+    const controller = new AbortController();
+    const messages = Array.from({ length: 10 }, (_, i) => makeChannelMessage(9820000 + i));
+    const started: string[] = [];
+    const releases: Array<() => void> = [];
+    let active = 0;
+    let peak = 0;
+    state.extractedUploadUrls = ["https://zulip.example.test/user_uploads/small.bin"];
+    downloadZulipUploadMock.mockImplementation(async () => {
+      peak = Math.max(peak, ++active);
+      await new Promise<void>(resolve => releases.push(resolve));
+      active--;
+      return null;
+    });
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ ctx }: any) => {
+      started.push(ctx.MessageSid);
+    });
+    state.pollResponses = [{ result: "success", events: messages.map((message, i) => ({ id: i + 1, type: "message", message })) }];
+    const running = runMonitorOnce(controller);
+    try {
+      await vi.waitFor(() => expect(downloadZulipUploadMock).toHaveBeenCalled());
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(downloadZulipUploadMock).toHaveBeenCalledTimes(4);
+      expect(getZulipEventsWithRetryMock).toHaveBeenCalledTimes(1);
+      for (let i = 0; i < messages.length; i++) {
+        releases.shift()?.();
+        await vi.advanceTimersByTimeAsync(250);
+      }
+      expect(peak).toBe(4);
+      expect(started).toEqual(messages.map(message => String(message.id)));
+      expect(getZulipEventsWithRetryMock.mock.calls[1][1].lastEventId).toBe(10);
+    } finally {
+      controller.abort();
+      releases.splice(0).forEach(release => release());
+      await running;
+      downloadZulipUploadMock.mockImplementation(async () => state.downloadedUploads.shift() ?? null);
+    }
+  });
+
+  it("aborts a full in-flight queue and journals the waiting message and batch tail", async () => {
+    vi.useFakeTimers();
+    enableDurableInboundJournal();
+    state.autoAbort = false;
+    const controller = new AbortController();
+    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ replyOptions }: any) => {
+      if (!replyOptions.abortSignal.aborted) {
+        await new Promise<void>(resolve => replyOptions.abortSignal.addEventListener("abort", () => resolve(), { once: true }));
+      }
+    });
+    const messages = Array.from({ length: 9 }, (_, i) => makeChannelMessage(9820100 + i));
+    state.pollResponses = [{ result: "success", events: messages.map((message, i) => ({ id: i + 20, type: "message", message })) }];
+    const running = runMonitorOnce(controller);
+    try {
+      await vi.waitFor(() => expect(state.core.channel.inbound.dispatch).toHaveBeenCalled());
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(state.core.channel.inbound.dispatch).toHaveBeenCalledTimes(4);
+      expect(getZulipEventsWithRetryMock).toHaveBeenCalledTimes(1);
+    } finally {
+      controller.abort();
+      await running;
+    }
+    expect(state.core.channel.inbound.dispatch).toHaveBeenCalledTimes(4);
+    const { createZulipDurableInboundReceiveJournal } = await import("./durable-receive.js");
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    expect((await journal.pending()).map(record => (record.payload as any).message.id).sort()).toEqual(messages.map(message => message.id));
+    expect(deleteZulipQueueMock).toHaveBeenCalledTimes(1);
+  });
+
   describe("authenticated sender allowlists", () => {
     const cases = [
       { entry: "owner@test", name: "owner@test", allowed: false },

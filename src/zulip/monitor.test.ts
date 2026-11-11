@@ -577,6 +577,44 @@ function enableDurableInboundJournal(
 }
 
 describe("monitorZulipProvider", () => {
+  describe("authenticated sender allowlists", () => {
+    const cases = [
+      { entry: "owner@test", name: "owner@test", allowed: false },
+      { entry: "456", name: "456", allowed: false },
+      { entry: "owner@test", name: "user:owner@test", allowed: false },
+      { entry: "owner@test", name: "zulip:owner@test", allowed: false },
+      { entry: "owner@test", name: "@owner@test", allowed: false },
+      { entry: "owner@test", name: "OWNER@TEST", allowed: false },
+      { entry: "USER:USER8@ZLP.PUBNERD.APP", name: "Ian F", allowed: true },
+      { entry: "zulip:123", name: "Ian F", allowed: true },
+    ];
+    for (const surface of ["dm", "group", "command"] as const) {
+      it.each(cases)(surface + " uses email or user ID, not display name: $entry / $name", async ({ entry, name, allowed }) => {
+        state.account.config.dmPolicy = "allowlist";
+        state.account.config.groupPolicy = surface === "command" ? "open" : "allowlist";
+        state.account.config.allowFrom = surface === "group" ? [] : [entry];
+        state.account.config.groupAllowFrom = surface === "group" ? [entry] : [];
+        const id = 9910001 + cases.findIndex(row => row.entry === entry && row.name === name) + ["dm", "group", "command"].indexOf(surface) * 100;
+        const message = surface === "dm" ? makePrivateMessage(id) : makeChannelMessage(id);
+        message.sender_full_name = name;
+        if (surface === "command") {
+          message.content = "/status";
+          state.core.channel.commands.shouldHandleTextCommands.mockReturnValue(true);
+          state.core.channel.text.hasControlCommand.mockReturnValue(true);
+        }
+        state.pollResponses = [{ events: [{ id: 1, type: "message", message }] }];
+        await runMonitorOnce();
+        expect(state.core.channel.inbound.dispatch).toHaveBeenCalledTimes(allowed ? 1 : 0);
+      });
+    }
+    it("fails closed without authenticated identity even with wildcard access", async () => {
+      state.account.config.allowFrom = ["*"];
+      const message = { ...makePrivateMessage(9910002), sender_email: "", sender_id: undefined, sender_full_name: "owner@test" };
+      state.pollResponses = [{ events: [{ id: 1, type: "message", message }] }];
+      await runMonitorOnce();
+      expect(state.core.channel.inbound.dispatch).not.toHaveBeenCalled();
+    });
+  });
 describe("reaction continuation ingress", () => {
   const reaction = { id: 1, type: "reaction", op: "add", message_id: 81001,
     user_id: 123, emoji_name: "fast_forward", reaction_type: "unicode_emoji" };

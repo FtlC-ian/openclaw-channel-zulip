@@ -15,7 +15,7 @@ import type {
   RuntimeEnv,
 } from "../sdk.js";
 import { createChannelPairingController } from "../sdk.js";
-import { normalizeZulipAllowEntry as normalizeAllowEntry, normalizeZulipAllowList as normalizeAllowList } from "../policy-config.js";
+import { normalizeZulipAllowList as normalizeAllowList } from "../policy-config.js";
 import { resolveControlCommandGate } from "openclaw/plugin-sdk/command-auth-native";
 import {
   createStatusReactionController,
@@ -417,22 +417,25 @@ function extractZulipTopicDirective(text: string): { text: string; topic?: strin
 }
 
 function isSenderAllowed(params: {
-  senderId: string;
-  senderName?: string;
+  senderEmail: string;
+  senderUserId: string;
   allowFrom: string[];
 }): boolean {
   const allowFrom = params.allowFrom;
+  const senderEmail = params.senderEmail.trim().toLowerCase();
+  const senderUserId = params.senderUserId;
+  if (!senderEmail && !senderUserId) {
+    return false;
+  }
   if (allowFrom.length === 0) {
     return false;
   }
   if (allowFrom.includes("*")) {
     return true;
   }
-  const normalizedSenderId = normalizeAllowEntry(params.senderId);
-  const normalizedSenderName = params.senderName ? normalizeAllowEntry(params.senderName) : "";
   return allowFrom.some(
-    (entry) =>
-      entry === normalizedSenderId || (normalizedSenderName && entry === normalizedSenderName),
+    (entry) => (Boolean(senderEmail) && entry === senderEmail) ||
+      (Boolean(senderUserId) && entry === senderUserId),
   );
 }
 
@@ -953,13 +956,13 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     const isControlCommand = allowTextCommands && hasControlCommand;
     const useAccessGroups = true;
     const senderAllowedForCommands = isSenderAllowed({
-      senderId: senderIdentity,
-      senderName,
+      senderEmail,
+      senderUserId,
       allowFrom: effectiveAllowFrom,
     });
     const groupAllowedForCommands = isSenderAllowed({
-      senderId: senderIdentity,
-      senderName,
+      senderEmail,
+      senderUserId,
       allowFrom: effectiveGroupAllowFrom,
     });
     const commandGate = resolveControlCommandGate({

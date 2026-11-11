@@ -446,7 +446,11 @@ public plugin hooks, so they cannot truthfully drive this indicator.
 
 Topic-scoped conversations now resolve through the SDK session-conversation hook, plus the plugin ships a bootstrap-safe `session-key-api.ts` export for core fallbacks.
 
-Basic approval authorization is now wired through `approvalCapability`, using normalized Zulip identities from `allowFrom` as the first pass.
+Approval authorization uses `approvalCapability` and requires explicit account
+`allowFrom` email identities. Empty, wildcard-only (`["*"]`), and non-email-only
+lists deny exec and plugin approvals, including typed `/approve` and zform controls.
+Pairing and numeric sender allowlist IDs do not grant approval authority; add trusted
+emails explicitly.
 
 ### Topic isolation and migration
 
@@ -664,7 +668,8 @@ queued work retains normal durable ingress retry behavior. This is an at-most-on
 
 Exec and plugin approval messages retain their zform buttons and also offer
 ✅ **Allow once** and ❌ **Deny** reactions. Only explicit account `allowFrom`
-email identities may use reactions; an empty list does **not** make reaction
+email identities may approve through reactions, zform buttons, or typed `/approve`.
+An empty, wildcard-only, or non-email-only list denies approval; it never makes
 approvals public. Bot reactions, removal events and unrelated messages are ignored.
 
 For the claude-cli runtime (which blocks inside Bash), enable core forwarding:

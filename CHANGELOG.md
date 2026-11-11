@@ -3,6 +3,8 @@
 ## Unreleased
 
 ### Security
+- Deny exec and plugin approvals when no explicit Zulip approver emails are configured, including empty, wildcard-only, and non-email-only allowlists.
+- Clean up plugin-created outbound media temporary files and directories even when uploads fail, without deleting host-managed media or masking the upload error.
 - Authorize inbound senders by authenticated email or Zulip user ID only, never display names. Numeric allowlist IDs now match even when a sender has an email.
 - Validate message, stream and user resource IDs before building API paths, including message-tool actions, preventing reaction removal from being redirected to message deletion.
 

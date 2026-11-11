@@ -1,5 +1,11 @@
 # Approval reactions
 
+Exec and plugin approvals require explicit account `allowFrom` email identities for
+reactions, zform buttons, and typed `/approve`. Empty, wildcard-only (`["*"]`), and
+non-email-only lists deny approval. Pairing and numeric sender allowlist IDs do not
+grant approval authority. Setup/doctor warns when exec forwarding has no explicit
+approver emails; add trusted emails to the account’s `allowFrom`.
+
 ## Structural constraints
 
 - Preserve the zform and bind only canonical pending metadata whose typed or

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2026.11.1
+
 ### Compatibility
 - **OpenClaw host floor** (#132): Require OpenClaw >=2026.9.6, the first published release exporting `createPluginStateKeyedStore`, and remove the deprecated synchronous factory fallback from durable bindings. Prefer V2 when available; a missing store still disables optional durability without breaking Zulip. Namespaces, limits, TTLs, and stored data are unchanged.
 - Use the focused outbound-media SDK loader instead of the deprecated media-runtime barrel, preserving outbound media loading on every supported OpenClaw host (#136).

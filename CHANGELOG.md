@@ -4,6 +4,7 @@
 
 ### Security
 - Require Zulip's authenticated-bot mentioned flag rather than bot-name substrings for stream mention gates, rejecting code literals, email-like text and mentions of another user. Configured mention regexes and onchar triggers are unchanged; wildcard-only mentions (@all, @everyone, @topic) still do not activate the bot.
+- Bound inbound upload streaming before buffering full bodies, and limit each message to 10 attachment attempts and four times the per-file media byte limit, with an agent-visible note for skipped attachments.
 - Deny exec and plugin approvals when no explicit Zulip approver emails are configured, including empty, wildcard-only, and non-email-only allowlists.
 - Clean up plugin-created outbound media temporary files and directories even when uploads fail, without deleting host-managed media or masking the upload error.
 - Authorize inbound senders by authenticated email or Zulip user ID only, never display names. Numeric allowlist IDs now match even when a sender has an email.

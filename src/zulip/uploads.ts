@@ -126,13 +126,30 @@ export async function downloadZulipUpload(
     if (contentLength) {
       const length = Number(contentLength);
       if (!Number.isNaN(length) && length > maxBytes) {
+        await res.body?.cancel();
         throw new Error(`Zulip upload exceeds max size (${length} > ${maxBytes})`);
       }
     }
-    const buffer = Buffer.from(await res.arrayBuffer());
-    if (buffer.length > maxBytes) {
-      throw new Error(`Zulip upload exceeds max size (${buffer.length} > ${maxBytes})`);
+    const chunks: Buffer[] = [];
+    let bytesRead = 0;
+    const reader = res.body?.getReader();
+    if (reader) {
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          bytesRead += value.byteLength;
+          if (bytesRead > maxBytes) {
+            await reader.cancel();
+            throw new Error(`Zulip upload exceeds max size (${bytesRead} > ${maxBytes})`);
+          }
+          chunks.push(Buffer.from(value));
+        }
+      } finally {
+        reader.releaseLock();
+      }
     }
+    const buffer = Buffer.concat(chunks, bytesRead);
     const contentType = res.headers.get("content-type") ?? "application/octet-stream";
     const filename = resolveFilename(url, res.headers.get("content-disposition"));
     return { buffer, contentType, filename };

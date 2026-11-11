@@ -1122,19 +1122,32 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     const mediaPaths: string[] = [];
     const mediaTypes: string[] = [];
     const mediaUrls: string[] = [];
+    const maxInboundAttachments = 10;
+    let remainingUploadBytes = mediaMaxBytes * 4;
+    let attemptedUploads = 0;
+    let skippedAttachments = false;
     if (uploadUrls.length > 0) {
       logVerboseMessage(
         `zulip: discovered ${uploadUrls.length} upload${uploadUrls.length === 1 ? "" : "s"} for message ${messageId} maxBytes=${mediaMaxBytes}`,
       );
       for (const uploadUrl of uploadUrls) {
+        if (attemptedUploads >= maxInboundAttachments || remainingUploadBytes <= 0) {
+          skippedAttachments = true;
+          break;
+        }
+        attemptedUploads += 1;
+        const downloadLimit = Math.min(mediaMaxBytes, remainingUploadBytes);
+        // Failed transfers consume their allowance too, so oversized bodies cannot bypass the budget.
+        remainingUploadBytes -= downloadLimit;
         try {
           logVerboseMessage(`zulip: downloading upload ${uploadUrl}`);
           const downloaded = await downloadZulipUpload(
             uploadUrl,
             baseUrl,
             client.authHeader,
-            mediaMaxBytes,
+            downloadLimit,
           );
+          remainingUploadBytes += downloadLimit - downloaded.buffer.length;
           logVerboseMessage(
             `zulip: downloaded upload filename=${downloaded.filename} type=${downloaded.contentType} bytes=${downloaded.buffer.length}`,
           );
@@ -1155,6 +1168,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
           }
         } catch (err) {
           logVerboseMessage(`zulip: failed to download/save upload ${uploadUrl}: ${String(err)}`);
+          skippedAttachments = true;
         }
       }
     }
@@ -1237,7 +1251,11 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
           botUserId: String(botUserId), botEmail, config: historyConfig,
           placeholderTexts: [thinkingPlaceholderText, thinkingPlaceholderConfig?.errorText ?? ""], log: message => runtime.log?.(message) })
       : undefined;
-    const textWithId = `${bodyText}\n[zulip message id: ${messageId}]${topicHistory ? `\n\n${topicHistory}` : ""}`;
+    const attachmentNote = skippedAttachments
+      ? "[Some Zulip attachments were skipped because they could not be downloaded or exceeded inbound attachment limits.]"
+      : undefined;
+    const bodyForAgent = [bodyText, attachmentNote, topicHistory].filter(Boolean).join("\n\n");
+    const textWithId = `${bodyText}\n[zulip message id: ${messageId}]${attachmentNote ? `\n\n${attachmentNote}` : ""}${topicHistory ? `\n\n${topicHistory}` : ""}`;
     const body = formatInboundEnvelope({
       channel: "Zulip",
       from: fromLabel,
@@ -1273,7 +1291,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         messageThreadId: isDM ? undefined : topic,
       },
       message: { body, rawBody: bodyText, commandBody: bodyText,
-        ...(topicHistory ? { bodyForAgent: bodyText + "\n\n" + topicHistory } : {}) },
+        ...(topicHistory || attachmentNote ? { bodyForAgent } : {}) },
       access: {
         commands: { authorized: commandAuthorized },
         ...(kind !== "dm" ? {

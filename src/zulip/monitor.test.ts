@@ -3023,6 +3023,39 @@ describe("reaction continuation ingress", () => {
     );
   });
 
+  it.each([
+    { name: "attachment count", size: 1, calls: 10, lastLimit: 5 * 1024 * 1024 },
+    { name: "aggregate bytes", size: 5 * 1024 * 1024, calls: 4, lastLimit: 5 * 1024 * 1024 },
+    { name: "partial remaining budget", size: 3 * 1024 * 1024, calls: 7, lastLimit: 2 * 1024 * 1024 },
+    { name: "failed transfer budget", size: 2, calls: 4, lastLimit: 5 * 1024 * 1024 },
+  ])("stops inbound downloads at the $name limit", async ({ name, size, calls, lastLimit }) => {
+    state.extractedUploadUrls = Array.from({ length: 12 }, (_, i) =>
+      `https://zlp.pubnerd.app/user_uploads/${i}.bin`);
+    state.downloadedUploads = state.extractedUploadUrls.map((_, index) => ({
+      buffer: Buffer.alloc(name === "partial remaining budget" && index === 6 ? lastLimit : size),
+      contentType: "application/octet-stream", filename: "small.bin",
+    }));
+    state.core.channel.media.saveMediaBuffer.mockResolvedValue({
+      path: "/managed/small.bin", contentType: "application/octet-stream",
+    });
+    if (name === "failed transfer budget") {
+      for (let i = 0; i < calls; i++) {
+        downloadZulipUploadMock.mockRejectedValueOnce(new Error("Zulip upload exceeds max size"));
+      }
+    }
+    state.pollResponses = [{ result: "success", events: [
+      { id: 1, type: "message", message: makeChannelMessage(98102 + size) },
+    ] }];
+    await runMonitorOnce();
+    expect(downloadZulipUploadMock).toHaveBeenCalledTimes(calls);
+    expect(downloadZulipUploadMock.mock.calls.at(-1)).toEqual([
+      state.extractedUploadUrls[calls - 1], "https://zlp.pubnerd.app", "fake-auth", lastLimit,
+    ]);
+    expect(state.core.channel.inbound.buildContext).toHaveBeenCalledWith(expect.objectContaining({
+      message: expect.objectContaining({ bodyForAgent: expect.stringContaining("Some Zulip attachments were skipped") }),
+    }));
+  });
+
   it("stores last-route delivery context for stream-topic messages", async () => {
     state.core.config.session = { store: "/configured/{agentId}/sessions.json" };
     state.core.agent.session.resolveStorePath.mockReturnValue("/resolved/debbie/session-store");

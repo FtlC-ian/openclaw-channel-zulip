@@ -919,9 +919,11 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     const oncharTriggered = oncharEnabled && oncharResult.triggered;
 
     const mentionRegexes = core.channel.mentions.buildMentionRegexes(cfg, "main");
+    // Queue flags target the authenticated bot, even with raw Markdown content.
+    // Wildcard-only mentions do not activate the bot; configured triggers remain separate.
     const wasMentioned =
       !isDM &&
-      (rawText.toLowerCase().includes(`@${botUsername.toLowerCase()}`) ||
+      (message.flags?.includes("mentioned") === true ||
         core.channel.mentions.matchesMentionPatterns(rawText, mentionRegexes));
 
     const dmPolicy = messageAccount.config.dmPolicy ?? "pairing";
@@ -1092,7 +1094,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     const shouldBypassMention =
       isControlCommand && shouldRequireMention && !wasMentioned && commandAuthorized;
     const effectiveWasMentioned = wasMentioned || shouldBypassMention || oncharTriggered;
-    const canDetectMention = Boolean(botUsername) || mentionRegexes.length > 0;
+    const canDetectMention = true;
 
     const shouldApplyOncharGate =
       oncharEnabled && (kind === "dm" || inboundStreamPolicy?.requireMention !== false);
@@ -1100,7 +1102,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       return;
     }
 
-    if (kind !== "dm" && shouldRequireMention && canDetectMention) {
+    if (kind !== "dm" && shouldRequireMention) {
       if (!effectiveWasMentioned) {
         return;
       }

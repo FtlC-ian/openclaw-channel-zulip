@@ -3251,6 +3251,54 @@ describe("reaction continuation ingress", () => {
     }
   });
 
+  it.each([
+    { label: "bare name", content: "<p>Debbie is useful</p>", flags: [], admitted: false },
+    { label: "name suffix", content: "<p>@DebbieSuffix hello</p>", flags: [], admitted: false },
+    { label: "inline code", content: "<p><code>@DebbieSuffix</code> is not a mention</p>", flags: [], admitted: false },
+    { label: "email-like text", content: "<p>mail me at x@DebbieSuffix.example</p>", flags: [], admitted: false },
+    { label: "another user with the same name", content: '<p><span class="user-mention" data-user-id="998">@Debbie</span> hello</p>', flags: [], admitted: false },
+    { label: "native bot mention", content: '<p><span class="user-mention" data-user-id="999">@Debbie</span> hello</p>', flags: ["mentioned"], admitted: true },
+    { label: "raw Markdown bot mention", content: "@**Debbie|999** hello", flags: ["mentioned"], admitted: true },
+    { label: "renamed bot mention", content: "@**Previous name|999** hello", flags: ["mentioned"], admitted: true },
+    ...["all", "everyone", "topic"].map(name => ({
+      label: "wildcard @" + name, content: "@**" + name + "** hello",
+      flags: ["wildcard_mentioned", name === "topic" ? "topic_wildcard_mentioned" : "stream_wildcard_mentioned"], admitted: false,
+    })),
+  ])("requires native mention metadata: $label", async ({ label, content, flags, admitted }) => {
+    state.account.requireMention = true;
+    state.core.channel.groups.resolveRequireMention.mockImplementation(({ requireMentionOverride }) => requireMentionOverride);
+    state.pollResponses = [{ result: "success", events: [{
+      id: 1, type: "message", flags, message: { ...makeChannelMessage(98100), id: "mention-" + label, content },
+    }] }];
+
+    await runMonitorOnce();
+
+    expect(state.core.channel.inbound.dispatch).toHaveBeenCalledTimes(admitted ? 1 : 0);
+  });
+
+  it.each(["configured regex", "onchar"])("preserves %s mention-gate triggers", async trigger => {
+    state.account.requireMention = true;
+    state.core.channel.groups.resolveRequireMention.mockImplementation(({ requireMentionOverride }) => requireMentionOverride);
+    const content = trigger === "onchar" ? "! hello" : "assistant: hello";
+    if (trigger === "onchar") {
+      state.account.chatmode = "onchar";
+    } else {
+      const patterns = [/^assistant:/i];
+      state.core.channel.mentions.buildMentionRegexes.mockReturnValue(patterns);
+      state.core.channel.mentions.matchesMentionPatterns.mockImplementation((text, regexes) => regexes.some(regex => regex.test(text)));
+    }
+    state.pollResponses = [{ result: "success", events: [{
+      id: 1, type: "message", flags: [], message: { ...makeChannelMessage(98200 + content.length), content },
+    }] }];
+
+    await runMonitorOnce();
+
+    expect(state.core.channel.inbound.dispatch).toHaveBeenCalledTimes(1);
+    if (trigger === "configured regex") {
+      expect(state.core.channel.mentions.matchesMentionPatterns).toHaveBeenCalledWith(content, [/^assistant:/i]);
+    }
+  });
+
   it("drops mention-gated stream messages before durable acceptance or attachment work", async () => {
     enableDurableInboundJournal();
     state.account.requireMention = false;

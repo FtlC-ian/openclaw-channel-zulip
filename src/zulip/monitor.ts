@@ -2807,6 +2807,30 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
 
         resetPollBackoff();
 
+        // On shutdown, journal the unprocessed message events in this batch so they replay on restart.
+        const persistStoppedBatch = async (fromIndex: number) => {
+          if (!durableInboundJournal) return;
+          persistingStoppedBatch = true;
+          for (const pendingEvent of events.slice(fromIndex)) {
+            if (pendingEvent.type !== "message" || !pendingEvent.message) continue;
+            const pendingMessage = pendingEvent.flags
+              ? { ...pendingEvent.message, flags: [...pendingEvent.flags] }
+              : pendingEvent.message;
+            const messageId = String(pendingMessage.id ?? "");
+            if (!messageId) continue;
+            const eventId = Number(pendingEvent.id);
+            await durableInboundJournal.accept(
+              createZulipDurableInboundMessageId({ accountId: account.accountId, identity: durableInboundIdentity, messageId }),
+              { message: serializeZulipDurableInboundMessage(pendingMessage), receivedAt: Date.now() },
+              {
+                receivedAt: Date.now(),
+                ...(Number.isFinite(eventId) && eventId >= 0 ? { metadata: { queueEventId: eventId } } : {}),
+              },
+            );
+          }
+          persistingStoppedBatch = false;
+        };
+
         // Wait before advancing the event cursor so a full account backpressures polling.
         for (const [eventIndex, event] of events.entries()) {
           let releaseSlot = event.type === "message" && event.message
@@ -2814,27 +2838,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
             : undefined;
           try {
             if (opts.abortSignal?.aborted) {
-              if (durableInboundJournal) {
-                persistingStoppedBatch = true;
-                for (const pendingEvent of events.slice(eventIndex)) {
-                  if (pendingEvent.type !== "message" || !pendingEvent.message) continue;
-                  const pendingMessage = pendingEvent.flags
-                    ? { ...pendingEvent.message, flags: [...pendingEvent.flags] }
-                    : pendingEvent.message;
-                  const messageId = String(pendingMessage.id ?? "");
-                  if (!messageId) continue;
-                  const eventId = Number(pendingEvent.id);
-                  await durableInboundJournal.accept(
-                    createZulipDurableInboundMessageId({ accountId: account.accountId, identity: durableInboundIdentity, messageId }),
-                    { message: serializeZulipDurableInboundMessage(pendingMessage), receivedAt: Date.now() },
-                    {
-                      receivedAt: Date.now(),
-                      ...(Number.isFinite(eventId) && eventId >= 0 ? { metadata: { queueEventId: eventId } } : {}),
-                    },
-                  );
-                }
-                persistingStoppedBatch = false;
-              }
+              await persistStoppedBatch(eventIndex);
               break;
             }
             const nextEventId = Number((event as { id?: unknown })?.id);
@@ -2874,7 +2878,10 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
             }
             if (inboundEventMessage) {
               releaseSlot ??= await acquireMessageSlot();
-              if (!releaseSlot) break;
+              if (!releaseSlot) {
+                await persistStoppedBatch(eventIndex + 1);
+                break;
+              }
               const inboundMessage = event.flags
                 ? { ...inboundEventMessage, flags: [...event.flags] }
                 : inboundEventMessage;

@@ -835,6 +835,41 @@ describe("reaction continuation ingress", () => {
     const ledger = state.durableStores.get("zulip.reaction-triggers.v1");
     expect(await ledger?.entries()).toEqual([]);
   });
+  it("journals the batch tail when shutdown interrupts a reaction continuation waiting for a slot", async () => {
+    vi.useFakeTimers();
+    setup();
+    state.autoAbort = false;
+    const controller = new AbortController();
+    state.extractedUploadUrls = ["https://zulip.example.test/user_uploads/small.bin"];
+    downloadZulipUploadMock.mockImplementation(async () => {
+      if (!controller.signal.aborted) {
+        await new Promise<void>(resolve => controller.signal.addEventListener("abort", () => resolve(), { once: true }));
+      }
+      return null;
+    });
+    const blocking = Array.from({ length: 4 }, (_, i) => makeChannelMessage(9830100 + i));
+    const tail = Array.from({ length: 2 }, (_, i) => makeChannelMessage(9830200 + i));
+    state.pollResponses = [{ result: "success", events: [
+      ...blocking.map((message, i) => ({ id: i + 40, type: "message", message })),
+      { ...reaction, id: 44 },
+      ...tail.map((message, i) => ({ id: i + 45, type: "message", message })),
+    ] }];
+    const running = runMonitorOnce(controller);
+    try {
+      await vi.waitFor(() => expect(downloadZulipUploadMock).toHaveBeenCalledTimes(4));
+      await vi.waitFor(() => expect(state.client.request.mock.calls.some(([path]) => path === "/messages/" + reaction.message_id)).toBe(true));
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(state.core.channel.inbound.dispatch).not.toHaveBeenCalled();
+    } finally {
+      controller.abort();
+      await running;
+      downloadZulipUploadMock.mockImplementation(async () => state.downloadedUploads.shift() ?? null);
+    }
+    const { createZulipDurableInboundReceiveJournal } = await import("./durable-receive.js");
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
+    const pendingIds = (await journal.pending()).map(record => (record.payload as any).message.id);
+    for (const message of [...blocking, ...tail]) expect(pendingIds).toContain(message.id);
+  });
   it("ignores reactions on another sender's message", async () => {
     setup({ ...makeChannelMessage(81001), sender_id: 777 });
     state.pollResponses = [{ events: [reaction] }];

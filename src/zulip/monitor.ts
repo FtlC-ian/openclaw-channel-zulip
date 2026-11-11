@@ -674,6 +674,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
   const client = createZulipClient({ baseUrl, email, apiKey });
   const botUser = await fetchZulipMe(client);
   const botUserId = botUser.id;
+  const durableInboundIdentity = { realmUrl: baseUrl, botUserId };
   const botEmail = botUser.email ?? "";
   const botUsername = botUser.full_name ?? "";
 
@@ -2228,7 +2229,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
   }) ? ["*"] : streams;
   const durableInboundJournal = (() => {
     try {
-      return createZulipDurableInboundReceiveJournal(account.accountId);
+      return createZulipDurableInboundReceiveJournal(account.accountId, durableInboundIdentity, runtime.log);
     } catch (err) {
       logVerboseMessage(`zulip: durable inbound receive journal unavailable: ${String(err)}`);
       return undefined;
@@ -2561,6 +2562,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     if (durableInboundJournal && messageId) {
       const acceptedDurableId = createZulipDurableInboundMessageId({
         accountId: account.accountId,
+        identity: durableInboundIdentity,
         messageId: message.reactionTriggerKey ?? messageId,
       });
       durableId = acceptedDurableId;
@@ -2771,7 +2773,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
                 if (!messageId) continue;
                 const eventId = Number(pendingEvent.id);
                 await durableInboundJournal.accept(
-                  createZulipDurableInboundMessageId({ accountId: account.accountId, messageId }),
+                  createZulipDurableInboundMessageId({ accountId: account.accountId, identity: durableInboundIdentity, messageId }),
                   { message: serializeZulipDurableInboundMessage(pendingMessage), receivedAt: Date.now() },
                   {
                     receivedAt: Date.now(),

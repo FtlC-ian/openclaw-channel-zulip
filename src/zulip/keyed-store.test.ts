@@ -149,7 +149,7 @@ describe.each([false, true])("runtime stores V2=%s", v2 => {
     const open = vi.fn((options: { namespace: string }) => options.namespace.includes(".pending.") ? pending.store : completed.store);
     mocks.runtime = { state: { [v2 ? "openKeyedStoreV2" : "openKeyedStore"]: open, openChannelIngressQueue: vi.fn() } };
     pending.rows.set("m", { id: "m", attempts: 1, receivedAt: 1, updatedAt: 1, payload: { message: {}, receivedAt: 1 } });
-    const journal = createZulipDurableInboundReceiveJournal("default");
+    const journal = createZulipDurableInboundReceiveJournal("default", { realmUrl: "https://zulip.example", botUserId: 999 });
     if (v2) {
       pending.controls.conflicts = 1;
       pending.controls.beforeApply = () => {
@@ -196,7 +196,7 @@ it("missing stores still disable optional durability", async () => {
   await expect(bindings.remove("k", claimed)).resolves.toBeUndefined();
   expect(await bindings.records("default", { baseUrl: "https://zulip.example" } as any)).toEqual([]);
   expect(openCompatibleKeyedStore(undefined, { namespace: "missing", maxEntries: 1 })).toBeUndefined();
-  expect(() => createZulipDurableInboundReceiveJournal("default")).toThrow("not available");
+  expect(() => createZulipDurableInboundReceiveJournal("default", { realmUrl: "https://zulip.example", botUserId: 999 })).toThrow("not available");
 });
 
 it("does not turn an unknown claim outcome into a refusal after revocation", async () => {
@@ -215,7 +215,7 @@ it("retains the register fallback for old ingress stores without update", async 
   rows.set("m", { id: "m", attempts: 2 });
   const { update: _update, ...oldStore } = store;
   mocks.runtime = { state: { openKeyedStore: () => oldStore, openChannelIngressQueue: vi.fn() } };
-  const journal = createZulipDurableInboundReceiveJournal("default");
+  const journal = createZulipDurableInboundReceiveJournal("default", { realmUrl: "https://zulip.example", botUserId: 999 });
   expect(await journal.release("m", { releasedAt: 3 })).toBe(true);
   expect(rows.get("m")).toMatchObject({ attempts: 3, updatedAt: 3 });
   expect(store.register).toHaveBeenCalledWith("m", expect.any(Object), { ttlMs: 30 * 86400_000 });

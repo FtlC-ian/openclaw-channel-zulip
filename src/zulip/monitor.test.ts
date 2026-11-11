@@ -505,6 +505,8 @@ async function runMonitorOnce(
   });
 }
 
+const testDurableIdentity = () => ({ realmUrl: state.account.baseUrl, botUserId: state.botUser.id });
+
 function enableDurableInboundJournal(
   journalOptions: {
     completedLookupFailuresAfterAccept?: number;
@@ -3576,11 +3578,11 @@ describe("reaction continuation ingress", () => {
       serializeZulipDurableInboundMessage,
     } = await import("./durable-receive.js");
     const message = makeChannelMessage(1219);
-    const durableId = createZulipDurableInboundMessageId({
+    const durableId = createZulipDurableInboundMessageId({ identity: testDurableIdentity(),
       accountId: state.account.accountId,
       messageId: String(message.id),
     });
-    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
     await journal.accept(durableId, {
       message: serializeZulipDurableInboundMessage(message),
       receivedAt: Date.now(),
@@ -3620,11 +3622,11 @@ describe("reaction continuation ingress", () => {
       serializeZulipDurableInboundMessage,
     } = await import("./durable-receive.js");
     const message = makeChannelMessage(1220);
-    const durableId = createZulipDurableInboundMessageId({
+    const durableId = createZulipDurableInboundMessageId({ identity: testDurableIdentity(),
       accountId: state.account.accountId,
       messageId: String(message.id),
     });
-    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
     await journal.accept(durableId, {
       message: serializeZulipDurableInboundMessage(message),
       receivedAt: Date.now(),
@@ -3670,11 +3672,11 @@ describe("reaction continuation ingress", () => {
       createZulipDurableInboundMessageId,
       createZulipDurableInboundReceiveJournal,
     } = await import("./durable-receive.js");
-    const durableId = createZulipDurableInboundMessageId({
+    const durableId = createZulipDurableInboundMessageId({ identity: testDurableIdentity(),
       accountId: state.account.accountId,
       messageId: String(message.id),
     });
-    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
     await expect(journal.pending()).resolves.toEqual([
       expect.objectContaining({
         id: durableId,
@@ -3705,11 +3707,11 @@ describe("reaction continuation ingress", () => {
       serializeZulipDurableInboundMessage,
     } = await import("./durable-receive.js");
     const message = makeChannelMessage(1214);
-    const durableId = createZulipDurableInboundMessageId({
+    const durableId = createZulipDurableInboundMessageId({ identity: testDurableIdentity(),
       accountId: state.account.accountId,
       messageId: String(message.id),
     });
-    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
     await journal.accept(durableId, {
       message: serializeZulipDurableInboundMessage(message),
       receivedAt: Date.now(),
@@ -3742,11 +3744,11 @@ describe("reaction continuation ingress", () => {
       serializeZulipDurableInboundMessage,
     } = await import("./durable-receive.js");
     const message = makeChannelMessage(1215);
-    const durableId = createZulipDurableInboundMessageId({
+    const durableId = createZulipDurableInboundMessageId({ identity: testDurableIdentity(),
       accountId: state.account.accountId,
       messageId: String(message.id),
     });
-    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
     await journal.accept(durableId, {
       message: serializeZulipDurableInboundMessage(message),
       receivedAt: Date.now(),
@@ -3805,7 +3807,78 @@ describe("reaction continuation ingress", () => {
     }
   });
 
-  it("drains legacy keyed-journal records through the queue-backed compatibility journal", async () => {
+  it.each(["same", "realm", "bot"])("identity-scoped replay: %s identity", async (change) => {
+    enableDurableInboundJournal();
+    const { createZulipDurableInboundReceiveJournal } = await import("./durable-receive.js");
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, {
+      realmUrl: state.account.baseUrl, botUserId: state.botUser.id,
+    });
+    await journal.accept("identity-replay", {
+      message: makeChannelMessage(9294001), receivedAt: Date.now(),
+    });
+    if (change === "realm") state.account.baseUrl = "https://other-realm.example.test";
+    if (change === "bot") state.botUser.id = 1000;
+    await runMonitorOnce();
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher)
+      .toHaveBeenCalledTimes(change === "same" ? 1 : 0);
+  });
+
+  it.each(["realm", "bot"])("does not reuse completed tombstones after changing %s", async (change) => {
+    enableDurableInboundJournal();
+    const { createZulipDurableInboundReceiveJournal, createZulipDurableInboundMessageId } =
+      await import("./durable-receive.js");
+    const identity = testDurableIdentity();
+    const idFor = (current: typeof identity) => createZulipDurableInboundMessageId({
+      accountId: state.account.accountId, messageId: "9294003", identity: current,
+    });
+    const payload = { message: makeChannelMessage(9294003), receivedAt: Date.now() };
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, identity);
+    await journal.accept(idFor(identity), payload);
+    await journal.complete(idFor(identity));
+    await expect(journal.accept(idFor(identity), payload)).resolves.toMatchObject({ kind: "completed" });
+    const changed = change === "realm"
+      ? { ...identity, realmUrl: "https://other.example" }
+      : { ...identity, botUserId: 1000 };
+    const other = createZulipDurableInboundReceiveJournal(state.account.accountId, changed);
+    await expect(other.accept(idFor(changed), payload)).resolves.toMatchObject({ kind: "accepted" });
+    await expect(other.accept(idFor(changed), payload)).resolves.toMatchObject({ kind: "pending", duplicate: true });
+  });
+
+  it.each([
+    ["queue", false], ["keyed", false], ["queue", true], ["keyed", true],
+  ])("drops unverifiable %s entries (mismatched stamp=%s) and logs once", async (source, mismatched) => {
+    enableDurableInboundJournal();
+    const { createZulipDurableInboundReceiveJournal } = await import("./durable-receive.js");
+    const log = vi.fn();
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, {
+      realmUrl: state.account.baseUrl, botUserId: state.botUser.id,
+    }, log);
+    const payload = {
+      message: makeChannelMessage(9294002), receivedAt: Date.now(),
+      ...(mismatched ? { identityFingerprint: "another-identity" } : {}),
+    };
+    if (source === "queue") {
+      const queue = state.durableQueues.get(state.account.accountId)!;
+      await queue.enqueue("legacy-one", payload);
+      await queue.enqueue("legacy-two", payload);
+    } else {
+      const store = Array.from(state.durableStores.entries()).find(([ns]) => ns.includes(".pending."))![1];
+      for (const id of ["legacy-one", "legacy-two"]) await store.register(id, {
+        id, payload, receivedAt: 1, updatedAt: 1, attempts: 0,
+      });
+    }
+    await expect(journal.pending()).resolves.toEqual([]);
+    await expect(journal.pending()).resolves.toEqual([]);
+    expect(log).toHaveBeenCalledTimes(1);
+    await expect(state.durableQueues.get(state.account.accountId)!.listPending()).resolves.toEqual([]);
+    for (const [namespace, store] of state.durableStores) {
+      if (namespace.includes(".pending.")) await expect(store.entries()).resolves.toEqual([]);
+    }
+    await runMonitorOnce();
+    expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+  });
+
+  it("drains identity-attributed keyed-journal records through the queue-backed compatibility journal", async () => {
     enableDurableInboundJournal();
     const {
       createZulipDurableInboundMessageId,
@@ -3813,11 +3886,11 @@ describe("reaction continuation ingress", () => {
       serializeZulipDurableInboundMessage,
     } = await import("./durable-receive.js");
     const message = makeChannelMessage(2100);
-    const durableId = createZulipDurableInboundMessageId({
+    const durableId = createZulipDurableInboundMessageId({ identity: testDurableIdentity(),
       accountId: state.account.accountId,
       messageId: String(message.id),
     });
-    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
     const pendingStore = Array.from(state.durableStores.entries()).find(([namespace]) =>
       namespace.includes(".pending."),
     )?.[1];
@@ -3827,6 +3900,7 @@ describe("reaction continuation ingress", () => {
       payload: {
         message: serializeZulipDurableInboundMessage(message),
         receivedAt: 100,
+        identityFingerprint: (await import("./durable-receive.js")).fingerprintZulipDurableInboundIdentity(testDurableIdentity()),
       },
       receivedAt: 100,
       updatedAt: 100,
@@ -3869,11 +3943,11 @@ describe("reaction continuation ingress", () => {
       serializeZulipDurableInboundMessage,
     } = await import("./durable-receive.js");
     const message = makeChannelMessage(2101);
-    const durableId = createZulipDurableInboundMessageId({
+    const durableId = createZulipDurableInboundMessageId({ identity: testDurableIdentity(),
       accountId: state.account.accountId,
       messageId: String(message.id),
     });
-    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
     const queue = state.durableQueues.get(state.account.accountId);
     const completedStore = Array.from(state.durableStores.entries()).find(([namespace]) =>
       namespace.includes(".completed."),
@@ -3919,11 +3993,11 @@ describe("reaction continuation ingress", () => {
       serializeZulipDurableInboundMessage,
     } = await import("./durable-receive.js");
     const message = makeChannelMessage(2102);
-    const durableId = createZulipDurableInboundMessageId({
+    const durableId = createZulipDurableInboundMessageId({ identity: testDurableIdentity(),
       accountId: state.account.accountId,
       messageId: String(message.id),
     });
-    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
     const queue = state.durableQueues.get(state.account.accountId);
     const completedStore = Array.from(state.durableStores.entries()).find(([namespace]) =>
       namespace.includes(".completed."),
@@ -3956,11 +4030,11 @@ describe("reaction continuation ingress", () => {
       serializeZulipDurableInboundMessage,
     } = await import("./durable-receive.js");
     const message = makeChannelMessage(2105);
-    const durableId = createZulipDurableInboundMessageId({
+    const durableId = createZulipDurableInboundMessageId({ identity: testDurableIdentity(),
       accountId: state.account.accountId,
       messageId: String(message.id),
     });
-    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
     const queue = state.durableQueues.get(state.account.accountId);
     const completedStore = Array.from(state.durableStores.entries()).find(([namespace]) =>
       namespace.includes(".completed."),
@@ -3990,11 +4064,11 @@ describe("reaction continuation ingress", () => {
       serializeZulipDurableInboundMessage,
     } = await import("./durable-receive.js");
     const message = makeChannelMessage(2103);
-    const durableId = createZulipDurableInboundMessageId({
+    const durableId = createZulipDurableInboundMessageId({ identity: testDurableIdentity(),
       accountId: state.account.accountId,
       messageId: String(message.id),
     });
-    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
     const completedStore = Array.from(state.durableStores.entries()).find(([namespace]) =>
       namespace.includes(".completed."),
     )?.[1];
@@ -4042,7 +4116,7 @@ describe("reaction continuation ingress", () => {
     const { createZulipDurableInboundMessageId } = await import("./durable-receive.js");
     const firstMessage = makeChannelMessage(99200);
     const deferredMessage = makeChannelMessage(99201);
-    const deferredDurableId = createZulipDurableInboundMessageId({
+    const deferredDurableId = createZulipDurableInboundMessageId({ identity: testDurableIdentity(),
       accountId: state.account.accountId,
       messageId: String(deferredMessage.id),
     });
@@ -4082,7 +4156,7 @@ describe("reaction continuation ingress", () => {
   it("retries deferred durable replay after a transient pending-list failure", async () => {
     const { createZulipDurableInboundMessageId } = await import("./durable-receive.js");
     const message = makeChannelMessage(99202);
-    const durableId = createZulipDurableInboundMessageId({
+    const durableId = createZulipDurableInboundMessageId({ identity: testDurableIdentity(),
       accountId: state.account.accountId,
       messageId: String(message.id),
     });
@@ -4122,7 +4196,7 @@ describe("reaction continuation ingress", () => {
   it("keeps retrying a deferred durable message after transient replay metadata failure", async () => {
     const { createZulipDurableInboundMessageId } = await import("./durable-receive.js");
     const message = makeChannelMessage(99203);
-    const durableId = createZulipDurableInboundMessageId({
+    const durableId = createZulipDurableInboundMessageId({ identity: testDurableIdentity(),
       accountId: state.account.accountId,
       messageId: String(message.id),
     });
@@ -4161,7 +4235,7 @@ describe("reaction continuation ingress", () => {
   it("retries only journal completion after a deferred reply was delivered", async () => {
     const { createZulipDurableInboundMessageId } = await import("./durable-receive.js");
     const message = makePrivateMessage(99206);
-    const durableId = createZulipDurableInboundMessageId({
+    const durableId = createZulipDurableInboundMessageId({ identity: testDurableIdentity(),
       accountId: state.account.accountId,
       messageId: String(message.id),
     });
@@ -4192,11 +4266,11 @@ describe("reaction continuation ingress", () => {
     const { createZulipDurableInboundMessageId } = await import("./durable-receive.js");
     const retryableMessage = makeChannelMessage(99204);
     const readyMessage = makePrivateMessage(99205);
-    const retryableDurableId = createZulipDurableInboundMessageId({
+    const retryableDurableId = createZulipDurableInboundMessageId({ identity: testDurableIdentity(),
       accountId: state.account.accountId,
       messageId: String(retryableMessage.id),
     });
-    const readyDurableId = createZulipDurableInboundMessageId({
+    const readyDurableId = createZulipDurableInboundMessageId({ identity: testDurableIdentity(),
       accountId: state.account.accountId,
       messageId: String(readyMessage.id),
     });
@@ -4628,7 +4702,7 @@ describe("reaction continuation ingress", () => {
     await runMonitorOnce();
 
     const { createZulipDurableInboundReceiveJournal } = await import("./durable-receive.js");
-    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
     await expect(journal.pending()).resolves.toEqual([]);
     expect(state.sendMessageZulip).toHaveBeenCalledTimes(2);
     expect(state.editZulipMessage).not.toHaveBeenCalled();
@@ -4694,7 +4768,7 @@ describe("reaction continuation ingress", () => {
       await runMonitorOnce();
 
       const { createZulipDurableInboundReceiveJournal } = await import("./durable-receive.js");
-      const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+      const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
       const completedStore = Array.from(state.durableStores.entries()).find(([namespace]) =>
         namespace.includes(".completed."),
       )?.[1];
@@ -4801,11 +4875,11 @@ describe("reaction continuation ingress", () => {
       serializeZulipDurableInboundMessage,
     } = await import("./durable-receive.js");
     const message = makeChannelMessage(2102);
-    const durableId = createZulipDurableInboundMessageId({
+    const durableId = createZulipDurableInboundMessageId({ identity: testDurableIdentity(),
       accountId: state.account.accountId,
       messageId: String(message.id),
     });
-    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
     await journal.accept(durableId, {
       message: serializeZulipDurableInboundMessage(message),
       receivedAt: Date.now(),
@@ -4827,11 +4901,11 @@ describe("reaction continuation ingress", () => {
       serializeZulipDurableInboundMessage,
     } = await import("./durable-receive.js");
     const message = makePrivateMessage(99208);
-    const durableId = createZulipDurableInboundMessageId({
+    const durableId = createZulipDurableInboundMessageId({ identity: testDurableIdentity(),
       accountId: state.account.accountId,
       messageId: String(message.id),
     });
-    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
     await journal.accept(durableId, {
       message: serializeZulipDurableInboundMessage(message),
       receivedAt: Date.now(),
@@ -4863,10 +4937,10 @@ describe("reaction continuation ingress", () => {
     } = await import("./durable-receive.js");
     const firstMessage = makeChannelMessage(2105);
     const secondMessage = makeChannelMessage(2106);
-    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
-    for (const message of [firstMessage, secondMessage]) {
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
+    for (const [index, message] of [firstMessage, secondMessage].entries()) {
       await journal.accept(
-        createZulipDurableInboundMessageId({
+        createZulipDurableInboundMessageId({ identity: testDurableIdentity(),
           accountId: state.account.accountId,
           messageId: String(message.id),
         }),
@@ -4874,6 +4948,7 @@ describe("reaction continuation ingress", () => {
           message: serializeZulipDurableInboundMessage(message),
           receivedAt: Date.now(),
         },
+        { receivedAt: 100 + index },
       );
     }
     let dispatchStarted!: () => void;
@@ -4928,9 +5003,9 @@ describe("reaction continuation ingress", () => {
       serializeZulipDurableInboundMessage,
     } = await import("./durable-receive.js");
     const message = makeChannelMessage(2107);
-    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
     await journal.accept(
-      createZulipDurableInboundMessageId({
+      createZulipDurableInboundMessageId({ identity: testDurableIdentity(),
         accountId: state.account.accountId,
         messageId: String(message.id),
       }),
@@ -5013,11 +5088,11 @@ describe("reaction continuation ingress", () => {
 
     const { createZulipDurableInboundMessageId, createZulipDurableInboundReceiveJournal } =
       await import("./durable-receive.js");
-    const durableId = createZulipDurableInboundMessageId({
+    const durableId = createZulipDurableInboundMessageId({ identity: testDurableIdentity(),
       accountId: state.account.accountId,
       messageId: String(message.id),
     });
-    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
     await expect(journal.pending()).resolves.toEqual([
       expect.objectContaining({ id: durableId, attempts: 1 }),
     ]);
@@ -5078,7 +5153,7 @@ describe("reaction continuation ingress", () => {
     expect(deleteZulipQueueMock).toHaveBeenCalledTimes(1);
     expect(state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
     const { createZulipDurableInboundReceiveJournal } = await import("./durable-receive.js");
-    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
     await expect(journal.pending()).resolves.toHaveLength(2);
     state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }: any) => {
       await dispatcherOptions.deliver({ text: "Recovered reply" }, { kind: "final" });
@@ -5100,7 +5175,7 @@ describe("reaction continuation ingress", () => {
     enableDurableInboundJournal();
     // Open the production journal first so its backing queue exists.
     const { createZulipDurableInboundReceiveJournal } = await import("./durable-receive.js");
-    createZulipDurableInboundReceiveJournal(state.account.accountId);
+    createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
     const queue = Array.from(state.durableQueues.values())[0];
     queue.listPending.mockRejectedValueOnce(new Error("replay storage failure"));
     await expect(runMonitorOnce()).rejects.toThrow("replay storage failure");
@@ -5213,10 +5288,10 @@ describe("reaction continuation ingress", () => {
     state.autoAbort = false;
     const controller = new AbortController();
     const { createZulipDurableInboundMessageId, createZulipDurableInboundReceiveJournal } = await import("./durable-receive.js");
-    createZulipDurableInboundReceiveJournal(state.account.accountId);
+    createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
     const queue = state.durableQueues.get(state.account.accountId);
     const enqueue = queue.enqueue.getMockImplementation();
-    const tailId = createZulipDurableInboundMessageId({ accountId: state.account.accountId, messageId: "9595041" });
+    const tailId = createZulipDurableInboundMessageId({ identity: testDurableIdentity(), accountId: state.account.accountId, messageId: "9595041" });
     queue.enqueue.mockImplementation(async (id: string, ...args: any[]) => {
       if (id === tailId) throw new Error("stopped batch storage failure");
       return enqueue(id, ...args);
@@ -5243,7 +5318,7 @@ describe("reaction continuation ingress", () => {
       return { stream_id: 7, name: "debbie" };
     });
     const { createZulipDurableInboundReceiveJournal } = await import("./durable-receive.js");
-    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
     const queue = state.durableQueues.get(state.account.accountId);
     queue.enqueue.mockRejectedValue(new Error("abort admission storage failure"));
     state.pollResponses = [{ result: "success", events: [{
@@ -5265,7 +5340,7 @@ describe("reaction continuation ingress", () => {
     state.autoAbort = false;
     const controller = new AbortController();
     const { createZulipDurableInboundReceiveJournal } = await import("./durable-receive.js");
-    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
+    const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
     const queue = state.durableQueues.get(state.account.accountId);
     const enqueue = queue.enqueue.getMockImplementation();
     let release!: () => void;

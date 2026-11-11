@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 2026.11.2
+
+### Upgrade notes
+- Zulip approvals now require explicit approver emails in `allowFrom`; `["*"]`, empty, or numeric-only lists no longer allow anyone to approve.
+- Stream mention gating (`requireMention`) now activates only on a real Zulip mention of the bot (or a configured mention pattern/onchar trigger), not on text that merely contains the bot name.
+- Pending inbound work saved by 2026.11.1 or earlier cannot be attributed to a realm and bot and is dropped once on upgrade; restart cleanly before upgrading.
 
 ### Security
 - Require Zulip's authenticated-bot mentioned flag rather than bot-name substrings for stream mention gates, rejecting code literals, email-like text and mentions of another user. Configured mention regexes and onchar triggers are unchanged; wildcard-only mentions (@all, @everyone, @topic) still do not activate the bot.

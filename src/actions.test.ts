@@ -76,6 +76,27 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("reaction removal ID boundary with moderation disabled", () => {
+  it.each(["123#", "123?x=1", "123/../456", "123%2F456", "..", " 123", "123 ", "-1", "0", "1.5", "01", "+1", "9007199254740992", -1, 0, 1.5, Number.MAX_SAFE_INTEGER + 1])("rejects %j without fetching", async messageId => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({ result: "success" }));
+    await expect(runReactAction({ messageId, emoji: "check", remove: true }, { fetchImpl })).rejects.toThrow(/Invalid/);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe("reaction current-message ID validation", () => {
+  it.each(["explicit", "current"])("validates %s IDs even for dry runs with a current message", async source => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchImpl);
+    await expect(zulipMessageActions.handleAction?.({
+      channel: "zulip", action: "react", cfg, dryRun: true,
+      params: { emoji: "check", remove: true, ...(source === "explicit" ? { messageId: "123#" } : {}) },
+      toolContext: { currentMessageId: source === "explicit" ? "456" : "123#" },
+    })).rejects.toThrow(/Invalid/);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
 async function runAction(
   action: AnyAction,
   params: Record<string, unknown>,
@@ -851,11 +872,11 @@ describe("zulipMessageActions react", () => {
       action: "react",
       cfg,
       params: { emoji: "+1" },
-      toolContext: { currentMessageId: "current-1" },
+      toolContext: { currentMessageId: "456" },
     });
 
     expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(
-      "https://zulip.example.test/api/v1/messages/current-1/reactions",
+      "https://zulip.example.test/api/v1/messages/456/reactions",
     );
   });
 });

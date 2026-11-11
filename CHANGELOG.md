@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Security
+- Authorize inbound senders by authenticated email or Zulip user ID only, never display names. Numeric allowlist IDs now match even when a sender has an email.
+- Validate message, stream and user resource IDs before building API paths, including message-tool actions, preventing reaction removal from being redirected to message deletion.
+
 ## 2026.11.1
 
 ### Compatibility

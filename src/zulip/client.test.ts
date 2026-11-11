@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   addZulipReaction,
+  deleteZulipMessage,
+  editZulipMessage,
+  fetchZulipUser,
+  fetchZulipMemberInfo,
+  fetchZulipStream,
+  updateZulipStream,
+  deleteZulipStream,
   createZulipClient,
   createZulipReadBatcher,
   getZulipEventsWithRetry,
@@ -20,6 +27,40 @@ function jsonResponse(body: unknown, init?: ResponseInit): Response {
     headers: { "content-type": "application/json", ...(init?.headers ?? {}) },
   });
 }
+
+describe("resource ID validation", () => {
+  it.each(["123#", "123?x=1", "123/../456", "123%2F456", "..", " 123", "123 ", "-1", "0", "1.5", "01", "+1", "9007199254740992", ""])("rejects %j before any request", async id => {
+    const request = vi.fn().mockResolvedValue({ result: "success" });
+    const client = { request } as unknown as Parameters<typeof addZulipReaction>[0];
+    const calls = [
+      () => addZulipReaction(client, { messageId: id, emojiName: "check" }),
+      () => removeZulipReaction(client, { messageId: id, emojiName: "check" }),
+      () => editZulipMessage(client, { messageId: id, content: "edit" }),
+      () => deleteZulipMessage(client, { messageId: id }),
+      () => fetchZulipUser(client, id),
+      () => fetchZulipStream(client, id),
+      () => updateZulipStream(client, { streamId: id }),
+      () => deleteZulipStream(client, id),
+      () => updateZulipMessageFlags(client, { messageIds: [id], flag: "read", op: "add" }),
+    ];
+    for (const call of calls) {
+      await expect.soft(call()).rejects.toThrow(/Invalid/);
+    }
+    expect(request).not.toHaveBeenCalled();
+  });
+  it.each([-1, 0, 1.5, Number.MAX_SAFE_INTEGER + 1, NaN, Infinity])("rejects invalid numeric ID %s", async id => {
+    const request = vi.fn();
+    const client = { request } as unknown as Parameters<typeof updateZulipMessageFlags>[0];
+    await expect(updateZulipMessageFlags(client, { messageIds: [id], flag: "read", op: "add" })).rejects.toThrow(/Invalid/);
+    expect(request).not.toHaveBeenCalled();
+  });
+  it.each([" 123", "123 "])("does not trim member IDs: %j", async id => {
+    const request = vi.fn();
+    const client = { request } as unknown as Parameters<typeof fetchZulipMemberInfo>[0];
+    await expect(fetchZulipMemberInfo(client, id)).rejects.toThrow(/Invalid/);
+    expect(request).not.toHaveBeenCalled();
+  });
+});
 
 describe("registerZulipQueue", () => {
   it("does not narrow a single configured stream out of direct-message events", async () => {

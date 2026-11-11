@@ -30,6 +30,7 @@ import {
   updateZulipStream,
 } from "./zulip/client.js";
 import { presentationToZulipWidgetContent } from "./zulip/send.js";
+import { validateZulipResourceId } from "./zulip/resource-id.js";
 import { isZulipSessionTarget } from "./zulip/destination.js";
 import { prependZulipRoutingNotice, resolveZulipSendDestination } from "./zulip/routing-fallback.js";
 
@@ -464,15 +465,9 @@ function assertStringLength(value: string, field: string, max = MAX_STRING_LENGT
 }
 
 function readMessageId(params: Record<string, unknown>): string {
-  const messageId = readStringParam(params, "messageId") ?? readStringParam(params, "id");
-  if (messageId) {
-    return messageId;
-  }
-  const numericId =
-    readNumberParam(params, "messageId", { integer: true }) ??
-    readNumberParam(params, "id", { integer: true });
-  if (typeof numericId === "number") {
-    return String(numericId);
+  const messageId = params.messageId ?? params.id;
+  if (messageId !== undefined && messageId !== null) {
+    return validateZulipResourceId(messageId, "messageId");
   }
   throw new Error("messageId is required for Zulip message actions.");
 }
@@ -729,16 +724,14 @@ export const zulipMessageActions: ChannelMessageActionAdapter = {
 
     if (action === "react") {
       let messageId: string;
-      try {
+      if (params.messageId != null || params.id != null) {
         messageId = readMessageId(params);
-      } catch {
-        if (toolContext?.currentMessageId != null) {
-          messageId = String(toolContext.currentMessageId);
-        } else {
-          throw new Error(
-            "messageId required. Provide messageId explicitly or react to the current inbound message.",
-          );
-        }
+      } else if (toolContext?.currentMessageId != null) {
+        messageId = validateZulipResourceId(toolContext.currentMessageId, "messageId");
+      } else {
+        throw new Error(
+          "messageId required. Provide messageId explicitly or react to the current inbound message.",
+        );
       }
       const emojiName =
         readStringParam(params, "emoji") ??

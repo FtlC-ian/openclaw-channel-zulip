@@ -579,6 +579,37 @@ function enableDurableInboundJournal(
 }
 
 describe("monitorZulipProvider", () => {
+  it("keeps polling reactions and new messages while five dispatches wait for approval", async () => {
+    vi.useFakeTimers();
+    enableDurableInboundJournal();
+    state.autoAbort = false;
+    const controller = new AbortController();
+    const { zulipApprovalReactions } = await import("./approval-reactions.js");
+    const react = vi.spyOn(zulipApprovalReactions, "react").mockResolvedValue(undefined);
+    state.core.channel.inbound.dispatch.mockImplementation(() => new Promise(() => {}));
+    const messages = Array.from({ length: 6 }, (_, i) => makeChannelMessage(9820200 + i));
+    const reaction = { id: 6, type: "reaction", op: "add", message_id: 700, user_id: 123, emoji_name: "thumbs_up" };
+    state.pollResponses = [
+      { events: messages.slice(0, 5).map((message, i) => ({ id: i + 1, type: "message", message })) },
+      { events: [reaction, { id: 7, type: "message", message: messages[5] }] },
+    ];
+    // Dispatch deliberately never settles, including during teardown.
+    void runMonitorOnce(controller);
+    try {
+      await vi.waitFor(() => expect(state.core.channel.inbound.dispatch).toHaveBeenCalled());
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(state.core.channel.inbound.dispatch).toHaveBeenCalledTimes(6);
+      expect(react).toHaveBeenCalledWith(expect.objectContaining({ event: reaction }));
+      expect(state.core.channel.inbound.dispatch.mock.calls.map(([params]) => params.ctxPayload.MessageSid))
+        .toEqual(messages.map(message => String(message.id)));
+      expect(getZulipEventsWithRetryMock.mock.calls[1][1].lastEventId).toBe(5);
+    } finally {
+      controller.abort();
+      await vi.advanceTimersByTimeAsync(0);
+      react.mockRestore();
+    }
+  });
+
   it("bounds in-flight messages before downloads and backpressures subsequent polls", async () => {
     vi.useFakeTimers();
     state.autoAbort = false;
@@ -620,29 +651,76 @@ describe("monitorZulipProvider", () => {
     }
   });
 
+  it.each(["early return", "pre-dispatch error", "dispatch error", "success"])("releases slots exactly once after %s", async outcome => {
+    vi.useFakeTimers();
+    state.autoAbort = false;
+    const controller = new AbortController();
+    const releases: Array<() => void> = [];
+    const baseId = 9820300 + ["early return", "pre-dispatch error", "dispatch error", "success"].indexOf(outcome) * 100;
+    const messages = Array.from({ length: 12 }, (_, i) => makeChannelMessage(baseId + i));
+    // Messages authored by the bot are ignored before media processing.
+    if (outcome === "early return") messages.slice(0, 4).forEach(message => { message.sender_id = 999; });
+    if (outcome === "pre-dispatch error") {
+      for (let i = 0; i < 4; i++) state.core.channel.inbound.buildContext.mockImplementationOnce(() => { throw new Error("context failed"); });
+    }
+    if (outcome === "dispatch error") {
+      for (let i = 0; i < 4; i++) state.core.channel.inbound.dispatch.mockRejectedValueOnce(new Error("dispatch failed"));
+    }
+    state.extractedUploadUrls = ["https://zulip.example.test/user_uploads/small.bin"];
+    downloadZulipUploadMock.mockImplementation(async () => {
+      if (downloadZulipUploadMock.mock.calls.length <= (outcome === "early return" ? 0 : 4)) return null;
+      await new Promise<void>(resolve => releases.push(resolve));
+      return null;
+    });
+    state.pollResponses = [{ events: messages.map((message, i) => ({ id: i + 1, type: "message", message })) }];
+    const running = runMonitorOnce(controller);
+    try {
+      await vi.waitFor(() => expect(downloadZulipUploadMock).toHaveBeenCalled());
+      await vi.advanceTimersByTimeAsync(4000);
+      expect(releases).toHaveLength(4);
+      expect(getZulipEventsWithRetryMock).toHaveBeenCalledTimes(1);
+      expect(state.core.channel.inbound.dispatch).toHaveBeenCalledTimes(
+        outcome === "dispatch error" || outcome === "success" ? 4 : 0,
+      );
+      if (outcome === "pre-dispatch error") expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(4);
+      releases.shift()!();
+      await vi.advanceTimersByTimeAsync(250);
+      expect(releases).toHaveLength(4);
+    } finally {
+      controller.abort();
+      releases.splice(0).forEach(release => release());
+      await running;
+      downloadZulipUploadMock.mockImplementation(async () => state.downloadedUploads.shift() ?? null);
+    }
+  });
+
   it("aborts a full in-flight queue and journals the waiting message and batch tail", async () => {
     vi.useFakeTimers();
     enableDurableInboundJournal();
     state.autoAbort = false;
     const controller = new AbortController();
-    state.core.channel.reply.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ replyOptions }: any) => {
-      if (!replyOptions.abortSignal.aborted) {
-        await new Promise<void>(resolve => replyOptions.abortSignal.addEventListener("abort", () => resolve(), { once: true }));
+    state.extractedUploadUrls = ["https://zulip.example.test/user_uploads/small.bin"];
+    downloadZulipUploadMock.mockImplementation(async () => {
+      if (!controller.signal.aborted) {
+        await new Promise<void>(resolve => controller.signal.addEventListener("abort", () => resolve(), { once: true }));
       }
+      return null;
     });
     const messages = Array.from({ length: 9 }, (_, i) => makeChannelMessage(9820100 + i));
     state.pollResponses = [{ result: "success", events: messages.map((message, i) => ({ id: i + 20, type: "message", message })) }];
     const running = runMonitorOnce(controller);
     try {
-      await vi.waitFor(() => expect(state.core.channel.inbound.dispatch).toHaveBeenCalled());
+      await vi.waitFor(() => expect(downloadZulipUploadMock).toHaveBeenCalled());
       await vi.advanceTimersByTimeAsync(3000);
-      expect(state.core.channel.inbound.dispatch).toHaveBeenCalledTimes(4);
+      expect(downloadZulipUploadMock).toHaveBeenCalledTimes(4);
+      expect(state.core.channel.inbound.dispatch).not.toHaveBeenCalled();
       expect(getZulipEventsWithRetryMock).toHaveBeenCalledTimes(1);
     } finally {
       controller.abort();
       await running;
+      downloadZulipUploadMock.mockImplementation(async () => state.downloadedUploads.shift() ?? null);
     }
-    expect(state.core.channel.inbound.dispatch).toHaveBeenCalledTimes(4);
+    expect(state.core.channel.inbound.dispatch).not.toHaveBeenCalled();
     const { createZulipDurableInboundReceiveJournal } = await import("./durable-receive.js");
     const journal = createZulipDurableInboundReceiveJournal(state.account.accountId);
     expect((await journal.pending()).map(record => (record.payload as any).message.id).sort()).toEqual(messages.map(message => message.id));
@@ -4180,6 +4258,42 @@ describe("reaction continuation ingress", () => {
     await monitorPromise;
 
     expect(state.core.channel.inbound.buildContext).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases deferred replay capacity before a stalled dispatch", async () => {
+    vi.useFakeTimers();
+    enableDurableInboundJournal({ completedLookupFailuresAfterAccept: 1 });
+    state.autoAbort = false;
+    const controller = new AbortController();
+    const releases: Array<() => void> = [];
+    const message = makeChannelMessage(9820800);
+    const uploads = Array.from({ length: 5 }, (_, i) => makeChannelMessage(9820801 + i));
+    state.core.channel.inbound.dispatch.mockImplementation(() => new Promise(() => {}));
+    extractZulipUploadUrlsMock.mockImplementation(content => content === "blocked upload"
+      ? ["https://zulip.example.test/user_uploads/small.bin"] : []);
+    uploads.forEach(message => { message.content = "blocked upload"; });
+    downloadZulipUploadMock.mockImplementation(async () => {
+      await new Promise<void>(resolve => releases.push(resolve));
+      return null;
+    });
+    state.pollResponses = [
+      { events: [{ id: 1, type: "message", message }] },
+      { events: uploads.map((message, i) => ({ id: i + 2, type: "message", message })) },
+    ];
+    void runMonitorOnce(controller);
+    try {
+      await vi.waitFor(() => expect(state.core.channel.inbound.dispatch).toHaveBeenCalledTimes(1));
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(state.core.channel.inbound.dispatch.mock.calls[0][0].ctxPayload.MessageSid).toBe(String(message.id));
+      expect(downloadZulipUploadMock).toHaveBeenCalledTimes(4);
+      expect(releases).toHaveLength(4);
+    } finally {
+      controller.abort();
+      releases.splice(0).forEach(release => release());
+      await vi.advanceTimersByTimeAsync(0);
+      extractZulipUploadUrlsMock.mockImplementation(() => state.extractedUploadUrls);
+      downloadZulipUploadMock.mockImplementation(async () => state.downloadedUploads.shift() ?? null);
+    }
   });
 
   it("retries only the deferred durable message while another message is in flight", async () => {

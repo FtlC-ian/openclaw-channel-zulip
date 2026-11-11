@@ -701,7 +701,10 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     while (!opts.abortSignal?.aborted) {
       if (inFlightMessages < MAX_IN_FLIGHT_MESSAGES) {
         inFlightMessages++;
+        let released = false;
         return () => {
+          if (released) return;
+          released = true;
           inFlightMessages--;
           for (const wake of admissionWaiters) wake();
         };
@@ -842,6 +845,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       streamDecision?: InboundStreamDecision;
       replay?: boolean;
       acceptInbound?: () => Promise<boolean>;
+      releaseSlot?: () => void;
     } = {},
   ) => {
     const cfg = opts.getConfig?.() ?? opts.config!;
@@ -2019,6 +2023,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         }
       | undefined;
     try {
+      options.releaseSlot?.();
       const turnResult = await subagentContext.run(() =>
         core.channel.inbound.dispatch({
           cfg,
@@ -2337,6 +2342,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       streamDecision?: InboundStreamDecision;
       acceptInbound?: () => Promise<boolean>;
       durableAccepted?: () => boolean;
+      releaseSlot?: () => void;
     } = {},
   ): Promise<"settled" | "pending-delivery" | "pending-completion" | "pending-completion-handled"> => {
     try {
@@ -2345,6 +2351,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
         replay: options.replay,
         streamDecision: options.streamDecision,
         acceptInbound: options.acceptInbound,
+        releaseSlot: options.releaseSlot,
       });
       if (outcome === ABORTED_INBOUND_MESSAGE && options.acceptInbound && options.durableAccepted?.() !== true) {
         await options.acceptInbound();
@@ -2519,7 +2526,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
                   record.id,
                   deserializeZulipDurableInboundMessage<ZulipMessage>(payload.message),
                   record.metadata,
-                  { replay: true },
+                  { replay: true, releaseSlot },
                 );
               } finally {
                 releaseSlot();
@@ -2580,6 +2587,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
     queueEventId: number | undefined,
     streamResolution: InboundStreamResolution | undefined,
     onReceiveCheckpoint: () => void,
+    releaseSlot: () => void,
   ): Promise<void> => {
     const messageId = String(message.id ?? "");
     if (message.reactionTriggerKey && (!durableInboundJournal || !hasAtomicMutations(reactionLedger))) {
@@ -2671,6 +2679,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
       streamDecision,
       acceptInbound,
       durableAccepted: () => durableAccepted,
+      releaseSlot,
     });
     if (
       (disposition === "pending-completion" || disposition === "pending-completion-handled") &&
@@ -2706,7 +2715,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
           record.id,
           deserializeZulipDurableInboundMessage<ZulipMessage>(payload.message),
           record.metadata,
-          { replay: true },
+          { replay: true, releaseSlot },
         );
       } finally {
         releaseSlot();
@@ -2800,7 +2809,9 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
 
         // Wait before advancing the event cursor so a full account backpressures polling.
         for (const [eventIndex, event] of events.entries()) {
-          let releaseSlot = await acquireMessageSlot();
+          let releaseSlot = event.type === "message" && event.message
+            ? await acquireMessageSlot()
+            : undefined;
           try {
             if (opts.abortSignal?.aborted) {
               if (durableInboundJournal) {
@@ -2862,6 +2873,8 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
               }
             }
             if (inboundEventMessage) {
+              releaseSlot ??= await acquireMessageSlot();
+              if (!releaseSlot) break;
               const inboundMessage = event.flags
                 ? { ...inboundEventMessage, flags: [...event.flags] }
                 : inboundEventMessage;
@@ -2894,7 +2907,7 @@ export async function monitorZulipProvider(opts: MonitorZulipOpts = {}): Promise
               pendingReceiveCheckpoints.add(checkpoint);
               void checkpoint.then(() => pendingReceiveCheckpoints.delete(checkpoint));
               if (!durableInboundJournal) receiveCheckpoint();
-              const messageTask = processMessage(inboundMessage, validEventId, streamResolution, receiveCheckpoint).catch(
+              const messageTask = processMessage(inboundMessage, validEventId, streamResolution, receiveCheckpoint, releaseMessageSlot).catch(
                 (err) => {
                   if (err instanceof ZulipAbortPreservationError || opts.abortSignal?.aborted) {
                     abortedMessagePreservationFailed = true;

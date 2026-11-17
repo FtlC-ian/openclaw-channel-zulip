@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+- Route reaction continuations in a stream's empty topic to the same session as typed messages there. The target message fetch now requests the empty topic name, so Zulip no longer reports it as "general chat" and split those turns into a separate session.
+
 ## 2026.11.2
 
 ### Upgrade notes

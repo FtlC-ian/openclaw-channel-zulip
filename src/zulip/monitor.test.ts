@@ -775,7 +775,12 @@ describe("reaction continuation ingress", () => {
     state.account.config.reactionTriggers = { enabled: true };
     state.client.request.mockImplementation(async (path: string) => {
       if (path === "/users/123") return { result: "success", user: { user_id: 123, email: "user8@zlp.pubnerd.app", full_name: "Ian F", is_bot: false } };
-      if (path === "/messages/" + reaction.message_id) return { result: "success", message: target };
+      if (path.split("?")[0] === "/messages/" + reaction.message_id) {
+        // Like Zulip, report the empty topic as "general chat" unless the client opts in.
+        const allowEmpty = new URLSearchParams(path.split("?")[1] ?? "").get("allow_empty_topic_name") === "true";
+        const subject = (target as { subject?: string }).subject === "" && !allowEmpty ? "general chat" : (target as { subject?: string }).subject;
+        return { result: "success", message: { ...target, subject } };
+      }
       throw new Error("Unexpected request " + path);
     });
   }
@@ -857,7 +862,7 @@ describe("reaction continuation ingress", () => {
     const running = runMonitorOnce(controller);
     try {
       await vi.waitFor(() => expect(downloadZulipUploadMock).toHaveBeenCalledTimes(4));
-      await vi.waitFor(() => expect(state.client.request.mock.calls.some(([path]) => path === "/messages/" + reaction.message_id)).toBe(true));
+      await vi.waitFor(() => expect(state.client.request.mock.calls.some(([path]) => String(path).split("?")[0] === "/messages/" + reaction.message_id)).toBe(true));
       await vi.advanceTimersByTimeAsync(3000);
       expect(state.core.channel.inbound.dispatch).not.toHaveBeenCalled();
     } finally {
@@ -869,6 +874,29 @@ describe("reaction continuation ingress", () => {
     const journal = createZulipDurableInboundReceiveJournal(state.account.accountId, testDurableIdentity());
     const pendingIds = (await journal.pending()).map(record => (record.payload as any).message.id);
     for (const message of [...blocking, ...tail]) expect(pendingIds).toContain(message.id);
+  });
+  it("routes an empty-topic reaction continuation to the same session as typed messages in that topic", async () => {
+    setup({ ...makeChannelMessage(81001), sender_id: 999, subject: "" });
+    state.pollResponses = [{ events: [
+      { id: 2, type: "message", message: { ...makeChannelMessage(9840001), subject: "" } },
+      { ...reaction, id: 3 },
+    ] }];
+    state.autoAbort = false;
+    const controller = new AbortController();
+    const running = runMonitorOnce(controller);
+    try {
+      await vi.waitFor(() => expect(state.core.channel.inbound.dispatch).toHaveBeenCalledTimes(2), { timeout: 3000 });
+    } finally {
+      controller.abort();
+      await running;
+    }
+    const keys = state.core.channel.inbound.dispatch.mock.calls.map(([params]) => params.ctxPayload.SessionKey);
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toMatch(/:topic:v2:[0-9a-f]{64}$/);
+    expect(keys[1]).toBe(keys[0]);
+    const fetchPath = state.client.request.mock.calls.map(([path]) => String(path))
+      .find(path => path.split("?")[0] === "/messages/" + reaction.message_id);
+    expect(fetchPath).toBe("/messages/" + reaction.message_id + "?allow_empty_topic_name=true");
   });
   it("ignores reactions on another sender's message", async () => {
     setup({ ...makeChannelMessage(81001), sender_id: 777 });

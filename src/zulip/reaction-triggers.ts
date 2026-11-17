@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { ZulipAccountConfig } from "../types.js";
 import { fetchZulipUser, type ZulipClient, type ZulipEvent, type ZulipMessage } from "./client.js";
 import { resolveZulipReactionSpec } from "./status-reactions.js";
+import { validateZulipResourceId } from "./resource-id.js";
 import { updateKeyedStore, type ConditionalStore } from "./keyed-store.js";
 
 export function reactionTriggerEmoji(config: ZulipAccountConfig): string {
@@ -35,7 +36,11 @@ export async function buildReactionContinuation(params: {
   if (await params.isApprovalPrompt(messageId)) return;
   const user = await fetchZulipUser(client, String(event.user_id));
   if (user.is_bot || user.is_active === false || !user.email) return;
-  const response = await client.request<{ result: string; message?: ZulipMessage }>("/messages/" + messageId);
+  // Without allow_empty_topic_name, Zulip reports the empty topic as "general chat",
+  // which would route the continuation to a different session than the thread.
+  const response = await client.request<{ result: string; message?: ZulipMessage }>(
+    `/messages/${validateZulipResourceId(messageId, "messageId")}?allow_empty_topic_name=true`,
+  );
   const target = response.message;
   if (response.result !== "success" || !target || String(target.sender_id) !== botUserId) return;
   if ((target.content ?? "").includes("/approve ")) return;

@@ -1,5 +1,5 @@
 import path from "node:path";
-import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
+import { fetchWithSsrFGuard, ssrfPolicyFromHttpBaseUrlAllowedOrigin } from "openclaw/plugin-sdk/ssrf-runtime";
 
 export function normalizeZulipEmojiName(raw?: string | null): string {
   const trimmed = raw?.trim() ?? "";
@@ -111,6 +111,8 @@ export async function downloadZulipUpload(
   }
   const { response: res, release } = await fetchWithSsrFGuard({
     url,
+    // The target is already restricted to the account origin above; allow it even on a private network.
+    policy: ssrfPolicyFromHttpBaseUrlAllowedOrigin(baseOrigin),
     init: {
       headers: {
         Authorization: `Basic ${authHeader}`,

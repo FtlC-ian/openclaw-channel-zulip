@@ -1,4 +1,4 @@
-import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
+import { fetchWithSsrFGuard, ssrfPolicyFromHttpBaseUrlAllowedOrigin } from "openclaw/plugin-sdk/ssrf-runtime";
 import { normalizeZulipBaseUrl, readZulipError, type ZulipUser } from "./client.js";
 
 export type ZulipProbe = {
@@ -25,6 +25,8 @@ export async function probeZulip(
     const authHeader = Buffer.from(`${email}:${apiKey}`).toString("base64");
     const { response: res, release } = await fetchWithSsrFGuard({
       url: `${normalized}/api/v1/users/me`,
+      // Self-hosted servers often resolve to private addresses; trust only the configured origin.
+      policy: ssrfPolicyFromHttpBaseUrlAllowedOrigin(normalized),
       init: {
         headers: {
           Authorization: `Basic ${authHeader}`,

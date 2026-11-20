@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+- Reach self-hosted Zulip servers whose hostname resolves to a private or internal address (LAN, split-horizon DNS) for inbound attachment downloads and the status probe (#144). The SSRF guard now trusts only the account's configured server origin (same scheme, host and port); other private addresses, other schemes or ports on the same host, and cloud metadata addresses stay blocked.
+
 ## 2026.11.3
 
 ### Fixes

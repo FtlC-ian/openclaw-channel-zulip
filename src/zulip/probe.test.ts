@@ -5,7 +5,8 @@ const sdkState = vi.hoisted(() => ({
   fetchWithSsrFGuard: vi.fn(),
 }));
 
-vi.mock("openclaw/plugin-sdk/ssrf-runtime", () => ({
+vi.mock("openclaw/plugin-sdk/ssrf-runtime", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("openclaw/plugin-sdk/ssrf-runtime")>()),
   fetchWithSsrFGuard: sdkState.fetchWithSsrFGuard,
 }));
 
@@ -33,6 +34,7 @@ describe("probeZulip", () => {
     expect(result.ok).toBe(true);
     expect(sdkState.fetchWithSsrFGuard).toHaveBeenCalledWith({
       url: "https://zulip.example.test/api/v1/users/me",
+      policy: { allowedOrigins: ["https://zulip.example.test"] },
       init: {
         headers: {
           Authorization: "Basic Ym90QGV4YW1wbGUudGVzdDpzZWNyZXQ=",

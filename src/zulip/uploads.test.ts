@@ -5,7 +5,8 @@ const sdkState = vi.hoisted(() => ({
   fetchWithSsrFGuard: vi.fn(),
 }));
 
-vi.mock("openclaw/plugin-sdk/ssrf-runtime", () => ({
+vi.mock("openclaw/plugin-sdk/ssrf-runtime", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("openclaw/plugin-sdk/ssrf-runtime")>()),
   fetchWithSsrFGuard: sdkState.fetchWithSsrFGuard,
 }));
 
@@ -72,6 +73,7 @@ describe("downloadZulipUpload", () => {
 
     expect(sdkState.fetchWithSsrFGuard).toHaveBeenCalledWith({
       url: "https://zlp.pubnerd.app/user_uploads/2/ab/Quarterly%20Report.pdf",
+      policy: { allowedOrigins: ["https://zlp.pubnerd.app"] },
       init: { headers: { Authorization: "Basic encoded-auth", "Accept-Encoding": "identity" } },
     });
     expect(result.filename).toBe("Quarterly Report.pdf");

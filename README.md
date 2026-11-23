@@ -14,7 +14,7 @@ The same `media` object works per account. Roots are additive with host roots; n
 
 ## Features
 
-- ✅ **Concurrent message processing** — events fire-and-forget with staggered start times (200 ms apart), so a burst of incoming messages is handled in parallel rather than queued sequentially
+- ✅ **Concurrent message processing** — up to four messages per account are prepared at once (policy checks, attachment downloads), starting 200 ms apart; a burst waits its turn instead of piling up, and agent turns themselves are queued by OpenClaw
 - ✅ **Native session conversation binding** — stream topics resolve through the SDK session-conversation hook instead of hand-rolled session key grammar
 - ✅ **File uploads** — inbound Zulip file attachments are downloaded and forwarded to the AI pipeline; outbound media is uploaded via Zulip's file upload API
   Inbound messages attempt at most 10 unique attachments and share a download budget of four times the per-file `mediaMaxMb` limit (5 MB per file and 20 MB per message by default). Failed downloads consume their attempted allowance; downloads stop when either budget is exhausted. Oversized streaming bodies are cancelled as soon as the limit is crossed, without buffering the full response. The agent receives a short note when attachments are skipped. These count and aggregate multipliers are fixed limits.
@@ -749,7 +749,7 @@ widget deletion and record cleanup remain retryable without duplicate notices.
 
 Most channel plugin implementations process incoming messages one at a time — each message waits for the previous one to finish before starting. Under load (e.g. a burst of messages after reconnect) this creates noticeable latency for later messages.
 
-This plugin processes events **concurrently**: each message is dispatched immediately (fire-and-forget with error handling) and a small 200 ms stagger is introduced between starts for natural pacing. The result is that ten simultaneous messages all start processing within ~2 seconds of each other instead of serially.
+This plugin processes events **concurrently**: up to four messages per account are prepared at the same time (policy checks, attachment downloads, durable receipt), with a 200 ms stagger between starts for natural pacing. Each slot is released before the agent turn begins, so long or approval-blocked turns never stop the bot from reading Zulip, and OpenClaw itself queues the agent turns. When all four slots are busy, polling waits instead of piling up unbounded work.
 
 ---
 

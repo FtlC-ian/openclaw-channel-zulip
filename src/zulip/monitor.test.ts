@@ -1,4 +1,4 @@
-import { readdir } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -6,6 +6,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildChannelInboundEventContext } from "openclaw/plugin-sdk/channel-inbound";
 import type { RuntimeEnv } from "../sdk.js";
 import { zulipThreading } from "../threading.js";
+
+// Tests that import the host's private build files only hold for the SDK the package is built
+// against (openclaw.build); the weekly compatibility run swaps in newer hosts whose internals differ.
+const readJson = async (path: string | URL) => JSON.parse(await readFile(path, "utf8"));
+const pinnedOpenClawVersion = (await readJson(new URL("../../package.json", import.meta.url))).openclaw.build.openclawVersion as string;
+const installedOpenClawVersion = (await readJson(join(
+  dirname(dirname(dirname(createRequire(import.meta.url).resolve("openclaw/plugin-sdk/core")))), "package.json",
+))).version as string;
+const onPinnedOpenClaw = installedOpenClawVersion === pinnedOpenClawVersion;
 
 // Monitor contracts own ingress/draft behavior; real durable binding storage is
 // independently exercised by restart tests and the isolated four-host harness.
@@ -5474,7 +5483,7 @@ describe("reaction continuation ingress", () => {
     }
   });
 
-  it("actual pinned core cancels an accepted turn before its serialized repeated stop can run", async () => {
+  it.skipIf(!onPinnedOpenClaw)("actual pinned core cancels an accepted turn before its serialized repeated stop can run", async () => {
     state.autoAbort = false;
     let committed = { channels: { zulip: {
       url: "https://zulip.example", email: "bot@example.org", apiKey: ["fixture", "original"].join("-"),
